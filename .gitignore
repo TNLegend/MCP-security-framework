@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+.next/
+.vite/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.crt
+*.p12
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs / temp
+*.log
+logs/
+tmp/
+temp/
+.cache/
+
+# Project private documents
+# Git should mainly contain code + README + config.
+docs/
+reports/
+
+# Generated figures / documents / exports
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.svg
+*.pdf
+*.pptx
+*.docx
+*.xlsx
+*.csv
+*.zip
+*.rar
+
+# Security scan outputs
+scanners/**/outputs/
+scanners/**/results/
+*.sarif
+*.jsonl
+
+# Keep important project files tracked
+!README.md
+!.gitignore
+!.env.example
+!scripts/
+!scripts/*.py
+!scripts/*.bat
+!scripts/*.sh
