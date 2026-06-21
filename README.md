@@ -144,6 +144,16 @@ policies/default_rules.yaml
 
 Elles preparent les decisions runtime : `ALLOW`, `BLOCK`, `WARN`, `LIMIT`, `ASK_APPROVAL` et `LOG_ONLY`.
 
+## Proxy skeleton
+
+Le dossier `proxy/` contient un premier squelette du MCP Proxy.
+
+Il ne contacte pas encore un serveur MCP reel. Il simule le workflow :
+
+```text
+tool call -> demande de decision -> allow/block -> trace runtime
+```
+
 ## Statut
 
 Phase 1 en cours - Backend minimal, PostgreSQL, routes API minimales et frontend React minimal en place.
