@@ -57,3 +57,11 @@ rules:
     decision: LOG_ONLY
     severity: low
     enabled: true
+
+  - id: limit_large_outputs
+    description: Limit tool calls that may return large outputs
+    decision: LIMIT
+    severity: medium
+    enabled: true
+    match:
+      max_output_size_mb: 10

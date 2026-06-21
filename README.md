@@ -76,7 +76,7 @@ Pour lancer la plateforme en local, il faut installer :
 - pip
 - Node.js 20+
 - npm
-- PostgreSQL 15 ou 16
+- PostgreSQL 15+
 - Git
 
 Les dependances de securite avancees seront ajoutees plus tard :
@@ -146,4 +146,4 @@ Elles preparent les decisions runtime : `ALLOW`, `BLOCK`, `WARN`, `LIMIT`, `ASK_
 
 ## Statut
 
-Tache 1.3 - Environnement local et verification des dependances.
+Phase 1 en cours - Backend minimal, PostgreSQL, routes API minimales et frontend React minimal en place.
