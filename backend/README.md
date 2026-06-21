@@ -54,6 +54,14 @@ GET /
 GET /api/v1/health
 GET /api/v1/status
 GET /api/v1/db-check
+GET /api/v1/servers
+POST /api/v1/servers
+GET /api/v1/tools
+POST /api/v1/tools
+GET /api/v1/policies
+POST /api/v1/policies
+GET /api/v1/runtime/logs
+POST /api/v1/runtime/logs
 ```
 
 ## Initialisation de la base de données
