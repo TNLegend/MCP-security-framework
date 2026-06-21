@@ -154,6 +154,20 @@ Il ne contacte pas encore un serveur MCP reel. Il simule le workflow :
 tool call -> demande de decision -> allow/block -> trace runtime
 ```
 
+## LLM Adapter skeleton
+
+Le dossier `agent/` contient un premier squelette d'agent IA et d'adaptateur LLM.
+
+Le provider principal prevu est Gemini, avec Groq comme fallback.
+
+Dans la Phase 1, les providers fonctionnent en mode mock afin de valider la structure :
+
+```text
+message utilisateur -> tool call structure
+```
+
+La decision de securite reste prise par le framework, pas par le LLM.
+
 ## Statut
 
 Phase 1 en cours - Backend minimal, PostgreSQL, routes API minimales et frontend React minimal en place.
