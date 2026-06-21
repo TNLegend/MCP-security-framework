@@ -1,0 +1,59 @@
+rules:
+  - id: block_unknown_server
+    description: Block calls to unknown MCP servers
+    decision: BLOCK
+    severity: high
+    enabled: true
+    match:
+      server_status:
+        - unknown
+        - blocked
+
+  - id: deny_sensitive_paths
+    description: Block access to sensitive local paths
+    decision: BLOCK
+    severity: high
+    enabled: true
+    match:
+      argument: path
+      contains:
+        - ".env"
+        - ".aws/credentials"
+        - "/etc/passwd"
+        - "id_rsa"
+        - "secrets"
+
+  - id: allow_contracts_read
+    description: Allow reading files inside the contracts directory
+    decision: ALLOW
+    severity: low
+    enabled: true
+    match:
+      tool_name: read_file
+      argument: path
+      allowed_prefixes:
+        - "contracts/"
+
+  - id: warn_high_risk_tool
+    description: Warn when a tool has a high risk score
+    decision: WARN
+    severity: medium
+    enabled: true
+    match:
+      min_tool_risk_score: 70
+
+  - id: require_approval_for_sensitive_tool
+    description: Require human approval for sensitive tools
+    decision: ASK_APPROVAL
+    severity: high
+    enabled: true
+    match:
+      tool_sensitivity:
+        - high
+        - critical
+
+  - id: log_normal_runtime_call
+    description: Log normal runtime calls for audit purposes
+    decision: LOG_ONLY
+    severity: low
+    enabled: true

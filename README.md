@@ -134,6 +134,16 @@ Les variables d'environnement attendues sont decrites dans :
 
 Ne jamais mettre de vrais secrets dans le repository.
 
+## Regles de securite initiales
+
+Les regles initiales du framework sont definies dans :
+
+```text
+policies/default_rules.yaml
+```
+
+Elles preparent les decisions runtime : `ALLOW`, `BLOCK`, `WARN`, `LIMIT`, `ASK_APPROVAL` et `LOG_ONLY`.
+
 ## Statut
 
 Tache 1.3 - Environnement local et verification des dependances.
