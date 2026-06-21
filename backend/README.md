@@ -62,6 +62,7 @@ GET /api/v1/policies
 POST /api/v1/policies
 GET /api/v1/runtime/logs
 POST /api/v1/runtime/logs
+POST /api/v1/runtime/decision
 ```
 
 ## Initialisation de la base de données
@@ -80,6 +81,22 @@ Tables créées :
 - runtime_calls
 - policy_decisions
 - audit_events
+
+## Policy Engine skeleton
+
+Le backend contient un premier squelette de moteur de décision runtime.
+
+Route de test :
+
+```text
+POST /api/v1/runtime/decision
+```
+
+Décisions supportées :
+
+```text
+ALLOW, BLOCK, WARN, LIMIT, ASK_APPROVAL, LOG_ONLY
+```
 
 ## Documentation automatique
 

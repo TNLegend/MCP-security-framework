@@ -5,7 +5,9 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.mcp_server import MCPServer
 from app.models.runtime_call import RuntimeCall
+from app.schemas.decision import PolicyDecisionRead
 from app.schemas.runtime import RuntimeCallCreate, RuntimeCallRead
+from app.services.policy_engine import evaluate_policy
 
 router = APIRouter(prefix="/runtime", tags=["Runtime"])
 
@@ -42,3 +44,8 @@ def create_runtime_log(log: RuntimeCallCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_log)
     return db_log
+
+
+@router.post("/decision", response_model=PolicyDecisionRead)
+def evaluate_runtime_decision(context: dict):
+    return evaluate_policy(context)
