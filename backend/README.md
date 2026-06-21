@@ -53,7 +53,25 @@ uvicorn app.main:app --reload
 GET /
 GET /api/v1/health
 GET /api/v1/status
+GET /api/v1/db-check
 ```
+
+## Initialisation de la base de données
+
+Depuis le dossier `backend/` :
+
+```bash
+python -m app.db.init_db
+```
+
+Tables créées :
+
+- mcp_servers
+- mcp_tools
+- policy_rules
+- runtime_calls
+- policy_decisions
+- audit_events
 
 ## Documentation automatique
 
@@ -65,4 +83,4 @@ http://127.0.0.1:8000/docs
 
 ## Statut
 
-Tâche 1.4 — Backend FastAPI minimal.
+Tâche 1.5 — Base PostgreSQL minimale.

@@ -25,4 +25,5 @@ def root():
         "docs": "/docs",
         "health": f"{settings.api_prefix}/health",
         "status": f"{settings.api_prefix}/status",
+        "db_check": f"{settings.api_prefix}/db-check",
     }

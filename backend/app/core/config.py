@@ -1,3 +1,5 @@
+from urllib.parse import quote_plus
+
 from pydantic_settings import BaseSettings
 
 
@@ -7,9 +9,26 @@ class Settings(BaseSettings):
     environment: str = "local"
     api_prefix: str = "/api/v1"
 
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_db: str = "mcp_security"
+    postgres_user: str = "mcp_user"
+    postgres_password: str = "change_me"
+
+    @property
+    def database_url(self) -> str:
+        user = quote_plus(self.postgres_user)
+        password = quote_plus(self.postgres_password)
+        return (
+            f"postgresql+psycopg://{user}:"
+            f"{password}@{self.postgres_host}:"
+            f"{self.postgres_port}/{self.postgres_db}"
+        )
+
     class Config:
         env_file = "../.env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
 
 settings = Settings()
