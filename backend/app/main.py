@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes_health import router as health_router
+from app.api.routes_inventory import router as inventory_router
 from app.api.routes_policies import router as policies_router
 from app.api.routes_runtime import router as runtime_router
 from app.api.routes_servers import router as servers_router
@@ -34,6 +35,7 @@ app.include_router(servers_router, prefix=settings.api_prefix)
 app.include_router(tools_router, prefix=settings.api_prefix)
 app.include_router(policies_router, prefix=settings.api_prefix)
 app.include_router(runtime_router, prefix=settings.api_prefix)
+app.include_router(inventory_router, prefix=settings.api_prefix)
 
 
 @app.get("/")

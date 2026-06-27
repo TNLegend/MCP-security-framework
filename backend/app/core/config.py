@@ -1,6 +1,9 @@
+from pathlib import Path
 from urllib.parse import quote_plus
 
 from pydantic_settings import BaseSettings
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
@@ -26,7 +29,7 @@ class Settings(BaseSettings):
         )
 
     class Config:
-        env_file = "../.env"
+        env_file = REPO_ROOT / ".env"
         env_file_encoding = "utf-8"
         extra = "ignore"
 

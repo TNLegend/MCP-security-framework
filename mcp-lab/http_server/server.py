@@ -173,7 +173,9 @@ def initialize_result() -> dict[str, Any]:
     return {
         "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {
-            "tools": {},
+            "tools": {
+                "listChanged": False,
+            },
         },
         "serverInfo": {
             "name": "mcp-security-http-lab",
