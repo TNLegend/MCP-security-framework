@@ -61,7 +61,7 @@ function App() {
 
   const pageContent = useMemo(() => {
     if (activePage === "inventory") {
-      return <Inventory servers={servers} loading={loading} />;
+      return <Inventory servers={servers} tools={tools} loading={loading} />;
     }
 
     if (activePage === "policies") {
