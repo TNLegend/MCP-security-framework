@@ -9,8 +9,16 @@ class RuntimeCallCreate(BaseModel):
     session_id: str
     server_id: int | str | None = None
     tool_name: str
-    arguments_summary: dict[str, Any] | None = None
-    status: str
+    arguments_summary: dict[str, Any] | str | None = None
+    status: str = "created"
+    decision: str | None = None
+    rule_id: str | None = None
+    decision_reason: str | None = None
+    severity: str | None = None
+    executed: bool = False
+    execution_status: str | None = None
+    result_summary: str | None = None
+    error_summary: str | None = None
 
 
 class RuntimeCallRead(BaseModel):
@@ -19,8 +27,16 @@ class RuntimeCallRead(BaseModel):
     session_id: str
     server_id: int | None = None
     tool_name: str
-    arguments_summary: dict[str, Any] | None = None
+    arguments_summary: dict[str, Any] | str | None = None
     status: str
+    decision: str | None = None
+    rule_id: str | None = None
+    decision_reason: str | None = None
+    severity: str | None = None
+    executed: bool = False
+    execution_status: str | None = None
+    result_summary: str | None = None
+    error_summary: str | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

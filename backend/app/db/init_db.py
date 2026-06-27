@@ -36,6 +36,16 @@ PHASE2_INVENTORY_COLUMNS = {
         "ADD COLUMN IF NOT EXISTS is_sensitive BOOLEAN DEFAULT FALSE NOT NULL",
         "ADD COLUMN IF NOT EXISTS last_analyzed_at TIMESTAMP",
     ],
+    "runtime_calls": [
+        "ADD COLUMN IF NOT EXISTS decision VARCHAR(50)",
+        "ADD COLUMN IF NOT EXISTS rule_id VARCHAR(255)",
+        "ADD COLUMN IF NOT EXISTS decision_reason TEXT",
+        "ADD COLUMN IF NOT EXISTS severity VARCHAR(50)",
+        "ADD COLUMN IF NOT EXISTS executed BOOLEAN DEFAULT FALSE NOT NULL",
+        "ADD COLUMN IF NOT EXISTS execution_status VARCHAR(50)",
+        "ADD COLUMN IF NOT EXISTS result_summary TEXT",
+        "ADD COLUMN IF NOT EXISTS error_summary TEXT",
+    ],
 }
 
 
