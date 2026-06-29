@@ -231,7 +231,17 @@ tr:last-child td {
   gap: 18px;
 }
 
+.runtime-layout {
+  display: grid;
+  gap: 18px;
+}
+
 .inventory-section {
+  display: grid;
+  gap: 12px;
+}
+
+.runtime-section {
   display: grid;
   gap: 12px;
 }
@@ -249,7 +259,19 @@ tr:last-child td {
   min-width: 980px;
 }
 
+.runtime-summary-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.runtime-table table {
+  min-width: 1120px;
+}
+
 .inventory-table tr[role="button"] {
+  cursor: pointer;
+}
+
+.runtime-table tr[role="button"] {
   cursor: pointer;
 }
 
@@ -257,11 +279,23 @@ tr:last-child td {
   background: #f6f9ff;
 }
 
+.runtime-table tbody tr:hover td {
+  background: #f6f9ff;
+}
+
 .inventory-table .selected-row td {
   background: #eaf2ff;
 }
 
+.runtime-table .selected-row td {
+  background: #eaf2ff;
+}
+
 .inventory-table .selected-row td:first-child {
+  box-shadow: inset 4px 0 0 #1f6feb;
+}
+
+.runtime-table .selected-row td:first-child {
   box-shadow: inset 4px 0 0 #1f6feb;
 }
 
@@ -281,6 +315,10 @@ tr:last-child td {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+}
+
+.runtime-metadata-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .metadata-section {
@@ -355,6 +393,31 @@ tr:last-child td {
   overflow-wrap: anywhere;
 }
 
+.badge-allow {
+  border-color: #a8d8bd;
+  background: #e9f8ef;
+  color: #17633a;
+}
+
+.badge-block,
+.badge-danger {
+  border-color: #f0a3a3;
+  background: #fff0f0;
+  color: #8a1c1c;
+}
+
+.badge-warn {
+  border-color: #f2d48a;
+  background: #fff8e6;
+  color: #7a4b00;
+}
+
+.badge-muted {
+  border-color: #cbd3df;
+  background: #eef2f7;
+  color: #506074;
+}
+
 .badge-low {
   border-color: #b9dfca;
   background: #ecfdf3;
@@ -410,7 +473,9 @@ tr:last-child td {
   }
 
   .summary-grid,
-  .metadata-grid {
+  .metadata-grid,
+  .runtime-summary-grid,
+  .runtime-metadata-grid {
     grid-template-columns: 1fr;
   }
 
