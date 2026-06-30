@@ -1,7 +1,3 @@
-from abc import ABC, abstractmethod
+from agent.llm_providers.base import BaseLLMProvider as LLMProvider
 
-
-class LLMProvider(ABC):
-    @abstractmethod
-    def generate_tool_call(self, user_message: str, available_tools: list[dict]) -> dict:
-        pass
+__all__ = ["LLMProvider"]
