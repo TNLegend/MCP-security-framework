@@ -1,9 +1,17 @@
 from pathlib import Path
+from enum import Enum
 from urllib.parse import quote_plus
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+class PolicyEngineMode(str, Enum):
+    LEGACY = "legacy"
+    SHADOW = "shadow"
+    OPA = "opa"
 
 
 class Settings(BaseSettings):
@@ -17,6 +25,11 @@ class Settings(BaseSettings):
     postgres_db: str = "mcp_security"
     postgres_user: str = "mcp_user"
     postgres_password: str = "change_me"
+
+    policy_engine_mode: PolicyEngineMode = PolicyEngineMode.LEGACY
+    opa_base_url: str = "http://127.0.0.1:8181"
+    opa_decision_path: str = "/v1/data/mcp/security/runtime/decision"
+    opa_timeout_seconds: float = Field(default=2.0, gt=0)
 
     @property
     def database_url(self) -> str:

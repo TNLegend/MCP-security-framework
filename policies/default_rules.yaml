@@ -9,6 +9,23 @@ rules:
         - unknown
         - blocked
 
+  - id: deny_invalid_arguments
+    description: Block calls with invalid tool arguments
+    decision: BLOCK
+    severity: high
+    enabled: true
+    match:
+      arguments_valid: false
+
+  - id: deny_unknown_subject
+    description: Block calls from unknown subjects
+    decision: BLOCK
+    severity: high
+    enabled: true
+    match:
+      authorization_status:
+        - unknown
+
   - id: deny_sensitive_paths
     description: Block access to sensitive local paths
     decision: BLOCK
@@ -23,24 +40,30 @@ rules:
         - "id_rsa"
         - "secrets"
 
-  - id: allow_contracts_read
-    description: Allow reading files inside the contracts directory
-    decision: ALLOW
-    severity: low
+  - id: deny_unclassified_capability
+    description: Block requests without a classified capability
+    decision: BLOCK
+    severity: high
     enabled: true
     match:
-      tool_name: read_file
-      argument: path
-      allowed_prefixes:
-        - "contracts/"
+      required_capability:
+        - unclassified
 
-  - id: warn_high_risk_tool
-    description: Warn when a tool has a high risk score
-    decision: WARN
-    severity: medium
+  - id: deny_capability_not_granted
+    description: Block capabilities not granted to the subject
+    decision: BLOCK
+    severity: high
     enabled: true
     match:
-      min_tool_risk_score: 70
+      capability_not_granted: true
+
+  - id: deny_scope_not_granted
+    description: Block resource scopes not granted for the capability
+    decision: BLOCK
+    severity: high
+    enabled: true
+    match:
+      scope_not_granted: true
 
   - id: require_approval_for_sensitive_tool
     description: Require human approval for sensitive tools
@@ -52,12 +75,6 @@ rules:
         - high
         - critical
 
-  - id: log_normal_runtime_call
-    description: Log normal runtime calls for audit purposes
-    decision: LOG_ONLY
-    severity: low
-    enabled: true
-
   - id: limit_large_outputs
     description: Limit tool calls that may return large outputs
     decision: LIMIT
@@ -65,3 +82,28 @@ rules:
     enabled: true
     match:
       max_output_size_mb: 10
+
+  - id: warn_high_risk_tool
+    description: Warn when a tool has a high risk score
+    decision: WARN
+    severity: medium
+    enabled: true
+    match:
+      min_tool_risk_score: 70
+
+  - id: allow_contracts_read
+    description: Allow reading files inside the contracts directory
+    decision: ALLOW
+    severity: low
+    enabled: true
+    match:
+      tool_name: read_file
+      argument: path
+      allowed_prefixes:
+        - "contracts/"
+
+  - id: log_normal_runtime_call
+    description: Log normal runtime calls for audit purposes
+    decision: LOG_ONLY
+    severity: low
+    enabled: true

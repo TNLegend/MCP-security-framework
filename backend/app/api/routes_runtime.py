@@ -1,13 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.models.mcp_server import MCPServer
 from app.models.runtime_call import RuntimeCall
-from app.schemas.decision import PolicyDecisionRead
+from app.schemas.policy_decision import PolicyDecision
+from app.schemas.policy_context import RuntimePolicyInput
 from app.schemas.runtime import RuntimeCallCreate, RuntimeCallRead
-from app.services.policy_engine import evaluate_policy
+from app.services.policy_runtime import evaluate_runtime_policy
 
 router = APIRouter(prefix="/runtime", tags=["Runtime"])
 
@@ -46,6 +47,12 @@ def create_runtime_log(log: RuntimeCallCreate, db: Session = Depends(get_db)):
     return db_log
 
 
-@router.post("/decision", response_model=PolicyDecisionRead)
-def evaluate_runtime_decision(context: dict):
-    return evaluate_policy(context)
+@router.post("/decision", response_model=PolicyDecision)
+def evaluate_runtime_decision(
+    context: RuntimePolicyInput,
+    background_tasks: BackgroundTasks,
+) -> PolicyDecision:
+    return evaluate_runtime_policy(
+        context=context.model_dump(mode="json"),
+        background_tasks=background_tasks,
+    )

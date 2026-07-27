@@ -1,6 +1,12 @@
 from typing import Any
 
 from proxy.backend_client import BackendClient
+from proxy.tool_request_preparation import (
+    MAX_ERROR_CODE_LENGTH,
+    MAX_VALIDATION_ERRORS,
+    _sanitize_error_codes,
+    _sanitize_code_part,
+)
 
 
 STATUS_BY_DECISION = {
@@ -13,26 +19,44 @@ STATUS_BY_DECISION = {
 }
 
 EXECUTING_DECISIONS = {"ALLOW", "WARN", "LOG_ONLY"}
+MAX_ARGUMENT_NAMES_IN_SUMMARY = 20
+MAX_ARGUMENT_NAME_LENGTH = 64
 
 
-def summarize_arguments(arguments: dict[str, Any]) -> str:
-    if not arguments:
-        return "no_arguments"
+def summarize_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
+    arguments = tool_call.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = {}
 
-    parts = []
-    for key, value in arguments.items():
-        if key == "path":
-            parts.append(f"path={shorten(str(value), 160)}")
-            continue
+    argument_names = [
+        _safe_summary_name(name)
+        for name in sorted(arguments.keys(), key=str)[:MAX_ARGUMENT_NAMES_IN_SUMMARY]
+    ]
+    argument_types = {
+        _safe_summary_name(name): _safe_type_name(arguments[name])
+        for name in sorted(arguments.keys(), key=str)[:MAX_ARGUMENT_NAMES_IN_SUMMARY]
+    }
+    validation_error_codes = tool_call.get("validation_error_codes") or []
 
-        if isinstance(value, str):
-            parts.append(f"{key}={shorten(value, 80)}")
-        elif value is None:
-            parts.append(f"{key}=null")
-        else:
-            parts.append(f"{key}=<{type(value).__name__}>")
-
-    return ", ".join(parts)[:500]
+    return {
+        "argument_names": argument_names,
+        "argument_types": argument_types,
+        "arguments_valid": bool(tool_call.get("arguments_valid", False)),
+        "validation_error_codes": list(
+            _sanitize_error_codes(
+                [
+                    str(code)[:MAX_ERROR_CODE_LENGTH]
+                    for code in validation_error_codes[:MAX_VALIDATION_ERRORS]
+                ]
+            )
+        ),
+        "resource_type": _safe_summary_name(
+            str(tool_call.get("resource_type") or "unknown")
+        ),
+        "resource_scope": _safe_summary_name(
+            str(tool_call.get("resource_scope") or "unknown")
+        ),
+    }
 
 
 def summarize_tool_result(result: dict[str, Any] | None) -> str | None:
@@ -68,14 +92,12 @@ def build_runtime_log(
     status: str | None = None,
 ) -> dict[str, Any]:
     decision_value = decision.get("decision", "LOG_ONLY")
-    arguments = tool_call.get("arguments") or {}
-
     return {
         "agent_id": tool_call.get("agent_id", "agent-demo"),
         "session_id": tool_call.get("session_id", "session-demo"),
         "server_id": server_id if server_id is not None else tool_call.get("server_id"),
         "tool_name": tool_call.get("tool_name", "unknown_tool"),
-        "arguments_summary": summarize_arguments(arguments),
+        "arguments_summary": summarize_arguments(tool_call),
         "status": status or STATUS_BY_DECISION.get(decision_value, "allowed"),
         "decision": decision_value,
         "rule_id": decision.get("rule_id"),
@@ -100,3 +122,23 @@ def shorten(value: str, max_length: int) -> str:
     if len(value) <= max_length:
         return value
     return f"{value[: max_length - 3]}..."
+
+
+def _safe_summary_name(value: Any) -> str:
+    return _sanitize_code_part(str(value))[:MAX_ARGUMENT_NAME_LENGTH]
+
+
+def _safe_type_name(value: Any) -> str:
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int) or isinstance(value, float):
+        return "number"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    if value is None:
+        return "null"
+    return "unknown"

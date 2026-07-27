@@ -26,6 +26,8 @@ READ_FILE_TOOL = {
             "path": {
                 "type": "string",
                 "description": "Relative path under the lab test data directory.",
+                "minLength": 1,
+                "maxLength": 4096,
             },
         },
         "required": ["path"],
@@ -242,7 +244,11 @@ def list_files() -> dict[str, Any]:
     files = [
         path.relative_to(TEST_DATA_DIR).as_posix()
         for path in sorted(TEST_DATA_DIR.rglob("*"))
-        if path.is_file() and ".env" not in path.relative_to(TEST_DATA_DIR).parts
+        if path.is_file()
+        and not any(
+            part.lower() == ".env"
+            for part in path.relative_to(TEST_DATA_DIR).parts
+        )
     ]
     structured_content = {"files": files}
 
@@ -267,7 +273,7 @@ def resolve_lab_path(raw_path: str) -> Path:
     if ".." in normalized_parts:
         raise ToolExecutionError("Path traversal is not allowed.")
 
-    if ".env" in normalized_parts:
+    if any(part.lower() == ".env" for part in normalized_parts):
         raise ToolExecutionError("Reading .env files is not allowed.")
 
     resolved_path = (TEST_DATA_DIR / candidate).resolve()

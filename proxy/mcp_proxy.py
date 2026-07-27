@@ -1,4 +1,8 @@
+from pathlib import Path
+import sys
 from typing import Any
+
+from pydantic import ValidationError
 
 from proxy.backend_client import BackendClient, BackendClientError
 from proxy.http_mcp_client import (
@@ -12,9 +16,84 @@ from proxy.runtime_logger import (
     send_runtime_log,
     summarize_tool_result,
 )
+from proxy.tool_request_preparation import (
+    PreparedToolRequest,
+    prepare_tool_request,
+)
+
+try:
+    from app.schemas.policy_decision import PolicyDecision, PolicyEffect
+except ModuleNotFoundError:
+    backend_path = Path(__file__).resolve().parents[1] / "backend"
+    sys.path.insert(0, str(backend_path))
+    from app.schemas.policy_decision import PolicyDecision, PolicyEffect
 
 
-EXECUTING_DECISIONS = {"ALLOW", "WARN", "LOG_ONLY"}
+SUPPORTED_RUNTIME_OBLIGATIONS = {"LOG", "WARN"}
+VALID_POLICY_EFFECTS = {"ALLOW", "DENY", "DEFER"}
+
+
+def _can_execute_policy_decision(decision: PolicyDecision) -> tuple[bool, str | None]:
+    if not isinstance(decision, PolicyDecision):
+        raise TypeError("_can_execute_policy_decision requires a PolicyDecision.")
+
+    if decision.effect == PolicyEffect.DENY:
+        return False, "policy_denied"
+
+    if decision.effect == PolicyEffect.DEFER:
+        return False, "policy_deferred"
+
+    if decision.effect != PolicyEffect.ALLOW:
+        return False, "invalid_policy_effect"
+
+    obligation_types = {obligation.type.value for obligation in decision.obligations}
+
+    unsupported_obligations = obligation_types - SUPPORTED_RUNTIME_OBLIGATIONS
+    if unsupported_obligations:
+        return False, "unsupported_policy_obligation"
+
+    return True, None
+
+
+def _validate_policy_decision(
+    raw_decision: Any,
+) -> tuple[PolicyDecision | None, str | None]:
+    if not isinstance(raw_decision, dict):
+        return None, "invalid_policy_decision"
+
+    if "effect" not in raw_decision:
+        return None, "missing_policy_effect"
+
+    effect = raw_decision.get("effect")
+    if effect not in VALID_POLICY_EFFECTS:
+        return None, "invalid_policy_effect"
+
+    try:
+        validated = PolicyDecision.model_validate(raw_decision)
+    except ValidationError as exc:
+        return None, _classify_policy_validation_error(exc)
+
+    return validated, None
+
+
+def _classify_policy_validation_error(exc: ValidationError) -> str:
+    for error in exc.errors():
+        location = tuple(str(part) for part in error.get("loc", ()))
+        message = str(error.get("msg", ""))
+
+        if any(part == "obligations" for part in location):
+            return "invalid_policy_obligation"
+
+        if "obligation" in message:
+            return "invalid_policy_obligation"
+
+        if "effect is not coherent" in message:
+            return "inconsistent_policy_decision"
+
+        if "rule_id must be present" in message:
+            return "inconsistent_policy_decision"
+
+    return "invalid_policy_decision"
 
 
 class MCPProxy:
@@ -27,13 +106,32 @@ class MCPProxy:
         self.mcp_client_class = mcp_client_class
 
     def handle_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+        raw_arguments = tool_call.get("arguments", {})
+        if raw_arguments is None:
+            raw_arguments = {}
+
         tool_call = {
-            "agent_id": tool_call.get("agent_id", "agent-demo"),
-            "session_id": tool_call.get("session_id", "session-demo"),
-            "tool_name": tool_call.get("tool_name"),
-            "arguments": tool_call.get("arguments") or {},
             **tool_call,
+            "tool_name": tool_call.get("tool_name"),
+            "arguments": raw_arguments,
         }
+
+        if not tool_call.get("agent_id") or not tool_call.get("session_id"):
+            decision = _fail_closed_proxy_decision(
+                rule_id="invalid_runtime_identity",
+                reason="Tool call is missing required agent_id or session_id.",
+            )
+            return self._response(
+                status="blocked",
+                decision=decision.model_dump(mode="json"),
+                executed=False,
+                mcp_called=False,
+                execution_status="blocked",
+                tool_result=None,
+                runtime_log={"created": False, "id": None, "payload": None},
+                message="Tool call skipped because runtime identity is incomplete.",
+                skip_reason="invalid_runtime_identity",
+            )
 
         try:
             server = self._resolve_server(tool_call)
@@ -41,69 +139,128 @@ class MCPProxy:
         except BackendClientError as exc:
             return self._inventory_error_response(tool_call, str(exc))
 
-        context = self._build_policy_context(tool_call, server, tool)
+        try:
+            prepared_request = prepare_tool_request(
+                tool_name=str(tool.get("name") or tool_call.get("tool_name") or ""),
+                raw_arguments=raw_arguments,
+                input_schema=tool.get("input_schema"),
+            )
+        except Exception:
+            decision = _fail_closed_proxy_decision(
+                rule_id="request_preparation_error",
+                reason="Tool request could not be safely prepared.",
+                severity="critical",
+            )
+            decision_data = decision.model_dump(mode="json")
+            safe_tool_call = self._prepared_tool_call(
+                tool_call,
+                PreparedToolRequest(
+                    arguments={},
+                    arguments_valid=False,
+                    validation_error_codes=("request_preparation_error",),
+                    operation="unknown",
+                    resource_type="unknown",
+                    resource_scope="invalid",
+                    canonical_resource=None,
+                    required_capability="unclassified",
+                ),
+            )
+            return self._skip_response(
+                tool_call=safe_tool_call,
+                server_id=server["id"],
+                decision=decision_data,
+                status="blocked",
+                execution_status="blocked",
+                message="Tool call skipped because request preparation failed.",
+                error_summary="request_preparation_error",
+                skip_reason="request_preparation_error",
+            )
+
+        prepared_tool_call = self._prepared_tool_call(tool_call, prepared_request)
+        context = self._build_policy_context(
+            prepared_tool_call,
+            server,
+            tool,
+            prepared_request,
+        )
 
         try:
-            decision = self.backend_client.request_policy_decision(context)
+            raw_decision = self.backend_client.request_policy_decision(context)
         except BackendClientError as exc:
-            decision = {
-                "decision": "BLOCK",
-                "rule_id": "policy_error",
-                "reason": f"Policy decision failed: {exc}",
-                "severity": "high",
-            }
+            decision = _fail_closed_proxy_decision(
+                rule_id="policy_error",
+                reason=f"Policy decision failed: {exc}",
+            )
+            decision_data = decision.model_dump(mode="json")
             return self._skip_response(
-                tool_call=tool_call,
+                tool_call=prepared_tool_call,
                 server_id=server["id"],
-                decision=decision,
+                decision=decision_data,
                 status="blocked",
-                execution_status="policy_error",
+                execution_status="blocked",
                 message="Tool call skipped because policy evaluation failed.",
+                error_summary="policy_error",
+                skip_reason="policy_error",
             )
 
-        decision_value = decision.get("decision", "LOG_ONLY")
-
-        if decision_value == "BLOCK":
+        decision, validation_error = _validate_policy_decision(raw_decision)
+        if validation_error is not None:
+            decision = _fail_closed_proxy_decision(
+                rule_id=validation_error,
+                reason="Policy decision response is invalid.",
+            )
+            decision_data = decision.model_dump(mode="json")
             return self._skip_response(
-                tool_call=tool_call,
+                tool_call=prepared_tool_call,
                 server_id=server["id"],
-                decision=decision,
+                decision=decision_data,
                 status="blocked",
-                execution_status="skipped",
-                message="Tool call blocked before MCP execution.",
+                execution_status="blocked",
+                message=f"Tool call skipped because policy decision is invalid: {validation_error}.",
+                error_summary=validation_error,
+                skip_reason=validation_error,
             )
 
-        if decision_value == "ASK_APPROVAL":
-            return self._skip_response(
-                tool_call=tool_call,
-                server_id=server["id"],
-                decision=decision,
-                status="approval_required",
-                execution_status="skipped",
-                message="Tool call requires human approval and was not executed.",
+        if not prepared_request.arguments_valid and decision.effect != PolicyEffect.DENY:
+            decision = _fail_closed_proxy_decision(
+                rule_id="invalid_tool_arguments_guard",
+                reason="Tool arguments are invalid or could not be safely prepared.",
+                severity="high",
+                evidence={
+                    "arguments_valid": False,
+                    "validation_error_codes": list(
+                        prepared_request.validation_error_codes
+                    ),
+                },
+                policy_revision="proxy-safety-guard-v1",
             )
-
-        if decision_value == "LIMIT":
+            policy_decision_data = decision.model_dump(mode="json")
             return self._skip_response(
-                tool_call=tool_call,
+                tool_call=prepared_tool_call,
                 server_id=server["id"],
-                decision=decision,
-                status="limited",
-                execution_status="skipped",
-                message="Tool call limited and skipped in this Phase 2 runtime.",
-            )
-
-        if decision_value not in EXECUTING_DECISIONS:
-            return self._skip_response(
-                tool_call=tool_call,
-                server_id=server["id"],
-                decision=decision,
+                decision=policy_decision_data,
                 status="blocked",
-                execution_status="policy_error",
-                message=f"Unsupported policy decision: {decision_value}",
+                execution_status="blocked",
+                message="Tool call skipped because tool arguments are invalid.",
+                error_summary="invalid_tool_arguments",
+                skip_reason="invalid_tool_arguments",
             )
 
-        return self._execute_tool_call(tool_call, server, decision)
+        can_execute, skip_reason = _can_execute_policy_decision(decision)
+        policy_decision_data = decision.model_dump(mode="json")
+        if not can_execute:
+            return self._skip_response(
+                tool_call=prepared_tool_call,
+                server_id=server["id"],
+                decision=policy_decision_data,
+                status=self._status_for_skipped_policy_decision(decision),
+                execution_status=self._execution_status_for_skip_reason(skip_reason),
+                message=f"Tool call skipped by policy: {skip_reason}.",
+                error_summary=skip_reason,
+                skip_reason=skip_reason,
+            )
+
+        return self._execute_tool_call(prepared_tool_call, server, policy_decision_data)
 
     def _resolve_server(self, tool_call: dict[str, Any]) -> dict[str, Any]:
         raw_server_id = tool_call.get("server_id")
@@ -153,23 +310,65 @@ class MCPProxy:
         tool_call: dict[str, Any],
         server: dict[str, Any],
         tool: dict[str, Any],
+        prepared_request: PreparedToolRequest,
     ) -> dict[str, Any]:
         trust_status = server.get("trust_status") or server.get("status") or "unknown"
 
         return {
-            "agent_id": tool_call.get("agent_id"),
-            "session_id": tool_call.get("session_id"),
-            "server_id": server.get("id"),
-            "server_endpoint": server.get("endpoint"),
-            "server_status": trust_status,
-            "trust_status": trust_status,
-            "server_security_status": server.get("security_status"),
-            "tool_name": tool.get("name") or tool_call.get("tool_name"),
-            "tool_risk_score": tool.get("risk_score", 0),
-            "tool_sensitivity": tool.get("sensitivity", "unknown"),
-            "arguments": tool_call.get("arguments") or {},
-            "estimated_output_size_mb": tool_call.get("estimated_output_size_mb", 0.001),
+            "subject": {
+                "agent_id": tool_call["agent_id"],
+                "role": "unknown",
+                "authorization_status": "unknown",
+                "authorization_revision": "unresolved",
+                "grants": [],
+                "allowed_capabilities": [],
+                "allowed_scopes": [],
+            },
+            "server": {
+                "id": server.get("id"),
+                "endpoint": server.get("endpoint"),
+                "trust_status": trust_status,
+                "security_status": server.get("security_status"),
+            },
+            "tool": {
+                "id": tool.get("id"),
+                "name": tool.get("name") or tool_call.get("tool_name"),
+                "risk_score": tool.get("risk_score", 0.0),
+                "sensitivity": tool.get("sensitivity") or "unknown",
+                "capabilities": tool.get("capabilities") or [],
+                "admission_status": tool.get("admission_status", "unknown"),
+                "description_risk_score": tool.get("description_risk_score", 0.0),
+                "capability_mismatch": tool.get("capability_mismatch", False),
+                "drift_status": tool.get("drift_status") or "unknown",
+            },
+            "request": {
+                "operation": prepared_request.operation,
+                "resource_type": prepared_request.resource_type,
+                "resource_scope": prepared_request.resource_scope,
+                "required_capability": prepared_request.required_capability,
+                "canonical_resource": prepared_request.canonical_resource,
+                "arguments": prepared_request.arguments,
+                "arguments_valid": prepared_request.arguments_valid,
+                "validation_error_codes": list(
+                    prepared_request.validation_error_codes
+                ),
+                "estimated_output_size_mb": tool_call.get("estimated_output_size_mb", 0.001),
+            },
+            "runtime": {
+                "environment": tool_call.get("environment", "local"),
+                "session_id": tool_call["session_id"],
+            },
         }
+
+    def _status_for_skipped_policy_decision(self, decision: PolicyDecision) -> str:
+        if decision.effect == PolicyEffect.DEFER:
+            return "approval_required"
+        return "blocked"
+
+    def _execution_status_for_skip_reason(self, skip_reason: str | None) -> str:
+        if skip_reason == "policy_deferred":
+            return "approval_required"
+        return "blocked"
 
     def _execute_tool_call(
         self,
@@ -242,6 +441,8 @@ class MCPProxy:
         status: str,
         execution_status: str,
         message: str,
+        error_summary: str | None = None,
+        skip_reason: str | None = None,
     ) -> dict[str, Any]:
         log_payload = build_runtime_log(
             tool_call,
@@ -249,6 +450,7 @@ class MCPProxy:
             server_id=server_id,
             executed=False,
             execution_status=execution_status,
+            error_summary=error_summary,
             status=status,
         )
         runtime_log = self._send_runtime_log(log_payload)
@@ -262,6 +464,7 @@ class MCPProxy:
             tool_result=None,
             runtime_log=runtime_log,
             message=message,
+            skip_reason=skip_reason,
         )
 
     def _inventory_error_response(
@@ -269,18 +472,17 @@ class MCPProxy:
         tool_call: dict[str, Any],
         error_summary: str,
     ) -> dict[str, Any]:
-        decision = {
-            "decision": "BLOCK",
-            "rule_id": "inventory_error",
-            "reason": error_summary,
-            "severity": "high",
-        }
+        decision = _fail_closed_proxy_decision(
+            rule_id="inventory_error",
+            reason=error_summary,
+        )
+        decision_data = decision.model_dump(mode="json")
         log_payload = build_runtime_log(
             tool_call,
-            decision,
+            decision_data,
             server_id=None,
             executed=False,
-            execution_status="inventory_error",
+            execution_status="blocked",
             error_summary=error_summary,
             status="blocked",
         )
@@ -288,13 +490,14 @@ class MCPProxy:
 
         return self._response(
             status="blocked",
-            decision=decision,
+            decision=decision_data,
             executed=False,
             mcp_called=False,
-            execution_status="inventory_error",
+            execution_status="blocked",
             tool_result=None,
             runtime_log=runtime_log,
             message="Tool call skipped because inventory resolution failed.",
+            skip_reason="inventory_error",
         )
 
     def _execution_error_response(
@@ -327,6 +530,7 @@ class MCPProxy:
             tool_result=None,
             runtime_log=runtime_log,
             message=error_summary,
+            skip_reason=None,
         )
 
     def _send_runtime_log(self, log_payload: dict[str, Any]) -> dict[str, Any]:
@@ -357,6 +561,7 @@ class MCPProxy:
         tool_result: dict[str, Any] | None,
         runtime_log: dict[str, Any],
         message: str,
+        skip_reason: str | None = None,
     ) -> dict[str, Any]:
         return {
             "status": status,
@@ -372,4 +577,50 @@ class MCPProxy:
             "runtime_log_id": runtime_log.get("id"),
             "runtime_log": runtime_log.get("payload"),
             "message": message,
+            "skip_reason": skip_reason,
         }
+
+    def _prepared_tool_call(
+        self,
+        tool_call: dict[str, Any],
+        prepared_request: PreparedToolRequest,
+    ) -> dict[str, Any]:
+        prepared_tool_call = dict(tool_call)
+        prepared_tool_call["arguments"] = prepared_request.arguments
+        prepared_tool_call["arguments_valid"] = prepared_request.arguments_valid
+        prepared_tool_call["validation_error_codes"] = list(
+            prepared_request.validation_error_codes
+        )
+        prepared_tool_call["operation"] = prepared_request.operation
+        prepared_tool_call["resource_type"] = prepared_request.resource_type
+        prepared_tool_call["resource_scope"] = prepared_request.resource_scope
+        prepared_tool_call["required_capability"] = prepared_request.required_capability
+        prepared_tool_call["canonical_resource"] = prepared_request.canonical_resource
+        return prepared_tool_call
+
+
+def _fail_closed_proxy_decision(
+    *,
+    rule_id: str,
+    reason: str,
+    severity: str = "critical",
+    evidence: dict[str, Any] | None = None,
+    recommended_action: str | None = None,
+    policy_revision: str = "proxy-fail-closed-v1",
+) -> PolicyDecision:
+    raw_decision = {
+        "effect": "DENY",
+        "obligations": [
+            {"type": "LOG", "parameters": {}},
+            {"type": "ALERT", "parameters": {}},
+        ],
+        "rule_ids": [rule_id],
+        "reason": reason,
+        "severity": severity,
+        "evidence": evidence or {},
+        "recommended_action": recommended_action,
+        "policy_revision": policy_revision,
+        "decision": "BLOCK",
+        "rule_id": rule_id,
+    }
+    return PolicyDecision.model_validate(raw_decision)

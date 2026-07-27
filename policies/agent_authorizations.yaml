@@ -1,0 +1,40 @@
+revision: subject-authorizations-v1
+
+subjects:
+  agent-demo:
+    role: legal_agent
+    grants:
+      - capability: filesystem.read
+        scopes:
+          - contracts
+      - capability: filesystem.list
+        scopes:
+          - lab_root
+
+  llm-agent-demo:
+    role: legal_agent
+    grants:
+      - capability: filesystem.read
+        scopes:
+          - contracts
+      - capability: filesystem.list
+        scopes:
+          - lab_root
+
+  agent-contract-reader:
+    role: contract_reader
+    grants:
+      - capability: filesystem.read
+        scopes:
+          - contracts
+
+  agent-list-only:
+    role: file_lister
+    grants:
+      - capability: filesystem.list
+        scopes:
+          - lab_root
+
+  agent-no-access:
+    role: restricted
+    grants: []
