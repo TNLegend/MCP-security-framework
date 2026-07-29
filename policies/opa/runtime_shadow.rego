@@ -33,6 +33,20 @@ authorization_status := value if {
 	is_string(value)
 }
 
+default identity_status := "unverified"
+
+identity_status := value if {
+	value := object.get(subject_object, "identity_status", "unverified")
+	is_string(value)
+}
+
+default session_status := "unknown"
+
+session_status := value if {
+	value := object.get(subject_object, "session_status", "unknown")
+	is_string(value)
+}
+
 raw_subject_grants := object.get(subject_object, "grants", [])
 
 default subject_grants := []
@@ -92,6 +106,27 @@ canonical_resource := value if {
 
 canonical_resource_lower := lower(canonical_resource)
 
+default resource_resolution_status := "unknown"
+
+resource_resolution_status := value if {
+	value := object.get(request_object, "resource_resolution_status", "unknown")
+	is_string(value)
+}
+
+default resource_sensitivity := "unknown"
+
+resource_sensitivity := value if {
+	value := object.get(request_object, "resource_sensitivity", "unknown")
+	is_string(value)
+}
+
+default operation_allowed_on_scope := false
+
+operation_allowed_on_scope := value if {
+	value := object.get(request_object, "operation_allowed_on_scope", false)
+	is_boolean(value)
+}
+
 default estimated_output_size_mb := 0
 
 estimated_output_size_mb := value if {
@@ -141,6 +176,13 @@ sensitivity := value if {
 	is_string(value)
 }
 
+default tool_profile_status := "unknown"
+
+tool_profile_status := value if {
+	value := object.get(tool_object, "profile_status", "unknown")
+	is_string(value)
+}
+
 default decision := {
 	"effect": "ALLOW",
 	"obligations": [{"type": "LOG", "parameters": {}}],
@@ -170,45 +212,122 @@ rule_candidates contains {
 
 rule_candidates contains {
 	"precedence": 899,
+	"decision": deny_unverified_identity_decision,
+} if {
+	identity_status == "unverified"
+}
+
+rule_candidates contains {
+	"precedence": 898,
+	"decision": deny_invalid_or_expired_session_decision,
+} if {
+	session_status != "active"
+}
+
+rule_candidates contains {
+	"precedence": 897,
 	"decision": deny_invalid_arguments_decision,
 } if {
 	not arguments_valid
 }
 
 rule_candidates contains {
-	"precedence": 898,
+	"precedence": 896,
 	"decision": deny_unknown_subject_decision,
 } if {
 	authorization_status == "unknown"
 }
 
 rule_candidates contains {
-	"precedence": 897,
+	"precedence": 895,
+	"decision": deny_unknown_tool_security_profile_decision,
+} if {
+	tool_profile_status in {"unknown", "unavailable", "missing"}
+}
+
+rule_candidates contains {
+	"precedence": 894,
+	"decision": deny_tool_security_profile_drift_decision,
+} if {
+	tool_profile_status == "drift"
+}
+
+rule_candidates contains {
+	"precedence": 893,
+	"decision": deny_resource_resolution_failed_decision,
+} if {
+	resource_resolution_status in {
+		"invalid_arguments",
+		"resource_not_found",
+		"resource_type_mismatch",
+		"resource_resolution_failed",
+		"path_null_byte",
+		"path_control_character",
+		"path_too_long",
+		"path_too_many_segments",
+		"path_unc",
+		"path_device",
+		"path_ntfs_ads",
+		"path_reserved_name",
+		"path_traversal_outside_root",
+	}
+}
+
+rule_candidates contains {
+	"precedence": 892,
+	"decision": deny_resource_outside_registered_scope_decision,
+} if {
+	resource_resolution_status == "resource_outside_registered_scope"
+}
+
+rule_candidates contains {
+	"precedence": 891,
+	"decision": deny_ambiguous_resource_scope_decision,
+} if {
+	resource_resolution_status == "ambiguous_resource_scope"
+}
+
+rule_candidates contains {
+	"precedence": 890,
+	"decision": deny_sensitive_resource_decision,
+} if {
+	resource_sensitivity == "secret"
+}
+
+rule_candidates contains {
+	"precedence": 889,
 	"decision": deny_sensitive_paths_decision,
 } if {
 	is_sensitive_path
 }
 
 rule_candidates contains {
-	"precedence": 896,
+	"precedence": 888,
 	"decision": deny_unclassified_capability_decision,
 } if {
 	required_capability == "unclassified"
 }
 
 rule_candidates contains {
-	"precedence": 895,
+	"precedence": 887,
 	"decision": deny_capability_not_granted_decision,
 } if {
 	not subject_has_required_capability
 }
 
 rule_candidates contains {
-	"precedence": 894,
+	"precedence": 886,
 	"decision": deny_scope_not_granted_decision,
 } if {
 	subject_has_required_capability
 	not subject_has_required_capability_scope
+}
+
+rule_candidates contains {
+	"precedence": 885,
+	"decision": deny_operation_not_allowed_on_scope_decision,
+} if {
+	not operation_allowed_on_scope
 }
 
 rule_candidates contains {
@@ -253,6 +372,16 @@ is_contract_read if {
 	startswith(canonical_resource, "contracts/")
 }
 
+is_contract_read if {
+	tool_name == "read_file"
+	startswith(canonical_resource, "fs.project_workspace:/contracts/")
+}
+
+is_contract_read if {
+	tool_name == "read_file"
+	startswith(canonical_resource, "fs.legal_contracts:/")
+}
+
 is_high_risk_tool if {
 	risk_score >= 70
 }
@@ -286,10 +415,83 @@ deny_invalid_arguments_decision := deny_decision(
 	"Tool arguments failed schema validation.",
 )
 
+deny_unverified_identity_decision := {
+	"effect": "DENY",
+	"obligations": [
+		{"type": "LOG", "parameters": {}},
+		{"type": "ALERT", "parameters": {}},
+	],
+	"rule_ids": ["deny_unverified_identity"],
+	"reason": "Trusted agent identity is required.",
+	"severity": "critical",
+	"evidence": {},
+	"recommended_action": null,
+	"policy_revision": policy_revision,
+	"decision": "BLOCK",
+	"rule_id": "deny_unverified_identity",
+}
+
+deny_invalid_or_expired_session_decision := {
+	"effect": "DENY",
+	"obligations": [
+		{"type": "LOG", "parameters": {}},
+		{"type": "ALERT", "parameters": {}},
+	],
+	"rule_ids": ["deny_invalid_or_expired_session"],
+	"reason": "Trusted runtime session is invalid or expired.",
+	"severity": "critical",
+	"evidence": {},
+	"recommended_action": null,
+	"policy_revision": policy_revision,
+	"decision": "BLOCK",
+	"rule_id": "deny_invalid_or_expired_session",
+}
+
 deny_unknown_subject_decision := deny_decision(
 	"deny_unknown_subject",
 	"Subject authorization is unknown.",
 )
+
+deny_unknown_tool_security_profile_decision := deny_decision(
+	"deny_unknown_tool_security_profile",
+	"Tool security profile is unknown.",
+)
+
+deny_tool_security_profile_drift_decision := deny_decision(
+	"deny_tool_security_profile_drift",
+	"Tool security profile drift was detected.",
+)
+
+deny_resource_resolution_failed_decision := deny_decision(
+	"deny_resource_resolution_failed",
+	"Resource could not be resolved safely.",
+)
+
+deny_resource_outside_registered_scope_decision := deny_decision(
+	"deny_resource_outside_registered_scope",
+	"Resource is outside registered scopes.",
+)
+
+deny_ambiguous_resource_scope_decision := deny_decision(
+	"deny_ambiguous_resource_scope",
+	"Resource scope is ambiguous.",
+)
+
+deny_sensitive_resource_decision := {
+	"effect": "DENY",
+	"obligations": [
+		{"type": "LOG", "parameters": {}},
+		{"type": "ALERT", "parameters": {}},
+	],
+	"rule_ids": ["deny_sensitive_resource"],
+	"reason": "Sensitive resource access is forbidden.",
+	"severity": "critical",
+	"evidence": {},
+	"recommended_action": null,
+	"policy_revision": policy_revision,
+	"decision": "BLOCK",
+	"rule_id": "deny_sensitive_resource",
+}
 
 deny_sensitive_paths_decision := deny_decision(
 	"deny_sensitive_paths",
@@ -309,6 +511,11 @@ deny_capability_not_granted_decision := deny_decision(
 deny_scope_not_granted_decision := deny_decision(
 	"deny_scope_not_granted",
 	"The requested resource scope is not granted for the required capability.",
+)
+
+deny_operation_not_allowed_on_scope_decision := deny_decision(
+	"deny_operation_not_allowed_on_scope",
+	"The requested operation is not allowed on the resource scope.",
 )
 
 allow_contracts_read_decision := {

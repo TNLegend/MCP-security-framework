@@ -48,12 +48,42 @@ PHASE2_INVENTORY_COLUMNS = {
     ],
 }
 
+IDENTITY_REPLAY_INDEXES = [
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS "
+        "uq_identity_assertion_replay_issuer_jti_hash "
+        "ON identity_assertion_replays (issuer, jti_hash)"
+    ),
+]
+
+TRUSTED_SESSION_INDEXES = [
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS "
+        "uq_trusted_agent_sessions_session_reference "
+        "ON trusted_agent_sessions (session_reference)"
+    ),
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS "
+        "uq_trusted_agent_sessions_token_hash "
+        "ON trusted_agent_sessions (token_hash)"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS "
+        "ix_trusted_agent_sessions_agent_active "
+        "ON trusted_agent_sessions (agent_id, expires_at, revoked_at)"
+    ),
+]
+
 
 def ensure_phase2_inventory_columns() -> None:
     with engine.begin() as connection:
         for table_name, column_definitions in PHASE2_INVENTORY_COLUMNS.items():
             for column_definition in column_definitions:
                 connection.execute(text(f"ALTER TABLE {table_name} {column_definition}"))
+        for statement in IDENTITY_REPLAY_INDEXES:
+            connection.execute(text(statement))
+        for statement in TRUSTED_SESSION_INDEXES:
+            connection.execute(text(statement))
 
 
 def init_db() -> None:

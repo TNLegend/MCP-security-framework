@@ -17,10 +17,45 @@ DECISION_PRIORITY = {
     "LOG_ONLY": 10,
 }
 
+RULE_PRIORITY = {
+    "block_unknown_server": 900,
+    "deny_unverified_identity": 899,
+    "deny_invalid_or_expired_session": 898,
+    "deny_invalid_arguments": 897,
+    "deny_unknown_subject": 896,
+    "deny_unknown_tool_security_profile": 895,
+    "deny_tool_security_profile_drift": 894,
+    "deny_resource_resolution_failed": 893,
+    "deny_resource_outside_registered_scope": 892,
+    "deny_ambiguous_resource_scope": 891,
+    "deny_sensitive_resource": 890,
+    "deny_sensitive_paths": 889,
+    "deny_unclassified_capability": 888,
+    "deny_capability_not_granted": 887,
+    "deny_scope_not_granted": 886,
+    "deny_operation_not_allowed_on_scope": 885,
+    "require_approval_for_sensitive_tool": 600,
+    "limit_large_outputs": 500,
+    "warn_high_risk_tool": 400,
+    "allow_contracts_read": 300,
+    "log_normal_runtime_call": 100,
+}
+
 DEFAULT_REASONS = {
     "block_unknown_server": "MCP server is unknown or blocked.",
     "deny_invalid_arguments": "Tool arguments failed schema validation.",
+    "deny_unverified_identity": "Trusted agent identity is required.",
+    "deny_invalid_or_expired_session": "Trusted runtime session is invalid or expired.",
     "deny_unknown_subject": "Subject authorization is unknown.",
+    "deny_unknown_tool_security_profile": "Tool security profile is unknown.",
+    "deny_tool_security_profile_drift": "Tool security profile drift was detected.",
+    "deny_resource_resolution_failed": "Resource could not be resolved safely.",
+    "deny_resource_outside_registered_scope": "Resource is outside registered scopes.",
+    "deny_ambiguous_resource_scope": "Resource scope is ambiguous.",
+    "deny_sensitive_resource": "Sensitive resource access is forbidden.",
+    "deny_operation_not_allowed_on_scope": (
+        "The requested operation is not allowed on the resource scope."
+    ),
     "deny_sensitive_paths": "Access to sensitive path is forbidden.",
     "deny_unclassified_capability": "The request capability is not classified.",
     "deny_capability_not_granted": (
@@ -104,8 +139,24 @@ def _to_legacy_policy_context(context: dict[str, Any]) -> dict[str, Any]:
             "tool_name": context["tool"]["name"],
             "tool_risk_score": context["tool"]["risk_score"],
             "tool_sensitivity": context["tool"]["sensitivity"],
+            "tool_profile_status": context["tool"].get("profile_status", "unknown"),
+            "tool_profile_revision": context["tool"].get("profile_revision", "unknown"),
             "authorization_status": context["subject"].get(
                 "authorization_status",
+                "unknown",
+            ),
+            "identity_status": context["subject"].get(
+                "identity_status",
+                "unverified",
+            ),
+            "identity_issuer": context["subject"].get("identity_issuer", "unknown"),
+            "identity_binding_revision": context["subject"].get(
+                "identity_binding_revision",
+                "unknown",
+            ),
+            "session_status": context["subject"].get("session_status", "unknown"),
+            "session_reference": context["subject"].get(
+                "session_reference",
                 "unknown",
             ),
             "authorization_revision": context["subject"].get(
@@ -120,8 +171,27 @@ def _to_legacy_policy_context(context: dict[str, Any]) -> dict[str, Any]:
             "validation_error_codes": request.get("validation_error_codes", []),
             "canonical_resource": canonical_resource,
             "operation": request.get("operation", "unknown"),
+            "resource_adapter": request.get("resource_adapter", "unknown"),
             "resource_type": request.get("resource_type", "unknown"),
             "resource_scope": request.get("resource_scope", "unknown"),
+            "resource_sensitivity": request.get("resource_sensitivity", "unknown"),
+            "resource_resolution_status": request.get(
+                "resource_resolution_status",
+                "unknown",
+            ),
+            "resource_flags": request.get("resource_flags", []),
+            "operation_allowed_on_scope": request.get(
+                "operation_allowed_on_scope",
+                False,
+            ),
+            "resource_registry_revision": request.get(
+                "resource_registry_revision",
+                "unknown",
+            ),
+            "tool_profile_revision": request.get(
+                "tool_profile_revision",
+                "unknown",
+            ),
             "required_capability": request.get(
                 "required_capability",
                 "unclassified",
@@ -189,7 +259,10 @@ class PolicyEngine:
 
         selected_rule = max(
             matching_rules,
-            key=lambda rule: DECISION_PRIORITY.get(rule.get("decision", "LOG_ONLY"), 0),
+            key=lambda rule: (
+                RULE_PRIORITY.get(rule.get("id", ""), 0),
+                DECISION_PRIORITY.get(rule.get("decision", "LOG_ONLY"), 0),
+            ),
         )
         return _to_policy_decision(self._build_decision(selected_rule))
 
@@ -221,8 +294,32 @@ class PolicyEngine:
         if "arguments_valid" in match:
             return context.get("arguments_valid") is match["arguments_valid"]
 
+        if "identity_status" in match:
+            return context.get("identity_status") in match["identity_status"]
+
+        if "session_status" in match:
+            return context.get("session_status") in match["session_status"]
+
         if "authorization_status" in match:
             return context.get("authorization_status") in match["authorization_status"]
+
+        if "tool_profile_status" in match:
+            return context.get("tool_profile_status") in match["tool_profile_status"]
+
+        if "resource_resolution_status" in match:
+            return (
+                context.get("resource_resolution_status")
+                in match["resource_resolution_status"]
+            )
+
+        if "resource_sensitivity" in match:
+            return context.get("resource_sensitivity") in match["resource_sensitivity"]
+
+        if "operation_allowed_on_scope" in match:
+            return (
+                context.get("operation_allowed_on_scope")
+                is match["operation_allowed_on_scope"]
+            )
 
         if "contains" in match:
             argument_value = self._get_argument_value(context, match.get("argument"))

@@ -4,12 +4,17 @@ import data.mcp.security.runtime
 import rego.v1
 
 default_grants := [
-	{"capability": "filesystem.read", "scopes": ["contracts", "sensitive"]},
-	{"capability": "filesystem.list", "scopes": ["lab_root", "contracts"]},
+	{"capability": "filesystem.read", "scopes": ["fs.project_workspace"]},
+	{"capability": "filesystem.list", "scopes": ["fs.project_workspace"]},
 ]
 
 resolved_subject := {
 	"agent_id": "agent-test",
+	"identity_status": "verified",
+	"identity_issuer": "https://issuer.example/",
+	"identity_binding_revision": "test-bindings-v1",
+	"session_status": "active",
+	"session_reference": "session-test",
 	"role": "legal_agent",
 	"authorization_status": "resolved",
 	"authorization_revision": "test-authorization-v1",
@@ -20,6 +25,26 @@ resolved_subject := {
 
 unknown_subject := {
 	"agent_id": "unknown-agent",
+	"identity_status": "verified",
+	"identity_issuer": "https://issuer.example/",
+	"identity_binding_revision": "test-bindings-v1",
+	"session_status": "active",
+	"session_reference": "session-test",
+	"role": "unknown",
+	"authorization_status": "unknown",
+	"authorization_revision": "test-authorization-v1",
+	"grants": [],
+	"allowed_capabilities": [],
+	"allowed_scopes": [],
+}
+
+unverified_subject := {
+	"agent_id": "agent-test",
+	"identity_status": "unverified",
+	"identity_issuer": "unknown",
+	"identity_binding_revision": "unknown",
+	"session_status": "active",
+	"session_reference": "session-test",
 	"role": "unknown",
 	"authorization_status": "unknown",
 	"authorization_revision": "test-authorization-v1",
@@ -42,6 +67,9 @@ runtime_input_full(trust_status, tool_name, risk_score, sensitivity, path, estim
 	"server": {
 		"id": 1,
 		"endpoint": "http://127.0.0.1:9000/mcp",
+		"server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
+		"known": true,
+		"trusted": true,
 		"trust_status": trust_status,
 		"security_status": "pending_analysis",
 	},
@@ -52,16 +80,25 @@ runtime_input_full(trust_status, tool_name, risk_score, sensitivity, path, estim
 		"sensitivity": sensitivity,
 		"capabilities": [],
 		"admission_status": "unknown",
+		"profile_status": "resolved",
+		"profile_revision": "tool-security-profiles-test-v1",
 		"description_risk_score": 0,
 		"capability_mismatch": false,
 		"drift_status": "unknown",
 	},
 	"request": {
-		"operation": "unknown",
-		"resource_type": "unknown",
+		"operation": operation_for(tool_name),
+		"resource_type": resource_type_for(tool_name),
 		"resource_scope": resource_scope_for(path),
 		"required_capability": required_capability_for(tool_name),
 		"canonical_resource": path,
+		"resource_adapter": "filesystem",
+		"resource_sensitivity": resource_sensitivity_for(path),
+		"resource_resolution_status": "resolved",
+		"resource_flags": [],
+		"resource_registry_revision": "resource-scopes-test-v1",
+		"tool_profile_revision": "tool-security-profiles-test-v1",
+		"operation_allowed_on_scope": true,
 		"arguments": {"path": path},
 		"arguments_valid": true,
 		"validation_error_codes": [],
@@ -78,6 +115,9 @@ runtime_input_with_arguments(tool_name, arguments) := {
 	"server": {
 		"id": 1,
 		"endpoint": "http://127.0.0.1:9000/mcp",
+		"server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
+		"known": true,
+		"trusted": true,
 		"trust_status": "lab_trusted",
 		"security_status": "pending_analysis",
 	},
@@ -88,16 +128,25 @@ runtime_input_with_arguments(tool_name, arguments) := {
 		"sensitivity": "medium",
 		"capabilities": [],
 		"admission_status": "unknown",
+		"profile_status": "resolved",
+		"profile_revision": "tool-security-profiles-test-v1",
 		"description_risk_score": 0,
 		"capability_mismatch": false,
 		"drift_status": "unknown",
 	},
 	"request": {
-		"operation": "unknown",
-		"resource_type": "unknown",
+		"operation": operation_for(tool_name),
+		"resource_type": resource_type_for(tool_name),
 		"resource_scope": resource_scope_for(object.get(arguments, "path", null)),
 		"required_capability": required_capability_for(tool_name),
 		"canonical_resource": object.get(arguments, "path", null),
+		"resource_adapter": "filesystem",
+		"resource_sensitivity": resource_sensitivity_for(object.get(arguments, "path", null)),
+		"resource_resolution_status": "resolved",
+		"resource_flags": [],
+		"resource_registry_revision": "resource-scopes-test-v1",
+		"tool_profile_revision": "tool-security-profiles-test-v1",
+		"operation_allowed_on_scope": true,
 		"arguments": arguments,
 		"arguments_valid": true,
 		"validation_error_codes": [],
@@ -114,6 +163,9 @@ runtime_input_with_request(tool_name, request) := {
 	"server": {
 		"id": 1,
 		"endpoint": "http://127.0.0.1:9000/mcp",
+		"server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
+		"known": true,
+		"trusted": true,
 		"trust_status": "lab_trusted",
 		"security_status": "pending_analysis",
 	},
@@ -124,6 +176,8 @@ runtime_input_with_request(tool_name, request) := {
 		"sensitivity": "medium",
 		"capabilities": [],
 		"admission_status": "unknown",
+		"profile_status": "resolved",
+		"profile_revision": "tool-security-profiles-test-v1",
 		"description_risk_score": 0,
 		"capability_mismatch": false,
 		"drift_status": "unknown",
@@ -152,16 +206,26 @@ runtime_input_with_tool(tool, path) := {
 	"server": {
 		"id": 1,
 		"endpoint": "http://127.0.0.1:9000/mcp",
+		"server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
+		"known": true,
+		"trusted": true,
 		"trust_status": "lab_trusted",
 		"security_status": "pending_analysis",
 	},
 	"tool": tool,
 	"request": {
-		"operation": "unknown",
-		"resource_type": "unknown",
+		"operation": operation_for(object.get(tool, "name", "")),
+		"resource_type": resource_type_for(object.get(tool, "name", "")),
 		"resource_scope": resource_scope_for(path),
 		"required_capability": required_capability_for(object.get(tool, "name", "")),
 		"canonical_resource": path,
+		"resource_adapter": "filesystem",
+		"resource_sensitivity": resource_sensitivity_for(path),
+		"resource_resolution_status": "resolved",
+		"resource_flags": [],
+		"resource_registry_revision": "resource-scopes-test-v1",
+		"tool_profile_revision": "tool-security-profiles-test-v1",
+		"operation_allowed_on_scope": true,
 		"arguments": {"path": path},
 		"arguments_valid": true,
 		"validation_error_codes": [],
@@ -179,14 +243,26 @@ required_capability_for(tool_name) := "filesystem.read" if {
 	tool_name == "list_files"
 } else := "unclassified"
 
-resource_scope_for(path) := "sensitive" if {
+operation_for(tool_name) := "read" if {
+	tool_name == "read_file"
+} else := "list" if {
+	tool_name == "list_files"
+} else := "unknown"
+
+resource_type_for(tool_name) := "filesystem.file" if {
+	tool_name == "read_file"
+} else := "filesystem.directory" if {
+	tool_name == "list_files"
+} else := "unknown"
+
+resource_scope_for(path) := "fs.project_workspace" if {
+	is_string(path)
+} else := "unknown"
+
+resource_sensitivity_for(path) := "secret" if {
 	is_test_sensitive_path(path)
-} else := "contracts" if {
+} else := "internal" if {
 	is_string(path)
-	startswith(path, "contracts/")
-} else := "lab_root" if {
-	is_string(path)
-	not startswith(path, "contracts/")
 } else := "unknown"
 
 is_test_sensitive_path(path) if {
@@ -226,51 +302,51 @@ test_blocked_server_blocks if {
 
 test_env_denied if {
 	d := runtime.decision with input as runtime_input("read_file", ".env")
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 	d.decision == "BLOCK"
 	d.effect == "DENY"
 }
 
 test_uppercase_env_denied if {
 	d := runtime.decision with input as runtime_input("read_file", ".ENV")
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 	d.decision == "BLOCK"
 	d.effect == "DENY"
 }
 
 test_uppercase_secrets_denied if {
 	d := runtime.decision with input as runtime_input("read_file", "SECRETS/api.txt")
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_uppercase_id_rsa_denied if {
 	d := runtime.decision with input as runtime_input("read_file", "folder/ID_RSA")
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_uppercase_aws_credentials_denied if {
 	d := runtime.decision with input as runtime_input("read_file", ".AWS/CREDENTIALS")
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_aws_credentials_denied if {
 	d := runtime.decision with input as runtime_input("read_file", ".aws/credentials")
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_etc_passwd_denied if {
 	d := runtime.decision with input as runtime_input("read_file", "/etc/passwd")
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_id_rsa_denied if {
 	d := runtime.decision with input as runtime_input("read_file", "keys/id_rsa.backup")
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_secrets_denied if {
 	d := runtime.decision with input as runtime_input("read_file", "data/secrets/config.json")
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_contract_read_allowed if {
@@ -282,7 +358,7 @@ test_contract_read_allowed if {
 }
 
 test_uppercase_contract_prefix_is_not_allowed_by_contract_rule if {
-	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.read", "scopes": ["lab_root"]}]})
+	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.read", "scopes": ["fs.project_workspace"]}]})
 	input_value := object.union(runtime_input("read_file", "CONTRACTS/contract1.txt"), {"subject": subject})
 	d := runtime.decision with input as input_value
 	d.rule_id == "log_normal_runtime_call"
@@ -374,22 +450,22 @@ test_priority_unknown_server_beats_all_lower_rules if {
 
 test_priority_sensitive_path_beats_high_sensitivity if {
 	d := runtime.decision with input as runtime_input_full("lab_trusted", "read_file", 0, "high", ".env", 0.001)
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_priority_sensitive_path_beats_large_output if {
 	d := runtime.decision with input as runtime_input_full("lab_trusted", "read_file", 0, "medium", ".env", 100)
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_priority_sensitive_path_beats_high_risk if {
 	d := runtime.decision with input as runtime_input_full("lab_trusted", "read_file", 90, "medium", ".env", 0.001)
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_priority_contract_env_denied if {
 	d := runtime.decision with input as runtime_input("read_file", "contracts/.env")
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_priority_high_sensitivity_beats_limit_warn_and_contract if {
@@ -458,7 +534,7 @@ test_null_request_denies_invalid_arguments if {
 }
 
 test_null_tool_name_falls_back_to_log_only if {
-	d := runtime.decision with input as runtime_input_with_tool({"name": null}, "contracts/contract1.txt")
+	d := runtime.decision with input as runtime_input_with_tool({"name": null, "profile_status": "resolved", "profile_revision": "tool-security-profiles-test-v1"}, "contracts/contract1.txt")
 	d.rule_id == "deny_unclassified_capability"
 }
 
@@ -530,7 +606,7 @@ test_raw_contract_canonical_env_denied if {
 
 test_raw_env_canonical_contract_allowed if {
 	input_value := runtime_input("read_file", ".env")
-	request := object.union(input_value.request, {"canonical_resource": "contracts/contract1.txt"})
+	request := object.union(input_value.request, {"canonical_resource": "contracts/contract1.txt", "resource_sensitivity": "internal"})
 	d := runtime.decision with input as object.union(input_value, {"request": request})
 	d.rule_id == "allow_contracts_read"
 }
@@ -560,7 +636,14 @@ test_non_string_canonical_resource_does_not_error if {
 		"validation_error_codes": [],
 		"estimated_output_size_mb": 0.001,
 		"required_capability": "filesystem.read",
-		"resource_scope": "contracts",
+		"resource_scope": "fs.project_workspace",
+		"resource_adapter": "filesystem",
+		"resource_sensitivity": "internal",
+		"resource_resolution_status": "resolved",
+		"resource_flags": [],
+		"resource_registry_revision": "resource-scopes-test-v1",
+		"tool_profile_revision": "tool-security-profiles-test-v1",
+		"operation_allowed_on_scope": true,
 	}
 	d := runtime.decision with input as runtime_input_with_request("read_file", request)
 	d.rule_id == "log_normal_runtime_call"
@@ -571,6 +654,75 @@ test_unknown_subject_denied if {
 	d := runtime.decision with input as input_value
 	d.rule_id == "deny_unknown_subject"
 	d.effect == "DENY"
+}
+
+test_unverified_identity_denied if {
+	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"subject": unverified_subject})
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_unverified_identity"
+	d.effect == "DENY"
+}
+
+test_unknown_server_beats_unverified_identity if {
+	input_value := object.union(runtime_input_full("unknown", "read_file", 0, "medium", "contracts/contract1.txt", 0.001), {"subject": unverified_subject})
+	d := runtime.decision with input as input_value
+	d.rule_id == "block_unknown_server"
+}
+
+test_invalid_args_beat_unverified_identity if {
+	input_value := object.union(runtime_input_invalid_arguments("read_file", {}), {"subject": unverified_subject})
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_unverified_identity"
+}
+
+test_unverified_identity_beats_unknown_subject if {
+	subject := object.union(unknown_subject, unverified_subject)
+	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"subject": subject})
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_unverified_identity"
+}
+
+test_unverified_identity_beats_sensitive_path if {
+	input_value := object.union(runtime_input("read_file", ".env"), {"subject": unverified_subject})
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_unverified_identity"
+}
+
+test_verified_identity_sensitive_path_still_denied if {
+	d := runtime.decision with input as runtime_input("read_file", ".env")
+	d.rule_id == "deny_sensitive_resource"
+	d.effect == "DENY"
+}
+
+test_verified_identity_capability_denied if {
+	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.list", "scopes": ["lab_root"]}]})
+	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"subject": subject})
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_capability_not_granted"
+}
+
+test_verified_identity_generic_non_lab_scope_is_opaque if {
+	request := {
+		"operation": "read",
+		"resource_type": "file",
+		"resource_scope": "fs.windows.user_documents",
+		"required_capability": "filesystem.read",
+		"canonical_resource": "documents/report.txt",
+		"arguments": {"path": "documents/report.txt"},
+		"arguments_valid": true,
+		"validation_error_codes": [],
+		"estimated_output_size_mb": 0.001,
+		"resource_adapter": "filesystem",
+		"resource_sensitivity": "internal",
+		"resource_resolution_status": "resolved",
+		"resource_flags": [],
+		"resource_registry_revision": "resource-scopes-test-v1",
+		"tool_profile_revision": "tool-security-profiles-test-v1",
+		"operation_allowed_on_scope": true,
+	}
+	input_value := runtime_input_with_request("read_file", request)
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_scope_not_granted"
 }
 
 test_unclassified_capability_denied if {
@@ -594,7 +746,7 @@ test_scope_absent_from_grant_denied if {
 }
 
 test_exact_contract_grant_allows if {
-	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.read", "scopes": ["contracts"]}]})
+	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.read", "scopes": ["fs.project_workspace"]}]})
 	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"subject": subject})
 	d := runtime.decision with input as input_value
 	d.rule_id == "allow_contracts_read"
@@ -613,7 +765,7 @@ test_cross_product_scope_attack_denied if {
 test_two_grants_selects_matching_grant if {
 	subject := object.union(resolved_subject, {"grants": [
 		{"capability": "filesystem.read", "scopes": ["contracts"]},
-		{"capability": "filesystem.list", "scopes": ["lab_root"]},
+		{"capability": "filesystem.list", "scopes": ["fs.project_workspace"]},
 	]})
 	input_value := object.union(runtime_input("list_files", "."), {"subject": subject})
 	d := runtime.decision with input as input_value
@@ -691,7 +843,7 @@ test_known_subject_without_grant_sensitive_denied_sensitive if {
 	subject := object.union(resolved_subject, {"grants": []})
 	input_value := object.union(runtime_input("read_file", ".env"), {"subject": subject})
 	d := runtime.decision with input as input_value
-	d.rule_id == "deny_sensitive_paths"
+	d.rule_id == "deny_sensitive_resource"
 }
 
 test_capability_denied_beats_approval if {
@@ -709,14 +861,14 @@ test_scope_denied_beats_large_output if {
 }
 
 test_contract_authorized_with_exact_grant if {
-	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.read", "scopes": ["contracts"]}]})
+	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.read", "scopes": ["fs.project_workspace"]}]})
 	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"subject": subject})
 	d := runtime.decision with input as input_value
 	d.decision == "ALLOW"
 }
 
 test_list_files_authorized_with_exact_grant if {
-	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.list", "scopes": ["lab_root"]}]})
+	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.list", "scopes": ["fs.project_workspace"]}]})
 	input_value := object.union(runtime_input("list_files", "."), {"subject": subject})
 	d := runtime.decision with input as input_value
 	d.rule_id == "log_normal_runtime_call"

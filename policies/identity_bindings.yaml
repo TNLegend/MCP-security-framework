@@ -1,0 +1,21 @@
+revision: identity-bindings-v1
+bindings:
+  - issuer: http://127.0.0.1:9100/
+    subject: service-account-agent-demo
+    agent_id: agent-demo
+
+  - issuer: http://127.0.0.1:9100/
+    subject: service-account-llm-agent-demo
+    agent_id: llm-agent-demo
+
+  - issuer: http://127.0.0.1:9100/
+    subject: service-account-contract-reader
+    agent_id: agent-contract-reader
+
+  - issuer: http://127.0.0.1:9100/
+    subject: service-account-list-only
+    agent_id: agent-list-only
+
+  - issuer: http://127.0.0.1:9100/
+    subject: service-account-no-access
+    agent_id: agent-no-access

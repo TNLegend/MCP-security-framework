@@ -14,6 +14,9 @@ class PolicyParityCase:
 def build_runtime_context(
     *,
     agent_id: str = "agent-parity",
+    identity_status: str = "verified",
+    identity_issuer: str = "https://issuer.example/",
+    identity_binding_revision: str = "test-bindings-v1",
     role: str = "legal_agent",
     authorization_status: str = "resolved",
     authorization_revision: str = "test-authorization-v1",
@@ -36,8 +39,8 @@ def build_runtime_context(
     resource_scope = _resource_scope_for_path(canonical_resource, arguments_valid)
     if grants is None:
         grants = [
-            {"capability": "filesystem.read", "scopes": ["contracts"]},
-            {"capability": "filesystem.list", "scopes": ["lab_root", "contracts"]},
+            {"capability": "filesystem.read", "scopes": ["fs.project_workspace"]},
+            {"capability": "filesystem.list", "scopes": ["fs.project_workspace"]},
         ]
     allowed_capabilities = [grant["capability"] for grant in grants]
     allowed_scopes = list(
@@ -47,6 +50,11 @@ def build_runtime_context(
     context = {
         "subject": {
             "agent_id": agent_id,
+            "identity_status": identity_status,
+            "identity_issuer": identity_issuer,
+            "identity_binding_revision": identity_binding_revision,
+            "session_status": "active",
+            "session_reference": "session-parity",
             "role": role,
             "authorization_status": authorization_status,
             "authorization_revision": authorization_revision,
@@ -57,12 +65,17 @@ def build_runtime_context(
         "server": {
             "id": 1,
             "endpoint": "http://127.0.0.1:9000/mcp",
+            "server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
+            "known": True,
+            "trusted": trust_status not in {"unknown", "blocked"},
             "trust_status": trust_status,
             "security_status": "pending_analysis",
         },
         "tool": {
             "id": 1,
             "name": tool_name,
+            "profile_status": "resolved",
+            "profile_revision": "tool-security-profiles-test-v1",
             "risk_score": risk_score,
             "sensitivity": sensitivity,
             "capabilities": [],
@@ -73,6 +86,7 @@ def build_runtime_context(
         },
         "request": {
             "operation": "unknown",
+            "resource_adapter": "filesystem",
             "resource_type": "unknown",
             "resource_scope": resource_scope,
             "required_capability": required_capability,
@@ -80,6 +94,17 @@ def build_runtime_context(
             "arguments": {"path": path},
             "arguments_valid": arguments_valid,
             "validation_error_codes": validation_error_codes,
+            "resource_sensitivity": _resource_sensitivity_for_path(
+                canonical_resource,
+                arguments_valid,
+            ),
+            "resource_resolution_status": (
+                "resolved" if arguments_valid else "invalid_arguments"
+            ),
+            "resource_flags": [],
+            "resource_registry_revision": "resource-scopes-test-v1",
+            "tool_profile_revision": "tool-security-profiles-test-v1",
+            "operation_allowed_on_scope": True,
             "estimated_output_size_mb": estimated_output_size_mb,
         },
         "runtime": {
@@ -104,17 +129,77 @@ def _resource_scope_for_path(path: str | None, arguments_valid: bool) -> str:
         return "invalid"
     if path is None:
         return "unknown"
+    return "fs.project_workspace"
+
+
+def _resource_sensitivity_for_path(path: str | None, arguments_valid: bool) -> str:
+    if not arguments_valid or path is None:
+        return "unknown"
     comparison = path.lower()
-    if any(pattern in comparison for pattern in (".env", ".aws/credentials", "/etc/passwd", "id_rsa", "secrets")):
-        return "sensitive"
-    if path == ".":
-        return "lab_root"
-    if path == "contracts" or path.startswith("contracts/"):
-        return "contracts"
-    return "lab_root"
+    if any(
+        pattern in comparison
+        for pattern in (
+            ".env",
+            ".aws/credentials",
+            "/etc/passwd",
+            "id_rsa",
+            "secrets",
+        )
+    ):
+        return "secret"
+    return "internal"
 
 
 POLICY_PARITY_CASES = [
+    PolicyParityCase(
+        "unverified_identity",
+        build_runtime_context(
+            identity_status="unverified",
+            identity_issuer="unknown",
+            identity_binding_revision="unknown",
+            authorization_status="unknown",
+            grants=[],
+        ),
+        "deny_unverified_identity",
+    ),
+    PolicyParityCase(
+        "unknown_server_and_unverified_identity",
+        build_runtime_context(
+            trust_status="unknown",
+            identity_status="unverified",
+            identity_issuer="unknown",
+            identity_binding_revision="unknown",
+            authorization_status="unknown",
+            grants=[],
+        ),
+        "block_unknown_server",
+    ),
+    PolicyParityCase(
+        "invalid_arguments_and_unverified_identity",
+        build_runtime_context(
+            arguments_valid=False,
+            identity_status="unverified",
+            identity_issuer="unknown",
+            identity_binding_revision="unknown",
+            authorization_status="unknown",
+            grants=[],
+        ),
+        "deny_unverified_identity",
+    ),
+    PolicyParityCase(
+        "verified_identity_sensitive_path",
+        build_runtime_context(tool_name="read_file", path=".env"),
+        "deny_sensitive_resource",
+    ),
+    PolicyParityCase(
+        "verified_identity_exact_grant",
+        build_runtime_context(
+            tool_name="read_file",
+            path="contracts/contract1.txt",
+            grants=[{"capability": "filesystem.read", "scopes": ["fs.project_workspace"]}],
+        ),
+        "allow_contracts_read",
+    ),
     PolicyParityCase(
         "fallback_normal",
         build_runtime_context(
@@ -139,52 +224,52 @@ POLICY_PARITY_CASES = [
     PolicyParityCase(
         "sensitive_env",
         build_runtime_context(tool_name="read_file", path=".env"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "sensitive_env_uppercase",
         build_runtime_context(tool_name="read_file", path=".ENV"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "sensitive_env_mixed_case",
         build_runtime_context(tool_name="read_file", path=".Env"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "sensitive_aws_credentials",
         build_runtime_context(tool_name="read_file", path=".aws/credentials"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "sensitive_aws_credentials_uppercase",
         build_runtime_context(tool_name="read_file", path=".AWS/CREDENTIALS"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "sensitive_etc_passwd",
         build_runtime_context(tool_name="read_file", path="/etc/passwd"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "sensitive_id_rsa",
         build_runtime_context(tool_name="read_file", path="keys/id_rsa.backup"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "sensitive_id_rsa_uppercase",
         build_runtime_context(tool_name="read_file", path="folder/ID_RSA"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "sensitive_secrets",
         build_runtime_context(tool_name="read_file", path="data/secrets/config.json"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "sensitive_secrets_uppercase",
         build_runtime_context(tool_name="read_file", path="SECRETS/api.txt"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "contract_read_valid",
@@ -275,7 +360,7 @@ POLICY_PARITY_CASES = [
     PolicyParityCase(
         "priority_sensitive_path_high_sensitivity",
         build_runtime_context(tool_name="read_file", sensitivity="high", path=".env"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "priority_sensitive_path_large_output",
@@ -284,17 +369,17 @@ POLICY_PARITY_CASES = [
             path=".env",
             estimated_output_size_mb=100.0,
         ),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "priority_sensitive_path_high_risk",
         build_runtime_context(tool_name="read_file", risk_score=90.0, path=".env"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "priority_contract_env",
         build_runtime_context(tool_name="read_file", path="contracts/.env"),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "priority_high_sensitivity_limit_warn_contract",
@@ -398,7 +483,7 @@ POLICY_PARITY_CASES = [
             path="contracts/contract1.txt",
             canonical_resource=".env",
         ),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "canonical_uppercase_env_over_raw_contract",
@@ -407,7 +492,7 @@ POLICY_PARITY_CASES = [
             path="contracts/contract1.txt",
             canonical_resource=".ENV",
         ),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "canonical_contract_over_raw_sensitive",
@@ -457,7 +542,7 @@ POLICY_PARITY_CASES = [
         build_runtime_context(
             tool_name="read_file",
             path="contracts/contract1.txt",
-            grants=[{"capability": "filesystem.read", "scopes": ["contracts"]}],
+            grants=[{"capability": "filesystem.read", "scopes": ["fs.project_workspace"]}],
         ),
         "allow_contracts_read",
     ),
@@ -466,7 +551,7 @@ POLICY_PARITY_CASES = [
         build_runtime_context(
             tool_name="list_files",
             path=".",
-            grants=[{"capability": "filesystem.list", "scopes": ["lab_root"]}],
+            grants=[{"capability": "filesystem.list", "scopes": ["fs.project_workspace"]}],
         ),
         "log_normal_runtime_call",
     ),
@@ -477,7 +562,7 @@ POLICY_PARITY_CASES = [
             path="public/readme.txt",
             grants=[
                 {"capability": "filesystem.read", "scopes": ["contracts"]},
-                {"capability": "filesystem.list", "scopes": ["lab_root"]},
+                {"capability": "filesystem.list", "scopes": ["fs.project_workspace"]},
             ],
         ),
         "deny_scope_not_granted",
@@ -517,7 +602,7 @@ POLICY_PARITY_CASES = [
             path=".env",
             grants=[],
         ),
-        "deny_sensitive_paths",
+        "deny_sensitive_resource",
     ),
     PolicyParityCase(
         "capability_denied_and_high_risk",

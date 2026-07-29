@@ -11,6 +11,7 @@ from agent.llm_adapter.adapter import LLMAdapter
 from agent.llm_providers.base import load_project_env
 from proxy.backend_client import BackendClient
 from proxy.mcp_proxy import MCPProxy
+from scripts.local_identity_provider import issue_access_token
 
 
 PROMPTS = [
@@ -27,12 +28,16 @@ def main() -> None:
     print("1. Backend must be running at http://127.0.0.1:8000")
     print("2. MCP lab server must be running at http://127.0.0.1:9000/mcp")
     print("3. Discovery must have been run at least once")
-    print("4. LLM_PROVIDER can be mock, gemini, or groq")
+    print("4. Local identity provider must be running with the configured JWKS URL")
+    print("5. LLM_PROVIDER can be mock, gemini, or groq")
     print("=" * 50)
 
     backend_client = BackendClient()
     adapter = LLMAdapter()
     proxy = MCPProxy(backend_client=backend_client)
+    trusted_session = proxy.create_trusted_session(
+        issue_access_token(subject="service-account-llm-agent-demo")
+    )
 
     for index, user_prompt in enumerate(PROMPTS, start=1):
         print()
@@ -40,10 +45,10 @@ def main() -> None:
         print(f"user_prompt: {user_prompt}")
         result = run_prompt(
             user_prompt=user_prompt,
-            session_id=f"llm-agent-demo-{index}",
             backend_client=backend_client,
             adapter=adapter,
             proxy=proxy,
+            session_token=trusted_session["session_token"],
         )
         print(json.dumps(result, indent=2))
 
@@ -55,10 +60,10 @@ def main() -> None:
 def run_prompt(
     *,
     user_prompt: str,
-    session_id: str,
     backend_client: BackendClient,
     adapter: LLMAdapter,
     proxy: MCPProxy,
+    session_token: str,
 ) -> dict[str, Any]:
     try:
         server = select_mcp_lab_server(backend_client)
@@ -93,8 +98,7 @@ def run_prompt(
         return summary
 
     tool_call = {
-        "agent_id": "llm-agent-demo",
-        "session_id": session_id,
+        "session_token": session_token,
         "server_id": server["id"],
         "tool_name": proposal["tool_name"],
         "arguments": proposal["arguments"],

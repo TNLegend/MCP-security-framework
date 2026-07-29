@@ -17,6 +17,12 @@ from app.services.opa_client import OPAClientError  # noqa: E402
 from test_policy_context import TestClient, app, valid_context  # noqa: E402
 from test_policy_decision import valid_decision_payload  # noqa: E402
 
+TRUSTED_IDENTITY_HEADERS = {"X-MCP-Identity-Assertion": "test.assertion.value"}
+
+
+def trusted_context(**kwargs) -> dict:
+    return kwargs["context"]
+
 
 def opa_decision() -> PolicyDecision:
     payload = valid_decision_payload()
@@ -46,10 +52,16 @@ class RuntimePolicyModesRouteTests(unittest.TestCase):
         settings.policy_engine_mode = PolicyEngineMode.LEGACY
 
         with patch.object(policy_runtime, "OPAClient") as opa:
-            response = self.client.post(
-                "/api/v1/runtime/decision",
-                json=valid_context(),
-            )
+            with patch.object(
+                policy_runtime,
+                "verify_trusted_identity_context",
+                side_effect=trusted_context,
+            ):
+                response = self.client.post(
+                    "/api/v1/runtime/decision",
+                    json=valid_context(),
+                    headers=TRUSTED_IDENTITY_HEADERS,
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["decision"], "ALLOW")
@@ -59,10 +71,16 @@ class RuntimePolicyModesRouteTests(unittest.TestCase):
         settings.policy_engine_mode = PolicyEngineMode.SHADOW
 
         with patch.object(policy_runtime, "run_opa_shadow_evaluation") as shadow:
-            response = self.client.post(
-                "/api/v1/runtime/decision",
-                json=valid_context(),
-            )
+            with patch.object(
+                policy_runtime,
+                "verify_trusted_identity_context",
+                side_effect=trusted_context,
+            ):
+                response = self.client.post(
+                    "/api/v1/runtime/decision",
+                    json=valid_context(),
+                    headers=TRUSTED_IDENTITY_HEADERS,
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["decision"], "ALLOW")
@@ -76,10 +94,16 @@ class RuntimePolicyModesRouteTests(unittest.TestCase):
             "OPAClient",
             return_value=FakeOPAClient(),
         ):
-            response = self.client.post(
-                "/api/v1/runtime/decision",
-                json=valid_context(),
-            )
+            with patch.object(
+                policy_runtime,
+                "verify_trusted_identity_context",
+                side_effect=trusted_context,
+            ):
+                response = self.client.post(
+                    "/api/v1/runtime/decision",
+                    json=valid_context(),
+                    headers=TRUSTED_IDENTITY_HEADERS,
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["policy_revision"], "opa-runtime-v1")
@@ -95,10 +119,16 @@ class RuntimePolicyModesRouteTests(unittest.TestCase):
                 error=OPAClientError("opa_unavailable", "OPA unavailable.")
             ),
         ):
-            response = self.client.post(
-                "/api/v1/runtime/decision",
-                json=valid_context(),
-            )
+            with patch.object(
+                policy_runtime,
+                "verify_trusted_identity_context",
+                side_effect=trusted_context,
+            ):
+                response = self.client.post(
+                    "/api/v1/runtime/decision",
+                    json=valid_context(),
+                    headers=TRUSTED_IDENTITY_HEADERS,
+                )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()

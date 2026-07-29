@@ -6,9 +6,12 @@ subjects:
     grants:
       - capability: filesystem.read
         scopes:
+          - fs.project_workspace
+          - fs.legal_contracts
           - contracts
       - capability: filesystem.list
         scopes:
+          - fs.project_workspace
           - lab_root
 
   llm-agent-demo:
@@ -16,9 +19,12 @@ subjects:
     grants:
       - capability: filesystem.read
         scopes:
+          - fs.project_workspace
+          - fs.legal_contracts
           - contracts
       - capability: filesystem.list
         scopes:
+          - fs.project_workspace
           - lab_root
 
   agent-contract-reader:
@@ -26,6 +32,8 @@ subjects:
     grants:
       - capability: filesystem.read
         scopes:
+          - fs.project_workspace
+          - fs.legal_contracts
           - contracts
 
   agent-list-only:
@@ -33,6 +41,7 @@ subjects:
     grants:
       - capability: filesystem.list
         scopes:
+          - fs.project_workspace
           - lab_root
 
   agent-no-access:

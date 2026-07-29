@@ -26,10 +26,24 @@ class Settings(BaseSettings):
     postgres_user: str = "mcp_user"
     postgres_password: str = "change_me"
 
-    policy_engine_mode: PolicyEngineMode = PolicyEngineMode.LEGACY
+    policy_engine_mode: PolicyEngineMode = PolicyEngineMode.OPA
     opa_base_url: str = "http://127.0.0.1:8181"
     opa_decision_path: str = "/v1/data/mcp/security/runtime/decision"
     opa_timeout_seconds: float = Field(default=2.0, gt=0)
+
+    backend_assertion_jwks_path: str = "<configure-outside-repository>"
+    backend_assertion_expected_issuer: str = "mcp-security-proxy"
+    backend_assertion_expected_audience: str = "mcp-security-backend"
+    backend_assertion_max_ttl_seconds: int = Field(default=30, gt=0, le=300)
+    backend_assertion_clock_skew_seconds: int = Field(default=5, ge=0, le=60)
+
+    trusted_session_enabled: bool = True
+    trusted_session_ttl_seconds: int = Field(default=3600, gt=0, le=86400)
+    trusted_session_idle_timeout_seconds: int = Field(default=900, gt=0, le=86400)
+    trusted_session_token_bytes: int = Field(default=32, ge=16, le=128)
+    trusted_session_token_pepper: str = "<configure-secret-pepper>"
+    trusted_session_max_active_per_agent: int = Field(default=20, gt=0, le=1000)
+    trusted_session_cleanup_batch_size: int = Field(default=100, gt=0, le=10000)
 
     @property
     def database_url(self) -> str:

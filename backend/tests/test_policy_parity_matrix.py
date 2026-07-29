@@ -24,8 +24,8 @@ class PolicyParityMatrixTests(unittest.TestCase):
 
         self.assertEqual(len(case_ids), len(set(case_ids)))
 
-    def test_matrix_has_at_least_61_cases(self) -> None:
-        self.assertGreaterEqual(len(POLICY_PARITY_CASES), 61)
+    def test_matrix_has_at_least_66_cases(self) -> None:
+        self.assertGreaterEqual(len(POLICY_PARITY_CASES), 66)
 
     def test_all_contexts_are_valid_runtime_policy_inputs(self) -> None:
         for case in POLICY_PARITY_CASES:
@@ -54,16 +54,16 @@ class PolicyParityMatrixTests(unittest.TestCase):
             "priority_blocked_server_env": "block_unknown_server",
             "priority_unknown_server_contract": "block_unknown_server",
             "priority_unknown_server_all_lower": "block_unknown_server",
-            "priority_sensitive_path_high_sensitivity": "deny_sensitive_paths",
-            "priority_sensitive_path_large_output": "deny_sensitive_paths",
-            "priority_sensitive_path_high_risk": "deny_sensitive_paths",
-            "priority_contract_env": "deny_sensitive_paths",
-            "sensitive_env_uppercase": "deny_sensitive_paths",
-            "sensitive_env_mixed_case": "deny_sensitive_paths",
-            "sensitive_secrets_uppercase": "deny_sensitive_paths",
-            "sensitive_id_rsa_uppercase": "deny_sensitive_paths",
-            "sensitive_aws_credentials_uppercase": "deny_sensitive_paths",
-            "canonical_uppercase_env_over_raw_contract": "deny_sensitive_paths",
+            "priority_sensitive_path_high_sensitivity": "deny_sensitive_resource",
+            "priority_sensitive_path_large_output": "deny_sensitive_resource",
+            "priority_sensitive_path_high_risk": "deny_sensitive_resource",
+            "priority_contract_env": "deny_sensitive_resource",
+            "sensitive_env_uppercase": "deny_sensitive_resource",
+            "sensitive_env_mixed_case": "deny_sensitive_resource",
+            "sensitive_secrets_uppercase": "deny_sensitive_resource",
+            "sensitive_id_rsa_uppercase": "deny_sensitive_resource",
+            "sensitive_aws_credentials_uppercase": "deny_sensitive_resource",
+            "canonical_uppercase_env_over_raw_contract": "deny_sensitive_resource",
             "priority_high_sensitivity_limit_warn_contract": (
                 "require_approval_for_sensitive_tool"
             ),
@@ -81,7 +81,7 @@ class PolicyParityMatrixTests(unittest.TestCase):
             "invalid_arguments_and_high_risk": "deny_invalid_arguments",
             "invalid_arguments_and_sensitive_tool": "deny_invalid_arguments",
             "invalid_arguments_and_large_output": "deny_invalid_arguments",
-            "canonical_sensitive_over_raw_contract": "deny_sensitive_paths",
+            "canonical_sensitive_over_raw_contract": "deny_sensitive_resource",
             "canonical_contract_over_raw_sensitive": "allow_contracts_read",
             "unknown_subject": "deny_unknown_subject",
             "unclassified_capability": "deny_unclassified_capability",
@@ -93,7 +93,7 @@ class PolicyParityMatrixTests(unittest.TestCase):
             "unknown_server_and_unknown_subject": "block_unknown_server",
             "invalid_arguments_and_unknown_subject": "deny_invalid_arguments",
             "unknown_subject_and_sensitive": "deny_unknown_subject",
-            "known_subject_without_grant_and_sensitive": "deny_sensitive_paths",
+            "known_subject_without_grant_and_sensitive": "deny_sensitive_resource",
             "capability_denied_and_high_risk": "deny_capability_not_granted",
             "scope_denied_and_large_output": "deny_scope_not_granted",
         }

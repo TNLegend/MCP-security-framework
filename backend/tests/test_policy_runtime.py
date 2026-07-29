@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +17,9 @@ sys.path.insert(0, str(BACKEND_DIR))
 from app.core.config import PolicyEngineMode, Settings, settings  # noqa: E402
 from app.schemas.policy_decision import PolicyDecision  # noqa: E402
 from app.services import policy_runtime  # noqa: E402
+from app.services.internal_identity_assertion import (  # noqa: E402
+    VerifiedInternalIdentityAssertion,
+)
 from app.services.opa_client import OPAClientError  # noqa: E402
 from app.services.subject_authorization import (  # noqa: E402
     ResolvedCapabilityGrant,
@@ -64,8 +68,8 @@ class FakeAuthorizationResolver:
                 allowed_scopes=(),
             )
         grants = (
-            ResolvedCapabilityGrant("filesystem.read", ("contracts",)),
-            ResolvedCapabilityGrant("filesystem.list", ("lab_root",)),
+            ResolvedCapabilityGrant("filesystem.read", ("fs.project_workspace",)),
+            ResolvedCapabilityGrant("filesystem.list", ("fs.project_workspace",)),
         )
         return ResolvedSubjectAuthorization(
             agent_id=agent_id,
@@ -74,8 +78,42 @@ class FakeAuthorizationResolver:
             authorization_revision="test-authorization-v1",
             grants=grants,
             allowed_capabilities=("filesystem.read", "filesystem.list"),
-            allowed_scopes=("contracts", "lab_root"),
+            allowed_scopes=("fs.project_workspace",),
         )
+
+
+class FakeAssertionVerifier:
+    def verify(
+        self,
+        *,
+        assertion: str | None,
+        context: dict,
+    ) -> VerifiedInternalIdentityAssertion:
+        now = datetime.now(timezone.utc)
+        return VerifiedInternalIdentityAssertion(
+            issuer="mcp-security-proxy",
+            subject=context["subject"]["agent_id"],
+            audience=("mcp-security-backend",),
+            token_id=f"jti-{context['runtime']['session_id']}",
+            session_id=context["runtime"]["session_id"],
+            binding_revision=context["subject"]["identity_binding_revision"],
+            issued_at=now,
+            expires_at=now + timedelta(seconds=30),
+        )
+
+
+def noop_replay_consumer(**kwargs) -> None:
+    return None
+
+
+def evaluate_with_trusted_identity(**kwargs) -> PolicyDecision:
+    return policy_runtime.evaluate_runtime_policy(
+        identity_assertion="test.assertion.value",
+        db=object(),
+        assertion_verifier=FakeAssertionVerifier(),
+        replay_consumer=noop_replay_consumer,
+        **kwargs,
+    )
 
 
 class PolicyRuntimeTests(unittest.TestCase):
@@ -94,7 +132,7 @@ class PolicyRuntimeTests(unittest.TestCase):
             "OPAClient",
         ) as opa_client:
             yaml.return_value = valid_decision_payload()
-            decision = policy_runtime.evaluate_runtime_policy(
+            decision = evaluate_with_trusted_identity(
                 context=valid_context(),
                 background_tasks=background_tasks,
                 resolver=FakeAuthorizationResolver(),
@@ -111,7 +149,7 @@ class PolicyRuntimeTests(unittest.TestCase):
 
         with patch.object(policy_runtime, "evaluate_policy") as yaml:
             yaml.return_value = valid_decision_payload()
-            decision = policy_runtime.evaluate_runtime_policy(
+            decision = evaluate_with_trusted_identity(
                 context=valid_context(),
                 background_tasks=background_tasks,
                 resolver=FakeAuthorizationResolver(),
@@ -130,7 +168,7 @@ class PolicyRuntimeTests(unittest.TestCase):
             "OPAClient",
             return_value=fake_client,
         ):
-            decision = policy_runtime.evaluate_runtime_policy(
+            decision = evaluate_with_trusted_identity(
                 context=valid_context(),
                 background_tasks=BackgroundTasks(),
                 resolver=FakeAuthorizationResolver(),
@@ -175,7 +213,7 @@ class PolicyRuntimeTests(unittest.TestCase):
             "OPAClient",
             return_value=fake_client,
         ):
-            decision = policy_runtime.evaluate_runtime_policy(
+            decision = evaluate_with_trusted_identity(
                 context=valid_context(),
                 background_tasks=BackgroundTasks(),
                 resolver=FakeAuthorizationResolver(),
@@ -204,12 +242,12 @@ class PolicyRuntimeTests(unittest.TestCase):
 
         self.assertEqual(enriched["subject"]["role"], "legal_agent")
         self.assertEqual(enriched["subject"]["allowed_capabilities"], ["filesystem.read", "filesystem.list"])
-        self.assertEqual(enriched["subject"]["allowed_scopes"], ["contracts", "lab_root"])
+        self.assertEqual(enriched["subject"]["allowed_scopes"], ["fs.project_workspace"])
         self.assertEqual(
             enriched["subject"]["grants"],
             [
-                {"capability": "filesystem.read", "scopes": ["contracts"]},
-                {"capability": "filesystem.list", "scopes": ["lab_root"]},
+                {"capability": "filesystem.read", "scopes": ["fs.project_workspace"]},
+                {"capability": "filesystem.list", "scopes": ["fs.project_workspace"]},
             ],
         )
 
@@ -227,7 +265,7 @@ class PolicyRuntimeTests(unittest.TestCase):
 
         with patch.object(policy_runtime, "evaluate_policy") as yaml:
             yaml.return_value = valid_decision_payload()
-            policy_runtime.evaluate_runtime_policy(
+            evaluate_with_trusted_identity(
                 context=valid_context(),
                 background_tasks=BackgroundTasks(),
                 resolver=FakeAuthorizationResolver(),
@@ -242,7 +280,7 @@ class PolicyRuntimeTests(unittest.TestCase):
 
         with patch.object(policy_runtime, "evaluate_policy") as yaml:
             yaml.return_value = valid_decision_payload()
-            policy_runtime.evaluate_runtime_policy(
+            evaluate_with_trusted_identity(
                 context=valid_context(),
                 background_tasks=background_tasks,
                 resolver=FakeAuthorizationResolver(),
@@ -258,7 +296,7 @@ class PolicyRuntimeTests(unittest.TestCase):
         fake_client = FakeOPAClient()
 
         with patch.object(policy_runtime, "OPAClient", return_value=fake_client):
-            policy_runtime.evaluate_runtime_policy(
+            evaluate_with_trusted_identity(
                 context=valid_context(),
                 background_tasks=BackgroundTasks(),
                 resolver=FakeAuthorizationResolver(),
@@ -277,7 +315,7 @@ class PolicyRuntimeTests(unittest.TestCase):
             policy_runtime,
             "OPAClient",
         ) as opa_client:
-            decision = policy_runtime.evaluate_runtime_policy(
+            decision = evaluate_with_trusted_identity(
                 context=valid_context(),
                 background_tasks=background_tasks,
                 resolver=FakeAuthorizationResolver(
@@ -322,7 +360,7 @@ class PolicyRuntimeTests(unittest.TestCase):
             "OPAClient",
             return_value=fake_client,
         ):
-            decision = policy_runtime.evaluate_runtime_policy(
+            decision = evaluate_with_trusted_identity(
                 context=valid_context(),
                 background_tasks=BackgroundTasks(),
                 resolver=FakeAuthorizationResolver(),

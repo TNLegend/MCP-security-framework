@@ -7,6 +7,13 @@ from typing import Any
 from jsonschema import Draft7Validator, Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
+from proxy.resource_adapters import (
+    ResourceResolution,
+    resolve_resource,
+)
+from proxy.resource_registry import ResourceRegistry
+from proxy.tool_security_profiles import ResolvedToolSecurityProfile
+
 
 MAX_SCHEMA_BYTES = 262_144
 MAX_ARGUMENTS_BYTES = 262_144
@@ -46,10 +53,19 @@ class PreparedToolRequest:
     arguments_valid: bool
     validation_error_codes: tuple[str, ...]
     operation: str
+    required_capability: str
+    resource_adapter: str
     resource_type: str
     resource_scope: str
     canonical_resource: str | None
-    required_capability: str
+    resource_sensitivity: str
+    resource_resolution_status: str
+    resource_flags: tuple[str, ...]
+    resource_registry_revision: str
+    tool_profile_revision: str
+    operation_allowed_on_scope: bool
+    execution_arguments: dict[str, Any]
+    resource_resolution: ResourceResolution | None = None
 
 
 def prepare_tool_request(
@@ -57,10 +73,15 @@ def prepare_tool_request(
     tool_name: str,
     raw_arguments: Any,
     input_schema: Any,
+    tool_profile: ResolvedToolSecurityProfile | None = None,
+    resource_registry: ResourceRegistry | None = None,
 ) -> PreparedToolRequest:
     arguments = {} if raw_arguments is None else raw_arguments
-    base_operation, base_resource_type = _resource_kind_for_tool(tool_name)
-    required_capability = _required_capability_for_tool(tool_name)
+    base_operation, base_resource_type = _resource_kind_for_tool(
+        tool_name,
+        tool_profile,
+    )
+    required_capability = _required_capability_for_tool(tool_name, tool_profile)
 
     if not isinstance(arguments, dict):
         return _invalid_result(
@@ -68,6 +89,8 @@ def prepare_tool_request(
             operation=base_operation,
             resource_type=base_resource_type,
             required_capability=required_capability,
+            tool_profile=tool_profile,
+            resource_registry=resource_registry,
         )
 
     try:
@@ -78,6 +101,8 @@ def prepare_tool_request(
             operation=base_operation,
             resource_type=base_resource_type,
             required_capability=required_capability,
+            tool_profile=tool_profile,
+            resource_registry=resource_registry,
         )
 
     if len(canonical_arguments_json.encode("utf-8")) > MAX_ARGUMENTS_BYTES:
@@ -86,6 +111,8 @@ def prepare_tool_request(
             operation=base_operation,
             resource_type=base_resource_type,
             required_capability=required_capability,
+            tool_profile=tool_profile,
+            resource_registry=resource_registry,
         )
 
     schema_errors, canonical_schema_json = _validate_input_schema(input_schema)
@@ -95,6 +122,8 @@ def prepare_tool_request(
             operation=base_operation,
             resource_type=base_resource_type,
             required_capability=required_capability,
+            tool_profile=tool_profile,
+            resource_registry=resource_registry,
         )
 
     validator = _compile_validator(canonical_schema_json)
@@ -105,6 +134,34 @@ def prepare_tool_request(
             operation=base_operation,
             resource_type=base_resource_type,
             required_capability=required_capability,
+            tool_profile=tool_profile,
+            resource_registry=resource_registry,
+        )
+
+    if tool_profile is not None and resource_registry is not None:
+        resolution = resolve_resource(
+            profile=tool_profile,
+            arguments=dict(arguments),
+            registry=resource_registry,
+        )
+        return PreparedToolRequest(
+            arguments=dict(arguments) if resolution.resource_resolution_status == "resolved" else {},
+            arguments_valid=True,
+            validation_error_codes=(),
+            operation=resolution.operation,
+            required_capability=resolution.required_capability,
+            resource_adapter=resolution.resource_adapter,
+            resource_type=resolution.resource_type,
+            resource_scope=resolution.resource_scope,
+            canonical_resource=resolution.canonical_resource,
+            resource_sensitivity=resolution.resource_sensitivity,
+            resource_resolution_status=resolution.resource_resolution_status,
+            resource_flags=resolution.resource_flags,
+            resource_registry_revision=resolution.resource_registry_revision,
+            tool_profile_revision=resolution.tool_profile_revision,
+            operation_allowed_on_scope=resolution.operation_allowed_on_scope,
+            execution_arguments=resolution.execution_arguments,
+            resource_resolution=resolution,
         )
 
     if tool_name == "list_files":
@@ -113,10 +170,18 @@ def prepare_tool_request(
             arguments_valid=True,
             validation_error_codes=(),
             operation="list",
+            required_capability=required_capability,
+            resource_adapter="filesystem",
             resource_type="directory",
             resource_scope="lab_root",
             canonical_resource=".",
-            required_capability=required_capability,
+            resource_sensitivity="internal",
+            resource_resolution_status="resolved",
+            resource_flags=(),
+            resource_registry_revision="legacy-lab",
+            tool_profile_revision="legacy-lab",
+            operation_allowed_on_scope=True,
+            execution_arguments={},
         )
 
     if tool_name == "read_file":
@@ -129,6 +194,8 @@ def prepare_tool_request(
                 operation="read",
                 resource_type="file",
                 required_capability=required_capability,
+                tool_profile=tool_profile,
+                resource_registry=resource_registry,
             )
 
         normalized_arguments = dict(arguments)
@@ -138,10 +205,22 @@ def prepare_tool_request(
             arguments_valid=True,
             validation_error_codes=(),
             operation="read",
+            required_capability=required_capability,
+            resource_adapter="filesystem",
             resource_type="file",
             resource_scope=_resource_scope_for_path(canonical_resource),
             canonical_resource=canonical_resource,
-            required_capability=required_capability,
+            resource_sensitivity=(
+                "secret"
+                if _resource_scope_for_path(canonical_resource) == "sensitive"
+                else "internal"
+            ),
+            resource_resolution_status="resolved",
+            resource_flags=(),
+            resource_registry_revision="legacy-lab",
+            tool_profile_revision="legacy-lab",
+            operation_allowed_on_scope=True,
+            execution_arguments=normalized_arguments,
         )
 
     return PreparedToolRequest(
@@ -149,14 +228,27 @@ def prepare_tool_request(
         arguments_valid=True,
         validation_error_codes=(),
         operation="unknown",
+        required_capability=required_capability,
+        resource_adapter="unknown",
         resource_type="unknown",
         resource_scope="unknown",
         canonical_resource=None,
-        required_capability=required_capability,
+        resource_sensitivity="unknown",
+        resource_resolution_status="unresolved",
+        resource_flags=(),
+        resource_registry_revision="unknown",
+        tool_profile_revision="unknown",
+        operation_allowed_on_scope=False,
+        execution_arguments=dict(arguments),
     )
 
 
-def _resource_kind_for_tool(tool_name: str) -> tuple[str, str]:
+def _resource_kind_for_tool(
+    tool_name: str,
+    tool_profile: ResolvedToolSecurityProfile | None = None,
+) -> tuple[str, str]:
+    if tool_profile is not None:
+        return tool_profile.operation, f"{tool_profile.resource.adapter}.{tool_profile.resource.expected_type}"
     if tool_name == "read_file":
         return "read", "file"
     if tool_name == "list_files":
@@ -164,7 +256,12 @@ def _resource_kind_for_tool(tool_name: str) -> tuple[str, str]:
     return "unknown", "unknown"
 
 
-def _required_capability_for_tool(tool_name: str) -> str:
+def _required_capability_for_tool(
+    tool_name: str,
+    tool_profile: ResolvedToolSecurityProfile | None = None,
+) -> str:
+    if tool_profile is not None:
+        return tool_profile.required_capability
     if tool_name == "read_file":
         return "filesystem.read"
     if tool_name == "list_files":
@@ -178,16 +275,32 @@ def _invalid_result(
     operation: str,
     resource_type: str,
     required_capability: str,
+    tool_profile: ResolvedToolSecurityProfile | None = None,
+    resource_registry: ResourceRegistry | None = None,
 ) -> PreparedToolRequest:
     return PreparedToolRequest(
         arguments={},
         arguments_valid=False,
         validation_error_codes=_sanitize_error_codes(error_codes),
         operation=operation,
+        required_capability=required_capability,
+        resource_adapter=(
+            tool_profile.resource.adapter if tool_profile is not None else "unknown"
+        ),
         resource_type=resource_type,
         resource_scope="invalid",
         canonical_resource=None,
-        required_capability=required_capability,
+        resource_sensitivity="unknown",
+        resource_resolution_status="invalid_arguments",
+        resource_flags=(),
+        resource_registry_revision=(
+            resource_registry.revision if resource_registry is not None else "unknown"
+        ),
+        tool_profile_revision=(
+            tool_profile.revision if tool_profile is not None else "unknown"
+        ),
+        operation_allowed_on_scope=False,
+        execution_arguments={},
     )
 
 

@@ -21,11 +21,18 @@ build/
 # Environment / secrets
 .env
 .env.local
+.env.production
+.env.*
+!.env.example
 .env.*.local
 *.key
 *.pem
 *.crt
 *.p12
+*.pfx
+*_private.jwk
+*_private.jwks.json
+secrets/
 
 # IDE / OS
 .vscode/

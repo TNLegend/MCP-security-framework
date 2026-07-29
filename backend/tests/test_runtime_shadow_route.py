@@ -15,6 +15,12 @@ from app.core.config import PolicyEngineMode, settings  # noqa: E402
 from app.services import policy_runtime  # noqa: E402
 from test_policy_context import TestClient, app, valid_context  # noqa: E402
 
+TRUSTED_IDENTITY_HEADERS = {"X-MCP-Identity-Assertion": "test.assertion.value"}
+
+
+def trusted_context(**kwargs) -> dict:
+    return kwargs["context"]
+
 
 class RuntimeShadowRouteTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -28,10 +34,16 @@ class RuntimeShadowRouteTests(unittest.TestCase):
         settings.policy_engine_mode = PolicyEngineMode.LEGACY
 
         with patch.object(policy_runtime, "run_opa_shadow_evaluation") as shadow:
-            response = self.client.post(
-                "/api/v1/runtime/decision",
-                json=valid_context(),
-            )
+            with patch.object(
+                policy_runtime,
+                "verify_trusted_identity_context",
+                side_effect=trusted_context,
+            ):
+                response = self.client.post(
+                    "/api/v1/runtime/decision",
+                    json=valid_context(),
+                    headers=TRUSTED_IDENTITY_HEADERS,
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["decision"], "ALLOW")
@@ -41,10 +53,16 @@ class RuntimeShadowRouteTests(unittest.TestCase):
         settings.policy_engine_mode = PolicyEngineMode.SHADOW
 
         with patch.object(policy_runtime, "run_opa_shadow_evaluation") as shadow:
-            response = self.client.post(
-                "/api/v1/runtime/decision",
-                json=valid_context(),
-            )
+            with patch.object(
+                policy_runtime,
+                "verify_trusted_identity_context",
+                side_effect=trusted_context,
+            ):
+                response = self.client.post(
+                    "/api/v1/runtime/decision",
+                    json=valid_context(),
+                    headers=TRUSTED_IDENTITY_HEADERS,
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["decision"], "ALLOW")
@@ -57,7 +75,16 @@ class RuntimeShadowRouteTests(unittest.TestCase):
         payload["request"]["canonical_resource"] = ".env"
 
         with patch.object(policy_runtime, "run_opa_shadow_evaluation") as shadow:
-            response = self.client.post("/api/v1/runtime/decision", json=payload)
+            with patch.object(
+                policy_runtime,
+                "verify_trusted_identity_context",
+                side_effect=trusted_context,
+            ):
+                response = self.client.post(
+                    "/api/v1/runtime/decision",
+                    json=payload,
+                    headers=TRUSTED_IDENTITY_HEADERS,
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["effect"], "DENY")
@@ -68,10 +95,16 @@ class RuntimeShadowRouteTests(unittest.TestCase):
         settings.policy_engine_mode = PolicyEngineMode.SHADOW
 
         with patch.object(policy_runtime, "run_opa_shadow_evaluation"):
-            response = self.client.post(
-                "/api/v1/runtime/decision",
-                json=deepcopy(valid_context()),
-            )
+            with patch.object(
+                policy_runtime,
+                "verify_trusted_identity_context",
+                side_effect=trusted_context,
+            ):
+                response = self.client.post(
+                    "/api/v1/runtime/decision",
+                    json=deepcopy(valid_context()),
+                    headers=TRUSTED_IDENTITY_HEADERS,
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["decision"], "ALLOW")
@@ -80,10 +113,16 @@ class RuntimeShadowRouteTests(unittest.TestCase):
         settings.policy_engine_mode = PolicyEngineMode.SHADOW
 
         with patch.object(policy_runtime, "run_opa_shadow_evaluation"):
-            response = self.client.post(
-                "/api/v1/runtime/decision",
-                json=valid_context(),
-            )
+            with patch.object(
+                policy_runtime,
+                "verify_trusted_identity_context",
+                side_effect=trusted_context,
+            ):
+                response = self.client.post(
+                    "/api/v1/runtime/decision",
+                    json=valid_context(),
+                    headers=TRUSTED_IDENTITY_HEADERS,
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["effect"], "ALLOW")
@@ -96,7 +135,16 @@ class RuntimeShadowRouteTests(unittest.TestCase):
         payload["request"]["canonical_resource"] = ".env"
 
         with patch.object(policy_runtime, "run_opa_shadow_evaluation"):
-            response = self.client.post("/api/v1/runtime/decision", json=payload)
+            with patch.object(
+                policy_runtime,
+                "verify_trusted_identity_context",
+                side_effect=trusted_context,
+            ):
+                response = self.client.post(
+                    "/api/v1/runtime/decision",
+                    json=payload,
+                    headers=TRUSTED_IDENTITY_HEADERS,
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["effect"], "DENY")

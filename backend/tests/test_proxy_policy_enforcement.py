@@ -1,6 +1,22 @@
+import atexit
+import os
+import shutil
+import sys
+import tempfile
+import subprocess
 import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_DIR = REPO_ROOT / "backend"
+
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(BACKEND_DIR))
+
+from proxy.agent_identity import AgentIdentityError, VerifiedExternalIdentity
+from proxy.identity_binding import ResolvedIdentityBinding
 from app.schemas.policy_decision import PolicyDecision
 from app.services.policy_engine import evaluate_policy
 from proxy.backend_client import BackendClientError
@@ -10,6 +26,13 @@ from proxy.mcp_proxy import (
     _fail_closed_proxy_decision,
     _validate_policy_decision,
 )
+from proxy.resource_adapters import revalidate_resource, resolve_resource
+from proxy.resource_registry import ResourceRegistry, ResolvedFilesystemScope
+from proxy.tool_security_profiles import (
+    ResolvedToolSecurityProfile,
+    ToolResourceProfile,
+)
+from proxy.trusted_sessions import ProxyTrustedSession, TrustedSessionError
 
 
 def policy_decision(
@@ -77,13 +100,146 @@ class FakeBackendClient:
             "input_schema": list_files_schema() if tool_name == "list_files" else read_file_schema(),
         }
 
-    def request_policy_decision(self, context: dict):
+    def request_policy_decision(self, context: dict, *, identity_assertion: str | None = None):
         self.last_policy_context = context
+        self.last_identity_assertion = identity_assertion
         return self.decision
 
     def create_runtime_log(self, log_payload: dict):
         self.created_logs.append(log_payload)
         return {"id": len(self.created_logs), **log_payload}
+
+
+_RESOURCE_TEMP_DIR = tempfile.TemporaryDirectory()
+atexit.register(_RESOURCE_TEMP_DIR.cleanup)
+TEST_RESOURCE_ROOT = Path(_RESOURCE_TEMP_DIR.name)
+(TEST_RESOURCE_ROOT / "contracts").mkdir(parents=True, exist_ok=True)
+(TEST_RESOURCE_ROOT / "contracts" / "contract1.txt").write_text(
+    "Contract test content.",
+    encoding="utf-8",
+)
+(TEST_RESOURCE_ROOT / "public").mkdir(parents=True, exist_ok=True)
+(TEST_RESOURCE_ROOT / "public" / "readme.txt").write_text(
+    "Public test content.",
+    encoding="utf-8",
+)
+(TEST_RESOURCE_ROOT / ".ENV").write_text("test placeholder", encoding="utf-8")
+(TEST_RESOURCE_ROOT / "keys").mkdir(parents=True, exist_ok=True)
+(TEST_RESOURCE_ROOT / "keys" / "id_rsa.backup").write_text(
+    "test placeholder",
+    encoding="utf-8",
+)
+(TEST_RESOURCE_ROOT / "SECRETS").mkdir(parents=True, exist_ok=True)
+(TEST_RESOURCE_ROOT / "SECRETS" / "api.txt").write_text(
+    "test placeholder",
+    encoding="utf-8",
+)
+
+
+class FakeTrustedSessionManager:
+    def create_for_identity(
+        self,
+        *,
+        external_identity: VerifiedExternalIdentity,
+        identity_binding: ResolvedIdentityBinding,
+    ) -> ProxyTrustedSession:
+        return ProxyTrustedSession(
+            session_reference="session-001",
+            session_token="test-session-token",
+            agent_id=identity_binding.agent_id,
+            identity_issuer=external_identity.issuer,
+            identity_subject=external_identity.subject,
+            identity_binding_revision=identity_binding.revision,
+            session_status="active",
+        )
+
+    def validate_token(self, session_token: str) -> ProxyTrustedSession:
+        if session_token != "test-session-token":
+            raise TrustedSessionError("trusted_session_invalid")
+        return ProxyTrustedSession(
+            session_reference="session-001",
+            session_token=session_token,
+            agent_id="agent-demo",
+            identity_issuer="https://issuer.example/",
+            identity_subject="agent-demo",
+            identity_binding_revision="test-bindings-v1",
+            session_status="active",
+        )
+
+
+class FakeToolSecurityProfileResolver:
+    def resolve(
+        self,
+        *,
+        server_ref: str,
+        tool_name: str,
+    ) -> ResolvedToolSecurityProfile:
+        if tool_name == "read_file":
+            return ResolvedToolSecurityProfile(
+                revision="tool-security-profiles-test-v1",
+                server_ref=server_ref,
+                tool_name=tool_name,
+                operation="read",
+                required_capability="filesystem.read",
+                resource=ToolResourceProfile(
+                    adapter="filesystem",
+                    argument_name="path",
+                    expected_type="file",
+                    relative_base_scope="fs.project_workspace",
+                    allowed_scope_candidates=["fs.project_workspace", "fs.public"],
+                ),
+            )
+        if tool_name == "list_files":
+            return ResolvedToolSecurityProfile(
+                revision="tool-security-profiles-test-v1",
+                server_ref=server_ref,
+                tool_name=tool_name,
+                operation="list",
+                required_capability="filesystem.list",
+                resource=ToolResourceProfile(
+                    adapter="filesystem",
+                    argument_name="path",
+                    expected_type="directory",
+                    relative_base_scope="fs.project_workspace",
+                    allowed_scope_candidates=["fs.project_workspace", "fs.public"],
+                ),
+            )
+        raise RuntimeError("unknown_tool_security_profile")
+
+
+class FakeResourceRegistryResolver:
+    def load(self) -> ResourceRegistry:
+        return ResourceRegistry(
+            revision="resource-scopes-test-v1",
+            filesystem_scopes={
+                "fs.project_workspace": ResolvedFilesystemScope(
+                    scope_id="fs.project_workspace",
+                    root=TEST_RESOURCE_ROOT,
+                    root_resolved=TEST_RESOURCE_ROOT.resolve(strict=True),
+                    allowed_operations=("read", "list"),
+                    sensitivity="internal",
+                    symlink_policy="internal-only",
+                    denied_patterns=(
+                        "**/.env*",
+                        "**/.ssh/**",
+                        "**/.aws/credentials",
+                        "**/id_rsa*",
+                        "**/secrets/**",
+                    ),
+                ),
+                "fs.public": ResolvedFilesystemScope(
+                    scope_id="fs.public",
+                    root=TEST_RESOURCE_ROOT / "public",
+                    root_resolved=(TEST_RESOURCE_ROOT / "public").resolve(
+                        strict=True
+                    ),
+                    allowed_operations=("read", "list"),
+                    sensitivity="internal",
+                    symlink_policy="internal-only",
+                    denied_patterns=(),
+                ),
+            },
+        )
 
 
 class InventoryErrorBackendClient(FakeBackendClient):
@@ -92,7 +248,7 @@ class InventoryErrorBackendClient(FakeBackendClient):
 
 
 class PolicyErrorBackendClient(FakeBackendClient):
-    def request_policy_decision(self, context: dict):
+    def request_policy_decision(self, context: dict, *, identity_assertion: str | None = None):
         raise BackendClientError("Policy backend unavailable.")
 
 
@@ -117,10 +273,50 @@ class TrackingMCPClient:
 def tool_call() -> dict:
     return {
         "agent_id": "agent-demo",
+        "access_token": "token:agent-demo",
         "session_id": "session-001",
         "tool_name": "read_file",
         "arguments": {"path": "contracts/contract1.txt"},
     }
+
+
+class FakeIdentityVerifier:
+    def verify(self, access_token: str) -> VerifiedExternalIdentity:
+        subject = "agent-demo"
+        if isinstance(access_token, str) and access_token.startswith("token:"):
+            subject = access_token.removeprefix("token:")
+        now = datetime.now(timezone.utc)
+        return VerifiedExternalIdentity(
+            issuer="https://issuer.example/",
+            subject=subject,
+            audience=("mcp-security-proxy",),
+            client_id=None,
+            token_id=f"jti-{subject}",
+            issued_at=now,
+            expires_at=now + timedelta(minutes=5),
+        )
+
+
+class MissingTokenVerifier:
+    def verify(self, access_token: str) -> VerifiedExternalIdentity:
+        raise AgentIdentityError("agent_access_token_missing")
+
+
+class FakeIdentityBindingResolver:
+    def resolve(self, *, issuer: str, subject: str) -> ResolvedIdentityBinding:
+        return ResolvedIdentityBinding(
+            agent_id=subject,
+            revision="test-bindings-v1",
+        )
+
+
+class FakeAssertionSigner:
+    def __init__(self) -> None:
+        self.signed_contexts = []
+
+    def sign(self, context: dict) -> str:
+        self.signed_contexts.append(context)
+        return "test.assertion.value"
 
 
 def reset_tracking_mcp_client() -> None:
@@ -128,6 +324,39 @@ def reset_tracking_mcp_client() -> None:
     TrackingMCPClient.call_count = 0
     TrackingMCPClient.last_tool_name = None
     TrackingMCPClient.last_arguments = None
+
+
+def create_directory_link(link_path: Path, target_path: Path) -> None:
+    remove_directory_link(link_path)
+    try:
+        link_path.symlink_to(target_path, target_is_directory=True)
+        return
+    except OSError:
+        if os.name != "nt":
+            raise
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link_path), str(target_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise OSError("directory link could not be created")
+
+
+def remove_directory_link(path: Path) -> None:
+    if path.is_symlink() or _is_junction(path):
+        path.rmdir()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def _is_junction(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    try:
+        return bool(is_junction and is_junction())
+    except OSError:
+        return False
 
 
 def read_file_schema() -> dict:
@@ -194,7 +423,7 @@ class Draft7SchemaBackendClient(FakeBackendClient):
 
 
 class EvaluatingBackendClient(FakeBackendClient):
-    def request_policy_decision(self, context: dict):
+    def request_policy_decision(self, context: dict, *, identity_assertion: str | None = None):
         context = {
             **context,
             "subject": {
@@ -205,18 +434,19 @@ class EvaluatingBackendClient(FakeBackendClient):
                 "grants": [
                     {
                         "capability": "filesystem.read",
-                        "scopes": ["contracts", "sensitive"],
+                        "scopes": ["fs.project_workspace", "sensitive"],
                     },
                     {
                         "capability": "filesystem.list",
-                        "scopes": ["lab_root"],
+                        "scopes": ["fs.project_workspace"],
                     },
                 ],
                 "allowed_capabilities": ["filesystem.read", "filesystem.list"],
-                "allowed_scopes": ["contracts", "sensitive", "lab_root"],
+                "allowed_scopes": ["fs.project_workspace", "sensitive"],
             },
         }
         self.last_policy_context = context
+        self.last_identity_assertion = identity_assertion
         return evaluate_policy(context)
 
 
@@ -227,31 +457,31 @@ class SubjectAwareEvaluatingBackendClient(FakeBackendClient):
             "authorization_status": "resolved",
             "authorization_revision": "test-authorization-v1",
             "grants": [
-                {"capability": "filesystem.read", "scopes": ["contracts"]},
-                {"capability": "filesystem.list", "scopes": ["lab_root"]},
+                {"capability": "filesystem.read", "scopes": ["fs.project_workspace"]},
+                {"capability": "filesystem.list", "scopes": ["fs.project_workspace"]},
             ],
             "allowed_capabilities": ["filesystem.read", "filesystem.list"],
-            "allowed_scopes": ["contracts", "lab_root"],
+            "allowed_scopes": ["fs.project_workspace"],
         },
         "agent-contract-reader": {
             "role": "contract_reader",
             "authorization_status": "resolved",
             "authorization_revision": "test-authorization-v1",
             "grants": [
-                {"capability": "filesystem.read", "scopes": ["contracts"]},
+                {"capability": "filesystem.read", "scopes": ["fs.project_workspace"]},
             ],
             "allowed_capabilities": ["filesystem.read"],
-            "allowed_scopes": ["contracts"],
+            "allowed_scopes": ["fs.project_workspace"],
         },
         "agent-list-only": {
             "role": "file_lister",
             "authorization_status": "resolved",
             "authorization_revision": "test-authorization-v1",
             "grants": [
-                {"capability": "filesystem.list", "scopes": ["lab_root"]},
+                {"capability": "filesystem.list", "scopes": ["fs.project_workspace"]},
             ],
             "allowed_capabilities": ["filesystem.list"],
-            "allowed_scopes": ["lab_root"],
+            "allowed_scopes": ["fs.project_workspace"],
         },
         "agent-no-access": {
             "role": "restricted",
@@ -263,7 +493,12 @@ class SubjectAwareEvaluatingBackendClient(FakeBackendClient):
         },
     }
 
-    def request_policy_decision(self, context: dict):
+    def request_policy_decision(
+        self,
+        context: dict,
+        *,
+        identity_assertion: str | None = None,
+    ):
         agent_id = context["subject"]["agent_id"]
         subject = self.profiles.get(
             agent_id,
@@ -278,6 +513,7 @@ class SubjectAwareEvaluatingBackendClient(FakeBackendClient):
         )
         context = {**context, "subject": {**context["subject"], **subject}}
         self.last_policy_context = context
+        self.last_identity_assertion = identity_assertion
         return evaluate_policy(context)
 
 
@@ -285,8 +521,12 @@ class EvaluatingUnknownDialectSchemaBackendClient(
     UnknownDialectSchemaBackendClient,
     EvaluatingBackendClient,
 ):
-    def request_policy_decision(self, context: dict):
-        return EvaluatingBackendClient.request_policy_decision(self, context)
+    def request_policy_decision(self, context: dict, *, identity_assertion: str | None = None):
+        return EvaluatingBackendClient.request_policy_decision(
+            self,
+            context,
+            identity_assertion=identity_assertion,
+        )
 
 
 class UnknownToolBackendClient(FakeBackendClient):
@@ -295,6 +535,212 @@ class UnknownToolBackendClient(FakeBackendClient):
 
 
 class ProxyPolicyEnforcementTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.default_identity_patches = [
+            patch("proxy.mcp_proxy.JWTJWKSAgentIdentityVerifier", FakeIdentityVerifier),
+            patch("proxy.mcp_proxy.IdentityBindingResolver", FakeIdentityBindingResolver),
+            patch("proxy.mcp_proxy.InternalIdentityAssertionSigner", FakeAssertionSigner),
+            patch("proxy.mcp_proxy.TrustedSessionManager", FakeTrustedSessionManager),
+            patch(
+                "proxy.mcp_proxy.ToolSecurityProfileResolver",
+                FakeToolSecurityProfileResolver,
+            ),
+            patch(
+                "proxy.mcp_proxy.ResourceRegistryResolver",
+                FakeResourceRegistryResolver,
+            ),
+        ]
+        for patcher in self.default_identity_patches:
+            patcher.start()
+
+    def tearDown(self) -> None:
+        for patcher in reversed(self.default_identity_patches):
+            patcher.stop()
+
+    def test_absolute_path_inside_registered_scope_can_execute(self) -> None:
+        reset_tracking_mcp_client()
+        backend = FakeBackendClient(
+            policy_decision("ALLOW", [{"type": "LOG", "parameters": {}}])
+        )
+        proxy = MCPProxy(backend_client=backend, mcp_client_class=TrackingMCPClient)
+        call = tool_call()
+        call["arguments"] = {
+            "path": str(TEST_RESOURCE_ROOT / "contracts" / "contract1.txt")
+        }
+
+        result = proxy.handle_tool_call(call)
+
+        self.assertTrue(result["mcp_called"])
+        self.assertEqual(result["execution_status"], "success")
+        self.assertEqual(
+            backend.last_policy_context["request"]["resource_resolution_status"],
+            "resolved",
+        )
+        self.assertEqual(
+            TrackingMCPClient.last_arguments,
+            {"path": "contracts/contract1.txt"},
+        )
+
+    def test_absolute_path_outside_registered_scope_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            outside_file = Path(directory) / "outside.txt"
+            outside_file.write_text("outside", encoding="utf-8")
+
+            reset_tracking_mcp_client()
+            backend = FakeBackendClient(
+                policy_decision("ALLOW", [{"type": "LOG", "parameters": {}}])
+            )
+            proxy = MCPProxy(backend_client=backend, mcp_client_class=TrackingMCPClient)
+            call = tool_call()
+            call["arguments"] = {"path": str(outside_file)}
+
+            result = proxy.handle_tool_call(call)
+
+        self.assertFalse(result["mcp_called"])
+        self.assertEqual(
+            backend.last_policy_context["request"]["resource_resolution_status"],
+            "resource_outside_registered_scope",
+        )
+
+    def test_internal_only_link_inside_scope_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            contracts = root / "contracts"
+            contracts.mkdir()
+            (contracts / "contract1.txt").write_text("ok", encoding="utf-8")
+            link = root / "contracts_link"
+            create_directory_link(link, contracts)
+            try:
+                registry = self._resource_registry(
+                    root,
+                    symlink_policy="internal-only",
+                )
+                resolution = resolve_resource(
+                    profile=self._read_profile(),
+                    arguments={"path": "contracts_link/contract1.txt"},
+                    registry=registry,
+                )
+            finally:
+                remove_directory_link(link)
+
+        self.assertEqual(resolution.resource_resolution_status, "resolved")
+        self.assertEqual(
+            resolution.execution_arguments,
+            {"path": "contracts/contract1.txt"},
+        )
+
+    def test_internal_only_outgoing_link_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as root_directory, tempfile.TemporaryDirectory() as outside_directory:
+            root = Path(root_directory)
+            outside = Path(outside_directory)
+            (outside / "secret.txt").write_text("outside", encoding="utf-8")
+            link = root / "outgoing"
+            create_directory_link(link, outside)
+            try:
+                resolution = resolve_resource(
+                    profile=self._read_profile(),
+                    arguments={"path": "outgoing/secret.txt"},
+                    registry=self._resource_registry(
+                        root,
+                        symlink_policy="internal-only",
+                    ),
+                )
+            finally:
+                remove_directory_link(link)
+
+        self.assertEqual(
+            resolution.resource_resolution_status,
+            "resource_link_outside_scope",
+        )
+
+    def test_deny_link_policy_blocks_internal_link(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            contracts = root / "contracts"
+            contracts.mkdir()
+            (contracts / "contract1.txt").write_text("ok", encoding="utf-8")
+            link = root / "contracts_link"
+            create_directory_link(link, contracts)
+            try:
+                resolution = resolve_resource(
+                    profile=self._read_profile(),
+                    arguments={"path": "contracts_link/contract1.txt"},
+                    registry=self._resource_registry(root, symlink_policy="deny"),
+                )
+            finally:
+                remove_directory_link(link)
+
+        self.assertEqual(
+            resolution.resource_resolution_status,
+            "resource_link_forbidden",
+        )
+
+    def test_revalidate_detects_link_target_change_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first"
+            second = root / "second"
+            first.mkdir()
+            second.mkdir()
+            (first / "contract1.txt").write_text("first", encoding="utf-8")
+            (second / "contract1.txt").write_text("second", encoding="utf-8")
+            link = root / "current"
+            create_directory_link(link, first)
+            try:
+                resolution = resolve_resource(
+                    profile=self._read_profile(),
+                    arguments={"path": "current/contract1.txt"},
+                    registry=self._resource_registry(
+                        root,
+                        symlink_policy="internal-only",
+                    ),
+                )
+                remove_directory_link(link)
+                create_directory_link(link, second)
+                is_valid, reason = revalidate_resource(resolution)
+            finally:
+                remove_directory_link(link)
+
+        self.assertFalse(is_valid)
+        self.assertEqual(reason, "resource_changed_before_execution")
+
+    def _read_profile(self) -> ResolvedToolSecurityProfile:
+        return ResolvedToolSecurityProfile(
+            revision="tool-security-profiles-test-v1",
+            server_ref="streamable_http:http://127.0.0.1:9000/mcp",
+            tool_name="read_file",
+            operation="read",
+            required_capability="filesystem.read",
+            resource=ToolResourceProfile(
+                adapter="filesystem",
+                argument_name="path",
+                expected_type="file",
+                relative_base_scope="fs.project_workspace",
+                allowed_scope_candidates=["fs.project_workspace"],
+            ),
+        )
+
+    def _resource_registry(
+        self,
+        root: Path,
+        *,
+        symlink_policy: str,
+    ) -> ResourceRegistry:
+        return ResourceRegistry(
+            revision="resource-scopes-test-v1",
+            filesystem_scopes={
+                "fs.project_workspace": ResolvedFilesystemScope(
+                    scope_id="fs.project_workspace",
+                    root=root,
+                    root_resolved=root.resolve(strict=True),
+                    allowed_operations=("read", "list"),
+                    sensitivity="internal",
+                    symlink_policy=symlink_policy,
+                    denied_patterns=(),
+                )
+            },
+        )
+
     def test_allow_with_log_can_execute(self) -> None:
         can_execute, reason = _can_execute_policy_decision(
             validated_policy_decision("ALLOW", [{"type": "LOG", "parameters": {}}])
@@ -862,7 +1308,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         self.assertTrue(result["executed"])
         self.assertEqual(
             backend.last_policy_context["request"]["canonical_resource"],
-            "contracts/contract1.txt",
+            "fs.project_workspace:/contracts/contract1.txt",
         )
         self.assertEqual(
             backend.last_policy_context["request"]["arguments"],
@@ -884,7 +1330,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         self.assertTrue(result["executed"])
         self.assertEqual(
             backend.last_policy_context["request"]["canonical_resource"],
-            "contracts/contract1.txt",
+            "fs.project_workspace:/contracts/contract1.txt",
         )
         self.assertEqual(TrackingMCPClient.last_arguments, {"path": "contracts/contract1.txt"})
 
@@ -902,7 +1348,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         self.assertTrue(result["executed"])
         self.assertEqual(
             backend.last_policy_context["request"]["canonical_resource"],
-            "contracts/contract1.txt",
+            "fs.project_workspace:/contracts/contract1.txt",
         )
         self.assertEqual(TrackingMCPClient.last_arguments, {"path": "contracts/contract1.txt"})
 
@@ -981,7 +1427,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
     def test_traversal_outside_root_and_absolute_path_are_invalid(self) -> None:
         cases = [
             ("../../.env", "path_traversal_outside_root"),
-            ("/etc/passwd", "path_absolute"),
+            ("/etc/passwd", "resource_outside_registered_scope"),
         ]
         for path, expected_code in cases:
             with self.subTest(path=path):
@@ -999,9 +1445,11 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                 result = proxy.handle_tool_call(call)
 
                 self.assertFalse(result["mcp_called"])
-                self.assertIn(
+                self.assertEqual(
+                    backend.last_policy_context["request"][
+                        "resource_resolution_status"
+                    ],
                     expected_code,
-                    backend.last_policy_context["request"]["validation_error_codes"],
                 )
 
     def test_contract_parent_env_uses_canonical_sensitive_path(self) -> None:
@@ -1026,7 +1474,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         self.assertFalse(result["mcp_called"])
         self.assertEqual(
             backend.last_policy_context["request"]["canonical_resource"],
-            ".env",
+            "fs.project_workspace:/.ENV",
         )
         self.assertEqual(result["decision"]["rule_id"], "deny_sensitive_paths")
 
@@ -1043,13 +1491,13 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         self.assertFalse(TrackingMCPClient.called)
         self.assertEqual(
             backend.last_policy_context["request"]["canonical_resource"],
-            ".ENV",
+            "fs.project_workspace:/.ENV",
         )
         self.assertEqual(
             backend.last_policy_context["request"]["resource_scope"],
-            "sensitive",
+            "fs.project_workspace",
         )
-        self.assertEqual(result["decision"]["rule_id"], "deny_sensitive_paths")
+        self.assertEqual(result["decision"]["rule_id"], "deny_sensitive_resource")
         self.assertEqual(result["decision"]["effect"], "DENY")
 
     def test_contract_parent_uppercase_env_uses_canonical_sensitive_path(self) -> None:
@@ -1064,9 +1512,9 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         self.assertFalse(result["mcp_called"])
         self.assertEqual(
             backend.last_policy_context["request"]["canonical_resource"],
-            ".ENV",
+            "fs.project_workspace:/.ENV",
         )
-        self.assertEqual(result["decision"]["rule_id"], "deny_sensitive_paths")
+        self.assertEqual(result["decision"]["rule_id"], "deny_sensitive_resource")
 
     def test_uppercase_secrets_path_is_sensitive_and_not_sent_to_mcp(self) -> None:
         reset_tracking_mcp_client()
@@ -1081,9 +1529,9 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         self.assertFalse(TrackingMCPClient.called)
         self.assertEqual(
             backend.last_policy_context["request"]["resource_scope"],
-            "sensitive",
+            "fs.project_workspace",
         )
-        self.assertEqual(result["decision"]["rule_id"], "deny_sensitive_paths")
+        self.assertEqual(result["decision"]["rule_id"], "deny_sensitive_resource")
 
     def test_unknown_schema_dialect_denies_invalid_arguments(self) -> None:
         reset_tracking_mcp_client()
@@ -1276,6 +1724,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         proxy = MCPProxy(backend_client=backend, mcp_client_class=TrackingMCPClient)
         call = {
             "agent_id": "agent-demo",
+            "access_token": "token:agent-demo",
             "session_id": "session-001",
             "tool_name": "list_files",
             "arguments": {},
@@ -1305,6 +1754,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         proxy = MCPProxy(backend_client=backend, mcp_client_class=TrackingMCPClient)
         call = {
             "agent_id": "agent-demo",
+            "access_token": "token:agent-demo",
             "session_id": "session-001",
             "tool_name": "list_files",
             "arguments": {},
@@ -1322,6 +1772,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         proxy = MCPProxy(backend_client=backend, mcp_client_class=TrackingMCPClient)
         call = {
             "agent_id": "agent-contract-reader",
+            "access_token": "token:agent-contract-reader",
             "session_id": "session-001",
             "tool_name": "list_files",
             "arguments": {},
@@ -1338,6 +1789,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         proxy = MCPProxy(backend_client=backend, mcp_client_class=TrackingMCPClient)
         call = tool_call()
         call["agent_id"] = "agent-list-only"
+        call["access_token"] = "token:agent-list-only"
 
         result = proxy.handle_tool_call(call)
 
@@ -1350,6 +1802,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         proxy = MCPProxy(backend_client=backend, mcp_client_class=TrackingMCPClient)
         call = tool_call()
         call["agent_id"] = "agent-no-access"
+        call["access_token"] = "token:agent-no-access"
 
         result = proxy.handle_tool_call(call)
 
@@ -1364,6 +1817,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         call.update(
             {
                 "agent_id": "unknown-agent",
+                "access_token": "token:unknown-agent",
                 "allowed_capabilities": ["filesystem.read"],
                 "allowed_scopes": ["contracts"],
                 "grants": [
@@ -1422,4 +1876,4 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         result = proxy.handle_tool_call(call)
 
         self.assertFalse(result["mcp_called"])
-        self.assertEqual(result["decision"]["rule_id"], "deny_sensitive_paths")
+        self.assertEqual(result["decision"]["rule_id"], "deny_sensitive_resource")

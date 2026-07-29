@@ -53,6 +53,11 @@ class PolicyCapabilityGrant(BaseModel):
 
 class PolicySubject(BaseModel):
     agent_id: NonEmptyString
+    identity_status: Literal["verified", "unverified"] = "unverified"
+    identity_issuer: str = "unknown"
+    identity_binding_revision: str = "unknown"
+    session_status: str = "unknown"
+    session_reference: str = "unknown"
     role: str = "unknown"
     authorization_status: Literal["resolved", "unknown"] = "unknown"
     authorization_revision: str = "unknown"
@@ -78,6 +83,34 @@ class PolicySubject(BaseModel):
             raise ValueError("role must not be empty.")
         return value
 
+    @field_validator("identity_issuer")
+    @classmethod
+    def validate_identity_issuer(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("identity_issuer must not be empty.")
+        return value
+
+    @field_validator("identity_binding_revision")
+    @classmethod
+    def validate_identity_binding_revision(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("identity_binding_revision must not be empty.")
+        return value
+
+    @field_validator("session_status")
+    @classmethod
+    def validate_session_status(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("session_status must not be empty.")
+        return value
+
+    @field_validator("session_reference")
+    @classmethod
+    def validate_session_reference(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("session_reference must not be empty.")
+        return value
+
     @field_validator("authorization_revision")
     @classmethod
     def validate_authorization_revision(cls, value: str) -> str:
@@ -87,6 +120,22 @@ class PolicySubject(BaseModel):
 
     @model_validator(mode="after")
     def validate_authorization_consistency(self) -> "PolicySubject":
+        if self.identity_status == "verified":
+            if not self.identity_issuer.strip():
+                raise ValueError("verified identities require an identity issuer.")
+            if not self.identity_binding_revision.strip():
+                raise ValueError(
+                    "verified identities require an identity binding revision."
+                )
+
+        if self.identity_status == "unverified":
+            if self.authorization_status == "resolved":
+                raise ValueError(
+                    "unverified identities cannot have resolved authorization."
+                )
+            if self.grants:
+                raise ValueError("unverified identities must not include grants.")
+
         if self.authorization_status == "unknown" and self.grants:
             raise ValueError("unknown subjects must not include grants.")
 
@@ -106,6 +155,9 @@ class PolicySubject(BaseModel):
 class PolicyServerContext(BaseModel):
     id: PositiveInt
     endpoint: NonEmptyString
+    server_ref: str = "unknown"
+    known: StrictBool = True
+    trusted: StrictBool = True
     trust_status: str = "unknown"
     security_status: str | None = None
 
@@ -118,10 +170,19 @@ class PolicyServerContext(BaseModel):
             raise ValueError("endpoint must not be empty.")
         return value
 
+    @field_validator("server_ref")
+    @classmethod
+    def validate_server_ref(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("server_ref must not be empty.")
+        return value
+
 
 class PolicyToolContext(BaseModel):
     id: PositiveInt
     name: NonEmptyString
+    profile_status: str = "unknown"
+    profile_revision: str = "unknown"
     risk_score: Score = 0.0
     sensitivity: str = "unknown"
     capabilities: list[str] = Field(default_factory=list)
@@ -139,9 +200,24 @@ class PolicyToolContext(BaseModel):
             raise ValueError("name must not be empty.")
         return value
 
+    @field_validator("profile_status")
+    @classmethod
+    def validate_profile_status(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("profile_status must not be empty.")
+        return value
+
+    @field_validator("profile_revision")
+    @classmethod
+    def validate_profile_revision(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("profile_revision must not be empty.")
+        return value
+
 
 class PolicyRequestContext(BaseModel):
     operation: str = "unknown"
+    resource_adapter: str = "unknown"
     resource_type: str = "unknown"
     resource_scope: str = "unknown"
     required_capability: CapabilityIdentifier
@@ -155,6 +231,12 @@ class PolicyRequestContext(BaseModel):
         default_factory=list,
         max_length=MAX_VALIDATION_ERROR_CODES,
     )
+    resource_sensitivity: str = "unknown"
+    resource_resolution_status: str = "unknown"
+    resource_flags: list[ValidationErrorCode] = Field(default_factory=list)
+    resource_registry_revision: str = "unknown"
+    tool_profile_revision: str = "unknown"
+    operation_allowed_on_scope: StrictBool = False
     estimated_output_size_mb: Annotated[float, Field(ge=0.0, strict=True)] = 0.001
 
     model_config = ConfigDict(extra="forbid")

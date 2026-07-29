@@ -4,6 +4,12 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from proxy.agent_identity import (
+    AgentIdentityError,
+    AgentIdentityVerifier,
+    JWTJWKSAgentIdentityVerifier,
+    VerifiedExternalIdentity,
+)
 from proxy.backend_client import BackendClient, BackendClientError
 from proxy.http_mcp_client import (
     MCPHttpClient,
@@ -11,14 +17,38 @@ from proxy.http_mcp_client import (
     MCPProtocolError,
     SUPPORTED_PROTOCOL_VERSION,
 )
+from proxy.identity_binding import (
+    IdentityBindingError,
+    IdentityBindingResolver,
+    ResolvedIdentityBinding,
+)
+from proxy.internal_identity_assertion import (
+    InternalIdentityAssertionError,
+    InternalIdentityAssertionSigner,
+)
 from proxy.runtime_logger import (
     build_runtime_log,
     send_runtime_log,
     summarize_tool_result,
 )
+from proxy.resource_registry import (
+    ResourceRegistryError,
+    ResourceRegistryResolver,
+)
+from proxy.resource_adapters import revalidate_resource
+from proxy.tool_security_profiles import (
+    ToolSecurityProfileError,
+    ToolSecurityProfileResolver,
+    server_ref_for_server,
+)
 from proxy.tool_request_preparation import (
     PreparedToolRequest,
     prepare_tool_request,
+)
+from proxy.trusted_sessions import (
+    ProxyTrustedSession,
+    TrustedSessionError,
+    TrustedSessionManager,
 )
 
 try:
@@ -101,11 +131,81 @@ class MCPProxy:
         self,
         backend_client: BackendClient | None = None,
         mcp_client_class: type[MCPHttpClient] = MCPHttpClient,
+        identity_verifier: AgentIdentityVerifier | None = None,
+        identity_binding_resolver: IdentityBindingResolver | None = None,
+        assertion_signer: InternalIdentityAssertionSigner | None = None,
+        trusted_session_manager: TrustedSessionManager | None = None,
+        tool_profile_resolver: ToolSecurityProfileResolver | None = None,
+        resource_registry_resolver: ResourceRegistryResolver | None = None,
     ) -> None:
         self.backend_client = backend_client or BackendClient()
         self.mcp_client_class = mcp_client_class
+        self.identity_verifier = identity_verifier or JWTJWKSAgentIdentityVerifier()
+        self.identity_binding_resolver = (
+            identity_binding_resolver or IdentityBindingResolver()
+        )
+        self.assertion_signer = assertion_signer or InternalIdentityAssertionSigner()
+        self.trusted_session_manager = (
+            trusted_session_manager or TrustedSessionManager()
+        )
+        self.tool_profile_resolver = (
+            tool_profile_resolver or ToolSecurityProfileResolver()
+        )
+        self.resource_registry_resolver = (
+            resource_registry_resolver or ResourceRegistryResolver()
+        )
 
     def handle_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+        claimed_agent_id = tool_call.get("agent_id")
+        safe_input_tool_call = {
+            key: value
+            for key, value in tool_call.items()
+            if key
+            not in {
+                "access_token",
+                "authorization",
+                "identity_assertion",
+                "session_token",
+            }
+        }
+
+        try:
+            trusted_session = self._resolve_trusted_session(
+                tool_call,
+                claimed_agent_id=claimed_agent_id,
+            )
+        except AgentIdentityError as exc:
+            return self._trusted_identity_error_response(
+                safe_input_tool_call,
+                exc.code,
+            )
+        except IdentityBindingError as exc:
+            return self._trusted_identity_error_response(
+                safe_input_tool_call,
+                exc.code,
+            )
+        except TrustedSessionError as exc:
+            return self._trusted_identity_error_response(
+                safe_input_tool_call,
+                exc.code,
+            )
+        except Exception:
+            return self._trusted_identity_error_response(
+                safe_input_tool_call,
+                "identity_verification_unexpected_error",
+            )
+
+        tool_call = {
+            **safe_input_tool_call,
+            "agent_id": trusted_session.agent_id,
+            "identity_status": "verified",
+            "identity_issuer": trusted_session.identity_issuer,
+            "identity_binding_revision": trusted_session.identity_binding_revision,
+            "session_status": trusted_session.session_status,
+            "session_reference": trusted_session.session_reference,
+            "session_id": trusted_session.session_reference,
+        }
+
         raw_arguments = tool_call.get("arguments", {})
         if raw_arguments is None:
             raw_arguments = {}
@@ -116,34 +216,31 @@ class MCPProxy:
             "arguments": raw_arguments,
         }
 
-        if not tool_call.get("agent_id") or not tool_call.get("session_id"):
-            decision = _fail_closed_proxy_decision(
-                rule_id="invalid_runtime_identity",
-                reason="Tool call is missing required agent_id or session_id.",
-            )
-            return self._response(
-                status="blocked",
-                decision=decision.model_dump(mode="json"),
-                executed=False,
-                mcp_called=False,
-                execution_status="blocked",
-                tool_result=None,
-                runtime_log={"created": False, "id": None, "payload": None},
-                message="Tool call skipped because runtime identity is incomplete.",
-                skip_reason="invalid_runtime_identity",
-            )
-
         try:
             server = self._resolve_server(tool_call)
             tool = self._resolve_tool(server, tool_call)
         except BackendClientError as exc:
             return self._inventory_error_response(tool_call, str(exc))
 
+        server_ref = server_ref_for_server(server)
+        try:
+            tool_profile = self.tool_profile_resolver.resolve(
+                server_ref=server_ref,
+                tool_name=str(tool.get("name") or tool_call.get("tool_name") or ""),
+            )
+            resource_registry = self.resource_registry_resolver.load()
+        except ToolSecurityProfileError as exc:
+            return self._profile_error_response(tool_call, server.get("id"), exc.code)
+        except ResourceRegistryError as exc:
+            return self._profile_error_response(tool_call, server.get("id"), exc.code)
+
         try:
             prepared_request = prepare_tool_request(
                 tool_name=str(tool.get("name") or tool_call.get("tool_name") or ""),
                 raw_arguments=raw_arguments,
                 input_schema=tool.get("input_schema"),
+                tool_profile=tool_profile,
+                resource_registry=resource_registry,
             )
         except Exception:
             decision = _fail_closed_proxy_decision(
@@ -159,10 +256,18 @@ class MCPProxy:
                     arguments_valid=False,
                     validation_error_codes=("request_preparation_error",),
                     operation="unknown",
+                    required_capability="unclassified",
+                    resource_adapter="unknown",
                     resource_type="unknown",
                     resource_scope="invalid",
                     canonical_resource=None,
-                    required_capability="unclassified",
+                    resource_sensitivity="unknown",
+                    resource_resolution_status="request_preparation_error",
+                    resource_flags=(),
+                    resource_registry_revision="unknown",
+                    tool_profile_revision="unknown",
+                    operation_allowed_on_scope=False,
+                    execution_arguments={},
                 ),
             )
             return self._skip_response(
@@ -185,7 +290,41 @@ class MCPProxy:
         )
 
         try:
-            raw_decision = self.backend_client.request_policy_decision(context)
+            identity_assertion = self.assertion_signer.sign(context)
+        except InternalIdentityAssertionError as exc:
+            decision = _trusted_identity_fail_closed_proxy_decision(exc.code)
+            decision_data = decision.model_dump(mode="json")
+            return self._skip_response(
+                tool_call=prepared_tool_call,
+                server_id=server["id"],
+                decision=decision_data,
+                status="blocked",
+                execution_status="blocked",
+                message="Tool call skipped because internal identity assertion failed.",
+                error_summary=exc.code,
+                skip_reason=exc.code,
+            )
+        except Exception:
+            decision = _trusted_identity_fail_closed_proxy_decision(
+                "identity_verification_unexpected_error"
+            )
+            decision_data = decision.model_dump(mode="json")
+            return self._skip_response(
+                tool_call=prepared_tool_call,
+                server_id=server["id"],
+                decision=decision_data,
+                status="blocked",
+                execution_status="blocked",
+                message="Tool call skipped because internal identity assertion failed.",
+                error_summary="identity_verification_unexpected_error",
+                skip_reason="identity_verification_unexpected_error",
+            )
+
+        try:
+            raw_decision = self.backend_client.request_policy_decision(
+                context,
+                identity_assertion=identity_assertion,
+            )
         except BackendClientError as exc:
             decision = _fail_closed_proxy_decision(
                 rule_id="policy_error",
@@ -246,6 +385,27 @@ class MCPProxy:
                 skip_reason="invalid_tool_arguments",
             )
 
+        unsafe_resource_reason = self._unsafe_resource_guard_reason(prepared_request)
+        if unsafe_resource_reason is not None and decision.effect != PolicyEffect.DENY:
+            decision = _fail_closed_proxy_decision(
+                rule_id="unsafe_resource_guard",
+                reason="Resolved resource is not safe to execute.",
+                severity="critical",
+                evidence={"resource_error_code": unsafe_resource_reason},
+                policy_revision="proxy-resource-guard-v1",
+            )
+            policy_decision_data = decision.model_dump(mode="json")
+            return self._skip_response(
+                tool_call=prepared_tool_call,
+                server_id=server["id"],
+                decision=policy_decision_data,
+                status="blocked",
+                execution_status="blocked",
+                message="Tool call skipped because resource resolution is unsafe.",
+                error_summary=unsafe_resource_reason,
+                skip_reason=unsafe_resource_reason,
+            )
+
         can_execute, skip_reason = _can_execute_policy_decision(decision)
         policy_decision_data = decision.model_dump(mode="json")
         if not can_execute:
@@ -260,7 +420,73 @@ class MCPProxy:
                 skip_reason=skip_reason,
             )
 
-        return self._execute_tool_call(prepared_tool_call, server, policy_decision_data)
+        return self._execute_tool_call(
+            prepared_tool_call,
+            server,
+            policy_decision_data,
+            prepared_request,
+        )
+
+    def create_trusted_session(self, access_token: str) -> dict[str, Any]:
+        external_identity = self.identity_verifier.verify(access_token)
+        identity_binding = self.identity_binding_resolver.resolve(
+            issuer=external_identity.issuer,
+            subject=external_identity.subject,
+        )
+        trusted_session = self.trusted_session_manager.create_for_identity(
+            external_identity=external_identity,
+            identity_binding=identity_binding,
+        )
+        return {
+            "session_reference": trusted_session.session_reference,
+            "session_token": trusted_session.session_token,
+            "agent_id": trusted_session.agent_id,
+            "identity_binding_revision": trusted_session.identity_binding_revision,
+        }
+
+    def _resolve_trusted_session(
+        self,
+        tool_call: dict[str, Any],
+        *,
+        claimed_agent_id: Any,
+    ) -> ProxyTrustedSession:
+        session_token = tool_call.get("session_token")
+        if session_token is not None:
+            trusted_session = self.trusted_session_manager.validate_token(session_token)
+            binding = self.identity_binding_resolver.resolve(
+                issuer=trusted_session.identity_issuer,
+                subject=trusted_session.identity_subject,
+            )
+            if (
+                binding.agent_id != trusted_session.agent_id
+                or binding.revision != trusted_session.identity_binding_revision
+            ):
+                raise TrustedSessionError("trusted_session_binding_invalid")
+            self._verify_claimed_agent_id(claimed_agent_id, trusted_session.agent_id)
+            return trusted_session
+
+        external_identity = self.identity_verifier.verify(tool_call.get("access_token"))
+        identity_binding = self.identity_binding_resolver.resolve(
+            issuer=external_identity.issuer,
+            subject=external_identity.subject,
+        )
+        self._verify_claimed_agent_id(claimed_agent_id, identity_binding.agent_id)
+        return self.trusted_session_manager.create_for_identity(
+            external_identity=external_identity,
+            identity_binding=identity_binding,
+        )
+
+    def _verify_claimed_agent_id(
+        self,
+        claimed_agent_id: Any,
+        resolved_agent_id: str,
+    ) -> None:
+        if (
+            isinstance(claimed_agent_id, str)
+            and claimed_agent_id
+            and claimed_agent_id != resolved_agent_id
+        ):
+            raise TrustedSessionError("claimed_identity_mismatch")
 
     def _resolve_server(self, tool_call: dict[str, Any]) -> dict[str, Any]:
         raw_server_id = tool_call.get("server_id")
@@ -317,6 +543,11 @@ class MCPProxy:
         return {
             "subject": {
                 "agent_id": tool_call["agent_id"],
+                "identity_status": "verified",
+                "identity_issuer": tool_call["identity_issuer"],
+                "identity_binding_revision": tool_call["identity_binding_revision"],
+                "session_status": tool_call["session_status"],
+                "session_reference": tool_call["session_reference"],
                 "role": "unknown",
                 "authorization_status": "unknown",
                 "authorization_revision": "unresolved",
@@ -327,12 +558,17 @@ class MCPProxy:
             "server": {
                 "id": server.get("id"),
                 "endpoint": server.get("endpoint"),
+                "server_ref": server_ref_for_server(server),
+                "known": True,
+                "trusted": trust_status not in {"unknown", "blocked"},
                 "trust_status": trust_status,
                 "security_status": server.get("security_status"),
             },
             "tool": {
                 "id": tool.get("id"),
                 "name": tool.get("name") or tool_call.get("tool_name"),
+                "profile_status": "resolved",
+                "profile_revision": prepared_request.tool_profile_revision,
                 "risk_score": tool.get("risk_score", 0.0),
                 "sensitivity": tool.get("sensitivity") or "unknown",
                 "capabilities": tool.get("capabilities") or [],
@@ -343,6 +579,7 @@ class MCPProxy:
             },
             "request": {
                 "operation": prepared_request.operation,
+                "resource_adapter": prepared_request.resource_adapter,
                 "resource_type": prepared_request.resource_type,
                 "resource_scope": prepared_request.resource_scope,
                 "required_capability": prepared_request.required_capability,
@@ -352,6 +589,12 @@ class MCPProxy:
                 "validation_error_codes": list(
                     prepared_request.validation_error_codes
                 ),
+                "resource_sensitivity": prepared_request.resource_sensitivity,
+                "resource_resolution_status": prepared_request.resource_resolution_status,
+                "resource_flags": list(prepared_request.resource_flags),
+                "resource_registry_revision": prepared_request.resource_registry_revision,
+                "tool_profile_revision": prepared_request.tool_profile_revision,
+                "operation_allowed_on_scope": prepared_request.operation_allowed_on_scope,
                 "estimated_output_size_mb": tool_call.get("estimated_output_size_mb", 0.001),
             },
             "runtime": {
@@ -375,7 +618,29 @@ class MCPProxy:
         tool_call: dict[str, Any],
         server: dict[str, Any],
         decision: dict[str, Any],
+        prepared_request: PreparedToolRequest,
     ) -> dict[str, Any]:
+        is_still_valid, revalidation_error = revalidate_resource(
+            prepared_request.resource_resolution
+        )
+        if not is_still_valid:
+            fail_closed = _fail_closed_proxy_decision(
+                rule_id="resource_changed_before_execution",
+                reason="Resource changed before execution.",
+                evidence={"resource_error_code": revalidation_error},
+                policy_revision="proxy-resource-guard-v1",
+            ).model_dump(mode="json")
+            return self._skip_response(
+                tool_call=tool_call,
+                server_id=server["id"],
+                decision=fail_closed,
+                status="blocked",
+                execution_status="blocked",
+                message="Tool call skipped because resource changed before execution.",
+                error_summary=revalidation_error or "resource_changed_before_execution",
+                skip_reason=revalidation_error or "resource_changed_before_execution",
+            )
+
         protocol_version = server.get("protocol_version") or SUPPORTED_PROTOCOL_VERSION
         mcp_client = self.mcp_client_class(
             endpoint=server["endpoint"],
@@ -586,17 +851,87 @@ class MCPProxy:
         prepared_request: PreparedToolRequest,
     ) -> dict[str, Any]:
         prepared_tool_call = dict(tool_call)
-        prepared_tool_call["arguments"] = prepared_request.arguments
+        prepared_tool_call.pop("access_token", None)
+        prepared_tool_call.pop("authorization", None)
+        prepared_tool_call.pop("identity_assertion", None)
+        prepared_tool_call["arguments"] = prepared_request.execution_arguments
         prepared_tool_call["arguments_valid"] = prepared_request.arguments_valid
         prepared_tool_call["validation_error_codes"] = list(
             prepared_request.validation_error_codes
         )
         prepared_tool_call["operation"] = prepared_request.operation
+        prepared_tool_call["resource_adapter"] = prepared_request.resource_adapter
         prepared_tool_call["resource_type"] = prepared_request.resource_type
         prepared_tool_call["resource_scope"] = prepared_request.resource_scope
         prepared_tool_call["required_capability"] = prepared_request.required_capability
         prepared_tool_call["canonical_resource"] = prepared_request.canonical_resource
+        prepared_tool_call["resource_sensitivity"] = prepared_request.resource_sensitivity
+        prepared_tool_call["resource_resolution_status"] = (
+            prepared_request.resource_resolution_status
+        )
+        prepared_tool_call["resource_flags"] = list(prepared_request.resource_flags)
+        prepared_tool_call["resource_registry_revision"] = (
+            prepared_request.resource_registry_revision
+        )
+        prepared_tool_call["tool_profile_revision"] = prepared_request.tool_profile_revision
+        prepared_tool_call["operation_allowed_on_scope"] = (
+            prepared_request.operation_allowed_on_scope
+        )
         return prepared_tool_call
+
+    def _profile_error_response(
+        self,
+        tool_call: dict[str, Any],
+        server_id: int | None,
+        error_code: str,
+    ) -> dict[str, Any]:
+        decision = _fail_closed_proxy_decision(
+            rule_id=error_code,
+            reason="Tool security profile or resource registry could not be resolved.",
+        )
+        decision_data = decision.model_dump(mode="json")
+        return self._skip_response(
+            tool_call=tool_call,
+            server_id=server_id,
+            decision=decision_data,
+            status="blocked",
+            execution_status="blocked",
+            message="Tool call skipped because trusted runtime metadata is unavailable.",
+            error_summary=error_code,
+            skip_reason=error_code,
+        )
+
+    def _unsafe_resource_guard_reason(
+        self,
+        prepared_request: PreparedToolRequest,
+    ) -> str | None:
+        if not prepared_request.arguments_valid:
+            return None
+        if prepared_request.resource_resolution_status != "resolved":
+            return prepared_request.resource_resolution_status
+        if not prepared_request.operation_allowed_on_scope:
+            return "operation_not_allowed_on_scope"
+        if prepared_request.resource_sensitivity == "secret":
+            return "deny_sensitive_resource"
+        return None
+
+    def _trusted_identity_error_response(
+        self,
+        tool_call: dict[str, Any],
+        error_code: str,
+    ) -> dict[str, Any]:
+        decision = _trusted_identity_fail_closed_proxy_decision(error_code)
+        return self._response(
+            status="blocked",
+            decision=decision.model_dump(mode="json"),
+            executed=False,
+            mcp_called=False,
+            execution_status="blocked",
+            tool_result=None,
+            runtime_log={"created": False, "id": None, "payload": None},
+            message="Tool call skipped because trusted identity verification failed.",
+            skip_reason=error_code,
+        )
 
 
 def _fail_closed_proxy_decision(
@@ -624,3 +959,12 @@ def _fail_closed_proxy_decision(
         "rule_id": rule_id,
     }
     return PolicyDecision.model_validate(raw_decision)
+
+
+def _trusted_identity_fail_closed_proxy_decision(error_code: str) -> PolicyDecision:
+    return _fail_closed_proxy_decision(
+        rule_id="trusted_identity_required",
+        reason="Trusted agent identity is required.",
+        evidence={"identity_error_code": error_code},
+        policy_revision="trusted-identity-fail-closed-v1",
+    )

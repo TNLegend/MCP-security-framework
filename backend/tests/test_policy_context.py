@@ -5,6 +5,7 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -23,7 +24,9 @@ except RuntimeError as exc:
     TESTCLIENT_IMPORT_ERROR = str(exc)
 
 from app.main import app  # noqa: E402
+from app.core.config import PolicyEngineMode, settings  # noqa: E402
 from app.schemas.policy_context import RuntimePolicyInput  # noqa: E402
+from app.services import policy_runtime  # noqa: E402
 from app.services.policy_engine import evaluate_policy  # noqa: E402
 from proxy.mcp_proxy import MCPProxy  # noqa: E402
 from proxy.tool_request_preparation import prepare_tool_request  # noqa: E402
@@ -42,10 +45,20 @@ class MinimalASGITestClient:
     def __init__(self, asgi_app: Any) -> None:
         self.app = asgi_app
 
-    def post(self, path: str, json: dict[str, Any]) -> MinimalASGIResponse:
-        return asyncio.run(self._post(path, json))
+    def post(
+        self,
+        path: str,
+        json: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> MinimalASGIResponse:
+        return asyncio.run(self._post(path, json, headers or {}))
 
-    async def _post(self, path: str, payload: dict[str, Any]) -> MinimalASGIResponse:
+    async def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> MinimalASGIResponse:
         body = json.dumps(payload).encode("utf-8")
         response_status = 500
         response_body = bytearray()
@@ -64,6 +77,10 @@ class MinimalASGITestClient:
                 (b"host", b"testserver"),
                 (b"accept", b"application/json"),
                 (b"content-type", b"application/json"),
+            ]
+            + [
+                (key.lower().encode("ascii"), value.encode("ascii"))
+                for key, value in headers.items()
             ],
             "client": ("testclient", 50000),
             "server": ("testserver", 80),
@@ -89,33 +106,48 @@ class MinimalASGITestClient:
 
 
 TestClient = FastAPITestClient or MinimalASGITestClient
+TRUSTED_IDENTITY_HEADERS = {"X-MCP-Identity-Assertion": "test.assertion.value"}
+
+
+def trust_identity(context: dict[str, Any]) -> dict[str, Any]:
+    return RuntimePolicyInput.model_validate(context).model_dump(mode="json")
 
 
 def valid_context() -> dict:
     return {
         "subject": {
             "agent_id": "agent-demo",
+            "identity_status": "verified",
+            "identity_issuer": "https://issuer.example/",
+            "identity_binding_revision": "test-bindings-v1",
+            "session_status": "active",
+            "session_reference": "session-demo",
             "role": "legal_agent",
             "authorization_status": "resolved",
             "authorization_revision": "test-authorization-v1",
             "grants": [
                 {
                     "capability": "filesystem.read",
-                    "scopes": ["contracts"],
+                    "scopes": ["fs.project_workspace"],
                 }
             ],
             "allowed_capabilities": ["filesystem.read"],
-            "allowed_scopes": ["contracts"],
+            "allowed_scopes": ["fs.project_workspace"],
         },
         "server": {
             "id": 1,
             "endpoint": "http://127.0.0.1:9000/mcp",
+            "server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
+            "known": True,
+            "trusted": True,
             "trust_status": "trusted",
             "security_status": "pending_analysis",
         },
         "tool": {
             "id": 1,
             "name": "read_file",
+            "profile_status": "resolved",
+            "profile_revision": "tool-security-profiles-test-v1",
             "risk_score": 40,
             "sensitivity": "medium",
             "capabilities": [],
@@ -126,13 +158,20 @@ def valid_context() -> dict:
         },
         "request": {
             "operation": "read",
-            "resource_type": "file",
-            "resource_scope": "contracts",
+            "resource_adapter": "filesystem",
+            "resource_type": "filesystem.file",
+            "resource_scope": "fs.project_workspace",
             "required_capability": "filesystem.read",
-            "canonical_resource": "contracts/contract1.txt",
+            "canonical_resource": "fs.project_workspace:/contracts/contract1.txt",
             "arguments": {"path": "contracts/contract1.txt"},
             "arguments_valid": True,
             "validation_error_codes": [],
+            "resource_sensitivity": "internal",
+            "resource_resolution_status": "resolved",
+            "resource_flags": [],
+            "resource_registry_revision": "resource-scopes-test-v1",
+            "tool_profile_revision": "tool-security-profiles-test-v1",
+            "operation_allowed_on_scope": True,
             "estimated_output_size_mb": 0.001,
         },
         "runtime": {
@@ -247,7 +286,10 @@ class RuntimePolicyInputTests(unittest.TestCase):
     def test_canonical_resource_is_allowed_for_valid_arguments(self) -> None:
         model = RuntimePolicyInput.model_validate(valid_context())
 
-        self.assertEqual(model.request.canonical_resource, "contracts/contract1.txt")
+        self.assertEqual(
+            model.request.canonical_resource,
+            "fs.project_workspace:/contracts/contract1.txt",
+        )
 
     def test_too_many_validation_error_codes_are_rejected(self) -> None:
         payload = valid_context()
@@ -278,7 +320,7 @@ class RuntimePolicyInputTests(unittest.TestCase):
         model = RuntimePolicyInput.model_validate(valid_context())
 
         self.assertEqual(model.subject.grants[0].capability, "filesystem.read")
-        self.assertEqual(model.subject.grants[0].scopes, ["contracts"])
+        self.assertEqual(model.subject.grants[0].scopes, ["fs.project_workspace"])
 
     def test_empty_capability_is_rejected(self) -> None:
         payload = valid_context()
@@ -369,6 +411,11 @@ class ProxyPolicyContextTests(unittest.TestCase):
         proxy = MCPProxy()
         tool_call = {
             "agent_id": "agent-demo",
+            "identity_status": "verified",
+            "identity_issuer": "https://issuer.example/",
+            "identity_binding_revision": "test-bindings-v1",
+            "session_status": "active",
+            "session_reference": "session-001",
             "agent_role": "legal_agent",
             "session_id": "session-001",
             "tool_name": "read_file",
@@ -412,6 +459,11 @@ class ProxyPolicyContextTests(unittest.TestCase):
         proxy = MCPProxy()
         tool_call = {
             "agent_id": "agent-demo",
+            "identity_status": "verified",
+            "identity_issuer": "https://issuer.example/",
+            "identity_binding_revision": "test-bindings-v1",
+            "session_status": "active",
+            "session_reference": "session-001",
             "session_id": "session-001",
             "tool_name": "read_file",
             "arguments": {"path": "contracts/contract1.txt"},
@@ -458,6 +510,9 @@ class ProxyPolicyContextTests(unittest.TestCase):
             proxy._build_policy_context(
                 {
                     "session_id": "session-001",
+                    "identity_status": "verified",
+                    "identity_issuer": "https://issuer.example/",
+                    "identity_binding_revision": "test-bindings-v1",
                     "tool_name": "read_file",
                     "arguments": {},
                 },
@@ -490,6 +545,11 @@ class ProxyPolicyContextTests(unittest.TestCase):
         proxy = MCPProxy()
         tool_call = {
             "agent_id": "agent-demo",
+            "identity_status": "verified",
+            "identity_issuer": "https://issuer.example/",
+            "identity_binding_revision": "test-bindings-v1",
+            "session_status": "active",
+            "session_reference": "session-001",
             "session_id": "session-001",
             "tool_name": "read_file",
             "arguments": {"path": "contracts/contract1.txt"},
@@ -562,7 +622,9 @@ class PolicyEngineNestedContextTests(unittest.TestCase):
     def test_canonical_contract_path_overrides_raw_sensitive_path(self) -> None:
         payload = deepcopy(valid_context())
         payload["request"]["arguments"] = {"path": ".env"}
-        payload["request"]["canonical_resource"] = "contracts/contract1.txt"
+        payload["request"][
+            "canonical_resource"
+        ] = "fs.project_workspace:/contracts/contract1.txt"
 
         decision = evaluate_policy(payload)
 
@@ -572,7 +634,12 @@ class PolicyEngineNestedContextTests(unittest.TestCase):
 
 class RuntimeDecisionHttpTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.original_mode = settings.policy_engine_mode
+        settings.policy_engine_mode = PolicyEngineMode.LEGACY
         self.client = TestClient(app)
+
+    def tearDown(self) -> None:
+        settings.policy_engine_mode = self.original_mode
 
     def test_runtime_decision_returns_422_for_invalid_payload(self) -> None:
         payload = valid_context()
@@ -583,10 +650,26 @@ class RuntimeDecisionHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     def test_runtime_decision_accepts_valid_payload(self) -> None:
-        response = self.client.post("/api/v1/runtime/decision", json=valid_context())
+        with patch.object(
+            policy_runtime,
+            "verify_trusted_identity_context",
+            side_effect=lambda **kwargs: trust_identity(kwargs["context"]),
+        ):
+            response = self.client.post(
+                "/api/v1/runtime/decision",
+                json=valid_context(),
+                headers=TRUSTED_IDENTITY_HEADERS,
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["decision"], "ALLOW")
+
+    def test_runtime_decision_missing_assertion_fails_closed(self) -> None:
+        response = self.client.post("/api/v1/runtime/decision", json=valid_context())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["decision"], "BLOCK")
+        self.assertEqual(response.json()["rule_id"], "trusted_identity_required")
 
 
 if __name__ == "__main__":

@@ -7,25 +7,30 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from proxy.mcp_proxy import MCPProxy
+from scripts.local_identity_provider import issue_access_token, load_project_env
 
 
 def main() -> None:
+    load_project_env()
     print("MCP Security Framework - Proxy Runtime Demo")
     print("=" * 50)
     print("Preconditions:")
     print("1. Backend must be running at http://127.0.0.1:8000")
     print("2. MCP lab server must be running at http://127.0.0.1:9000/mcp")
     print("3. Discovery must have been run at least once")
+    print("4. Local identity provider must be running with the configured JWKS URL")
     print("=" * 50)
 
     proxy = MCPProxy()
+    trusted_session = proxy.create_trusted_session(
+        issue_access_token(subject="service-account-agent-demo")
+    )
 
     demo_cases = [
         (
             "Case 1 - allowed contract read",
             {
-                "agent_id": "agent-demo",
-                "session_id": "session-runtime-allow",
+                "session_token": trusted_session["session_token"],
                 "tool_name": "read_file",
                 "arguments": {
                     "path": "contracts/contract1.txt",
@@ -35,8 +40,7 @@ def main() -> None:
         (
             "Case 2 - blocked .env read",
             {
-                "agent_id": "agent-demo",
-                "session_id": "session-runtime-block",
+                "session_token": trusted_session["session_token"],
                 "tool_name": "read_file",
                 "arguments": {
                     "path": ".env",

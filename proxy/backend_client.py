@@ -73,8 +73,18 @@ class BackendClient:
             None,
         )
 
-    def request_policy_decision(self, context: dict[str, Any]) -> dict[str, Any]:
-        data = self._request_json("POST", "/runtime/decision", context)
+    def request_policy_decision(
+        self,
+        context: dict[str, Any],
+        *,
+        identity_assertion: str | None = None,
+    ) -> dict[str, Any]:
+        data = self._request_json(
+            "POST",
+            "/runtime/decision",
+            context,
+            identity_assertion=identity_assertion,
+        )
         if not isinstance(data, dict):
             raise BackendClientError("Backend policy decision response is not an object.")
         return data
@@ -90,12 +100,18 @@ class BackendClient:
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
+        *,
+        identity_assertion: str | None = None,
     ) -> Any:
         body = None
         headers = {"Accept": "application/json"}
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        if identity_assertion is not None:
+            if len(identity_assertion.encode("utf-8")) > 16_384:
+                raise BackendClientError("Identity assertion header is too large.")
+            headers["X-MCP-Identity-Assertion"] = identity_assertion
 
         request = Request(
             f"{self.api_base_url}{path}",

@@ -21,6 +21,23 @@ STATUS_BY_DECISION = {
 EXECUTING_DECISIONS = {"ALLOW", "WARN", "LOG_ONLY"}
 MAX_ARGUMENT_NAMES_IN_SUMMARY = 20
 MAX_ARGUMENT_NAME_LENGTH = 64
+SENSITIVE_SUMMARY_FIELDS = {
+    "access_token",
+    "session_token",
+    "authorization",
+    "identity_assertion",
+    "signature",
+    "private_key",
+    "public_key",
+    "jwks",
+    "pem",
+    "jti",
+    "ctx_hash",
+    "token_hash",
+    "token_pepper",
+    "physical_resource",
+    "physical_path",
+}
 
 
 def summarize_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -28,15 +45,22 @@ def summarize_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(arguments, dict):
         arguments = {}
 
-    argument_names = [
-        _safe_summary_name(name)
-        for name in sorted(arguments.keys(), key=str)[:MAX_ARGUMENT_NAMES_IN_SUMMARY]
-    ]
+    safe_argument_keys = [
+        name
+        for name in sorted(arguments.keys(), key=str)
+        if not _is_sensitive_summary_field(name)
+    ][:MAX_ARGUMENT_NAMES_IN_SUMMARY]
+    argument_names = [_safe_summary_name(name) for name in safe_argument_keys]
     argument_types = {
         _safe_summary_name(name): _safe_type_name(arguments[name])
-        for name in sorted(arguments.keys(), key=str)[:MAX_ARGUMENT_NAMES_IN_SUMMARY]
+        for name in safe_argument_keys
     }
     validation_error_codes = tool_call.get("validation_error_codes") or []
+    safe_validation_error_codes = [
+        code
+        for code in validation_error_codes
+        if not _contains_sensitive_summary_field(code)
+    ]
 
     return {
         "argument_names": argument_names,
@@ -46,7 +70,7 @@ def summarize_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
             _sanitize_error_codes(
                 [
                     str(code)[:MAX_ERROR_CODE_LENGTH]
-                    for code in validation_error_codes[:MAX_VALIDATION_ERRORS]
+                    for code in safe_validation_error_codes[:MAX_VALIDATION_ERRORS]
                 ]
             )
         ),
@@ -55,6 +79,16 @@ def summarize_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
         ),
         "resource_scope": _safe_summary_name(
             str(tool_call.get("resource_scope") or "unknown")
+        ),
+        "operation": _safe_summary_name(str(tool_call.get("operation") or "unknown")),
+        "required_capability": _safe_summary_name(
+            str(tool_call.get("required_capability") or "unknown")
+        ),
+        "resource_sensitivity": _safe_summary_name(
+            str(tool_call.get("resource_sensitivity") or "unknown")
+        ),
+        "resource_resolution_status": _safe_summary_name(
+            str(tool_call.get("resource_resolution_status") or "unknown")
         ),
     }
 
@@ -142,3 +176,13 @@ def _safe_type_name(value: Any) -> str:
     if value is None:
         return "null"
     return "unknown"
+
+
+def _is_sensitive_summary_field(value: Any) -> bool:
+    normalized = str(value).strip().lower()
+    return normalized in SENSITIVE_SUMMARY_FIELDS
+
+
+def _contains_sensitive_summary_field(value: Any) -> bool:
+    normalized = str(value).lower()
+    return any(field in normalized for field in SENSITIVE_SUMMARY_FIELDS)
