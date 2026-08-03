@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -50,7 +50,6 @@ def create_runtime_log(log: RuntimeCallCreate, db: Session = Depends(get_db)):
 @router.post("/decision", response_model=PolicyDecision)
 def evaluate_runtime_decision(
     context: RuntimePolicyInput,
-    background_tasks: BackgroundTasks,
     x_mcp_identity_assertion: str | None = Header(
         default=None,
         alias="X-MCP-Identity-Assertion",
@@ -59,7 +58,6 @@ def evaluate_runtime_decision(
 ) -> PolicyDecision:
     return evaluate_runtime_policy(
         context=context.model_dump(mode="json"),
-        background_tasks=background_tasks,
         identity_assertion=x_mcp_identity_assertion,
         db=db,
     )

@@ -67,7 +67,7 @@ mcp-security-framework/
 |-- scripts/      Dependency checks and MCP discovery/import script
 |-- proxy/        Runtime enforcement layer
 |-- agent/        Provider-agnostic LLM agent demo
-|-- policies/     YAML policy rules
+|-- policies/     Rego runtime policy and administrative YAML data
 |-- scanners/     Reserved for future scanning modules
 |-- docs/         Ignored local documentation workspace
 |-- reports/      Ignored local report output
@@ -80,7 +80,7 @@ mcp-security-framework/
 
 ### `backend/`
 
-FastAPI backend backed by local PostgreSQL. It stores MCP servers, MCP tools, policy rules, runtime calls, policy decisions, and audit events. It exposes inventory, policy decision, health, and runtime log routes.
+FastAPI backend backed by local PostgreSQL. It stores MCP servers, MCP tools, runtime calls, policy decisions, and audit events. It exposes inventory, policy decision, health, and runtime log routes.
 
 ### `frontend/`
 
@@ -124,7 +124,7 @@ Discovers the local MCP HTTP server by calling `initialize` and `tools/list`, th
 Runtime enforcement layer. It:
 
 - resolves server/tool metadata from backend inventory;
-- asks the Policy Engine for a decision;
+- asks OPA for a runtime policy decision through the backend;
 - calls MCP only when execution is allowed;
 - skips MCP execution when policy blocks;
 - creates runtime logs.
@@ -140,13 +140,15 @@ Provider-agnostic LLM agent demo. It supports:
 
 The agent validates the structured proposal and sends only approved tool-call requests to the proxy.
 
-### `policies/default_rules.yaml`
+### `policies/opa/runtime_policy.rego`
 
-YAML rules used by the Policy Engine. Current decisions include:
+Authoritative Rego runtime policy evaluated by OPA. Current decisions include:
 
 ```text
 ALLOW, BLOCK, WARN, LIMIT, ASK_APPROVAL, LOG_ONLY
 ```
+
+The other YAML files under `policies/` are administrative data for identity bindings, subject authorizations, tool profiles, and resource scopes.
 
 ## Environment Variables
 
@@ -351,7 +353,7 @@ The runtime path enforces these rules:
 - the LLM only proposes a JSON tool call;
 - the agent validates the proposal and rejects invalid structures;
 - the proxy resolves backend inventory metadata;
-- the Policy Engine evaluates the call before execution;
+- OPA evaluates the call before execution;
 - `ALLOW`, `WARN`, and `LOG_ONLY` may execute;
 - `BLOCK` and `ASK_APPROVAL` do not execute in the current runtime;
 - blocked calls still create runtime logs;
@@ -360,7 +362,7 @@ The runtime path enforces these rules:
 ## Current Limitations
 
 - MCP lab server is local and controlled.
-- Policy rules are still simple YAML rules.
+- Runtime policy depends on OPA availability and fails closed when OPA is unavailable.
 - No human approval workflow yet.
 - No scanner or DevSecOps analysis yet.
 - No AWS integration yet.

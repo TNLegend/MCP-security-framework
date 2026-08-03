@@ -178,8 +178,8 @@ def prepare_tool_request(
             resource_sensitivity="internal",
             resource_resolution_status="resolved",
             resource_flags=(),
-            resource_registry_revision="legacy-lab",
-            tool_profile_revision="legacy-lab",
+            resource_registry_revision="lab-default",
+            tool_profile_revision="lab-default",
             operation_allowed_on_scope=True,
             execution_arguments={},
         )
@@ -217,8 +217,8 @@ def prepare_tool_request(
             ),
             resource_resolution_status="resolved",
             resource_flags=(),
-            resource_registry_revision="legacy-lab",
-            tool_profile_revision="legacy-lab",
+            resource_registry_revision="lab-default",
+            tool_profile_revision="lab-default",
             operation_allowed_on_scope=True,
             execution_arguments=normalized_arguments,
         )

@@ -1,10 +1,9 @@
 from copy import deepcopy
 from typing import Any
 
-from fastapi import BackgroundTasks
 from sqlalchemy.orm import Session
 
-from app.core.config import PolicyEngineMode, settings
+from app.core.config import settings
 from app.schemas.policy_context import RuntimePolicyInput
 from app.schemas.policy_decision import PolicyDecision
 from app.services.identity_replay_store import (
@@ -16,19 +15,11 @@ from app.services.internal_identity_assertion import (
     InternalIdentityAssertionVerifier,
 )
 from app.services.opa_client import OPAClient, OPAClientError
-from app.services.policy_engine import evaluate_policy
-from app.services.policy_shadow import run_opa_shadow_evaluation
 from app.services.subject_authorization import (
     SubjectAuthorizationError,
     SubjectAuthorizationResolver,
     resolved_authorization_to_policy_subject_fields,
 )
-
-
-def evaluate_legacy_policy(context: dict[str, Any]) -> PolicyDecision:
-    RuntimePolicyInput.model_validate(context)
-    result = evaluate_policy(context)
-    return PolicyDecision.model_validate(result)
 
 
 def build_opa_fail_closed_decision(*, error_code: str) -> PolicyDecision:
@@ -168,7 +159,6 @@ def evaluate_opa_authoritative(
 def evaluate_runtime_policy(
     *,
     context: dict[str, Any],
-    background_tasks: BackgroundTasks,
     identity_assertion: str | None = None,
     db: Session | None = None,
     assertion_verifier: InternalIdentityAssertionVerifier | None = None,
@@ -201,21 +191,4 @@ def evaluate_runtime_policy(
             error_code="subject_authorization_unexpected_error"
         )
 
-    mode = settings.policy_engine_mode
-
-    if mode == PolicyEngineMode.LEGACY:
-        return evaluate_legacy_policy(authorized_context)
-
-    if mode == PolicyEngineMode.SHADOW:
-        authoritative_decision = evaluate_legacy_policy(authorized_context)
-        background_tasks.add_task(
-            run_opa_shadow_evaluation,
-            context=authorized_context,
-            authoritative_decision=authoritative_decision,
-        )
-        return authoritative_decision
-
-    if mode == PolicyEngineMode.OPA:
-        return evaluate_opa_authoritative(authorized_context)
-
-    raise RuntimeError("Unsupported policy engine mode.")
+    return evaluate_opa_authoritative(authorized_context)

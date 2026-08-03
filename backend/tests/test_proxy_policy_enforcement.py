@@ -1,4 +1,4 @@
-import atexit
+﻿import atexit
 import os
 import shutil
 import sys
@@ -18,7 +18,6 @@ sys.path.insert(0, str(BACKEND_DIR))
 from proxy.agent_identity import AgentIdentityError, VerifiedExternalIdentity
 from proxy.identity_binding import ResolvedIdentityBinding
 from app.schemas.policy_decision import PolicyDecision
-from app.services.policy_engine import evaluate_policy
 from proxy.backend_client import BackendClientError
 from proxy.mcp_proxy import (
     MCPProxy,
@@ -33,12 +32,13 @@ from proxy.tool_security_profiles import (
     ToolResourceProfile,
 )
 from proxy.trusted_sessions import ProxyTrustedSession, TrustedSessionError
+from runtime_policy_eval import evaluate_runtime_policy_with_opa_cli
 
 
 def policy_decision(
     effect: str | None = "ALLOW",
     obligations: list[dict] | None = None,
-    legacy_decision: str = "ALLOW",
+    runtime_decision: str = "ALLOW",
     rule_id: str = "test_rule",
 ) -> dict:
     decision = {
@@ -49,7 +49,7 @@ def policy_decision(
         "evidence": {},
         "recommended_action": None,
         "policy_revision": "test-policy-v1",
-        "decision": legacy_decision,
+        "decision": runtime_decision,
         "rule_id": rule_id,
     }
     if effect is not None:
@@ -60,14 +60,14 @@ def policy_decision(
 def validated_policy_decision(
     effect: str | None = "ALLOW",
     obligations: list[dict] | None = None,
-    legacy_decision: str = "ALLOW",
+    runtime_decision: str = "ALLOW",
     rule_id: str = "test_rule",
 ) -> PolicyDecision:
     return PolicyDecision.model_validate(
         policy_decision(
             effect=effect,
             obligations=obligations,
-            legacy_decision=legacy_decision,
+            runtime_decision=runtime_decision,
             rule_id=rule_id,
         )
     )
@@ -447,7 +447,7 @@ class EvaluatingBackendClient(FakeBackendClient):
         }
         self.last_policy_context = context
         self.last_identity_assertion = identity_assertion
-        return evaluate_policy(context)
+        return evaluate_runtime_policy_with_opa_cli(context)
 
 
 class SubjectAwareEvaluatingBackendClient(FakeBackendClient):
@@ -514,7 +514,7 @@ class SubjectAwareEvaluatingBackendClient(FakeBackendClient):
         context = {**context, "subject": {**context["subject"], **subject}}
         self.last_policy_context = context
         self.last_identity_assertion = identity_assertion
-        return evaluate_policy(context)
+        return evaluate_runtime_policy_with_opa_cli(context)
 
 
 class EvaluatingUnknownDialectSchemaBackendClient(
@@ -771,7 +771,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                     {"type": "LOG", "parameters": {}},
                     {"type": "ALERT", "parameters": {}},
                 ],
-                legacy_decision="BLOCK",
+                runtime_decision="BLOCK",
             )
         )
 
@@ -786,7 +786,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                     {"type": "REQUIRE_APPROVAL", "parameters": {}},
                     {"type": "LOG", "parameters": {}},
                 ],
-                legacy_decision="ASK_APPROVAL",
+                runtime_decision="ASK_APPROVAL",
             )
         )
 
@@ -801,7 +801,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                     {"type": "LIMIT_OUTPUT", "parameters": {}},
                     {"type": "LOG", "parameters": {}},
                 ],
-                legacy_decision="LIMIT",
+                runtime_decision="LIMIT",
             )
         )
 
@@ -859,7 +859,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         decision = policy_decision(
             "ALLOW",
             [{"type": "LOG", "parameters": {}}],
-            legacy_decision="BLOCK",
+            runtime_decision="BLOCK",
         )
 
         validated, reason = _validate_policy_decision(decision)
@@ -871,7 +871,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         decision = policy_decision(
             "ALLOW",
             [{"type": "LOG", "parameters": {}}],
-            legacy_decision="WARN",
+            runtime_decision="WARN",
             rule_id="warn_high_risk_tool",
         )
 
@@ -950,7 +950,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
             policy_decision(
                 "ALLOW",
                 [{"type": "LOG", "parameters": {}}],
-                legacy_decision="WARN",
+                runtime_decision="WARN",
                 rule_id="warn_high_risk_tool",
             )
         )
@@ -963,7 +963,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
             policy_decision(
                 "ALLOW",
                 [{"type": "LOG", "parameters": {}}],
-                legacy_decision="LIMIT",
+                runtime_decision="LIMIT",
                 rule_id="limit_large_outputs",
             )
         )
@@ -976,7 +976,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
             policy_decision(
                 "DENY",
                 [{"type": "LOG", "parameters": {}}],
-                legacy_decision="BLOCK",
+                runtime_decision="BLOCK",
                 rule_id="deny_sensitive_paths",
             )
         )
@@ -989,7 +989,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
             policy_decision(
                 "DEFER",
                 [{"type": "LOG", "parameters": {}}],
-                legacy_decision="ASK_APPROVAL",
+                runtime_decision="ASK_APPROVAL",
                 rule_id="require_approval_for_sensitive_tool",
             )
         )
@@ -1021,7 +1021,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                     {"type": "REQUIRE_APPROVAL", "parameters": {}},
                     {"type": "LOG", "parameters": {}},
                 ],
-                legacy_decision="ASK_APPROVAL",
+                runtime_decision="ASK_APPROVAL",
                 rule_id="require_approval_for_sensitive_tool",
             )
         )
@@ -1095,6 +1095,30 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["execution_status"], "blocked")
 
+    def test_invalid_session_blocks_without_policy_or_mcp(self) -> None:
+        TrackingMCPClient.called = False
+        backend = FakeBackendClient(
+            policy_decision("ALLOW", [{"type": "LOG", "parameters": {}}])
+        )
+        proxy = MCPProxy(backend_client=backend, mcp_client_class=TrackingMCPClient)
+        call = tool_call()
+        call["session_token"] = "invalid-session-token"
+
+        result = proxy.handle_tool_call(call)
+
+        self.assertFalse(result["executed"])
+        self.assertFalse(result["mcp_called"])
+        self.assertFalse(TrackingMCPClient.called)
+        self.assertIsNone(backend.last_policy_context)
+        self.assertEqual(result["decision"]["rule_id"], "trusted_identity_required")
+        self.assertEqual(
+            result["decision"]["evidence"]["identity_error_code"],
+            "trusted_session_invalid",
+        )
+        self.assertEqual(result["skip_reason"], "trusted_session_invalid")
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["execution_status"], "blocked")
+
     def test_non_dict_policy_response_blocks_without_calling_mcp(self) -> None:
         TrackingMCPClient.called = False
         proxy = MCPProxy(
@@ -1144,7 +1168,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                         {"type": "LIMIT_OUTPUT", "parameters": {}},
                         {"type": "LOG", "parameters": {}},
                     ],
-                    legacy_decision="LIMIT",
+                    runtime_decision="LIMIT",
                     rule_id="limit_large_outputs",
                 )
             ),
@@ -1189,7 +1213,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                         {"type": "WARN", "parameters": {}},
                         {"type": "LOG", "parameters": {}},
                     ],
-                    legacy_decision="WARN",
+                    runtime_decision="WARN",
                     rule_id="warn_high_risk_tool",
                 )
             ),
@@ -1212,7 +1236,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                         {"type": "LOG", "parameters": {}},
                         {"type": "ALERT", "parameters": {}},
                     ],
-                    legacy_decision="BLOCK",
+                    runtime_decision="BLOCK",
                     rule_id="deny_sensitive_paths",
                 )
             ),
@@ -1235,7 +1259,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                         {"type": "REQUIRE_APPROVAL", "parameters": {}},
                         {"type": "LOG", "parameters": {}},
                     ],
-                    legacy_decision="ASK_APPROVAL",
+                    runtime_decision="ASK_APPROVAL",
                     rule_id="require_approval_for_sensitive_tool",
                 )
             ),
@@ -1258,7 +1282,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                         {"type": "LIMIT_OUTPUT", "parameters": {}},
                         {"type": "LOG", "parameters": {}},
                     ],
-                    legacy_decision="LIMIT",
+                    runtime_decision="LIMIT",
                     rule_id="limit_large_outputs",
                 )
             ),
@@ -1282,7 +1306,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                         {"type": "LOG", "parameters": {}},
                         {"type": "ALERT", "parameters": {}},
                     ],
-                    legacy_decision="BLOCK",
+                    runtime_decision="BLOCK",
                     rule_id="opa_unavailable",
                 )
             ),
@@ -1461,7 +1485,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                     {"type": "LOG", "parameters": {}},
                     {"type": "ALERT", "parameters": {}},
                 ],
-                legacy_decision="BLOCK",
+                runtime_decision="BLOCK",
                 rule_id="deny_sensitive_paths",
             )
         )
@@ -1629,7 +1653,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                     {"type": "LOG", "parameters": {}},
                     {"type": "ALERT", "parameters": {}},
                 ],
-                legacy_decision="BLOCK",
+                runtime_decision="BLOCK",
                 rule_id="deny_invalid_arguments",
             )
         )
@@ -1855,7 +1879,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
                     {"type": "LOG", "parameters": {}},
                     {"type": "ALERT", "parameters": {}},
                 ],
-                legacy_decision="BLOCK",
+                runtime_decision="BLOCK",
                 rule_id="subject_authorization_unavailable",
             )
         )

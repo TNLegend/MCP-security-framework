@@ -31,7 +31,7 @@ class PolicyObligationType(str, Enum):
     RATE_LIMIT = "RATE_LIMIT"
 
 
-class LegacyPolicyDecision(str, Enum):
+class RuntimeDecision(str, Enum):
     ALLOW = "ALLOW"
     BLOCK = "BLOCK"
     WARN = "WARN"
@@ -40,28 +40,28 @@ class LegacyPolicyDecision(str, Enum):
     LOG_ONLY = "LOG_ONLY"
 
 
-EXPECTED_EFFECT_BY_LEGACY_DECISION = {
-    LegacyPolicyDecision.ALLOW: PolicyEffect.ALLOW,
-    LegacyPolicyDecision.BLOCK: PolicyEffect.DENY,
-    LegacyPolicyDecision.WARN: PolicyEffect.ALLOW,
-    LegacyPolicyDecision.ASK_APPROVAL: PolicyEffect.DEFER,
-    LegacyPolicyDecision.LIMIT: PolicyEffect.ALLOW,
-    LegacyPolicyDecision.LOG_ONLY: PolicyEffect.ALLOW,
+EXPECTED_EFFECT_BY_RUNTIME_DECISION = {
+    RuntimeDecision.ALLOW: PolicyEffect.ALLOW,
+    RuntimeDecision.BLOCK: PolicyEffect.DENY,
+    RuntimeDecision.WARN: PolicyEffect.ALLOW,
+    RuntimeDecision.ASK_APPROVAL: PolicyEffect.DEFER,
+    RuntimeDecision.LIMIT: PolicyEffect.ALLOW,
+    RuntimeDecision.LOG_ONLY: PolicyEffect.ALLOW,
 }
 
-REQUIRED_OBLIGATIONS_BY_LEGACY_DECISION = {
-    LegacyPolicyDecision.ALLOW: {PolicyObligationType.LOG},
-    LegacyPolicyDecision.BLOCK: {PolicyObligationType.LOG, PolicyObligationType.ALERT},
-    LegacyPolicyDecision.WARN: {PolicyObligationType.WARN, PolicyObligationType.LOG},
-    LegacyPolicyDecision.ASK_APPROVAL: {
+REQUIRED_OBLIGATIONS_BY_RUNTIME_DECISION = {
+    RuntimeDecision.ALLOW: {PolicyObligationType.LOG},
+    RuntimeDecision.BLOCK: {PolicyObligationType.LOG, PolicyObligationType.ALERT},
+    RuntimeDecision.WARN: {PolicyObligationType.WARN, PolicyObligationType.LOG},
+    RuntimeDecision.ASK_APPROVAL: {
         PolicyObligationType.REQUIRE_APPROVAL,
         PolicyObligationType.LOG,
     },
-    LegacyPolicyDecision.LIMIT: {
+    RuntimeDecision.LIMIT: {
         PolicyObligationType.LIMIT_OUTPUT,
         PolicyObligationType.LOG,
     },
-    LegacyPolicyDecision.LOG_ONLY: {PolicyObligationType.LOG},
+    RuntimeDecision.LOG_ONLY: {PolicyObligationType.LOG},
 }
 
 
@@ -81,14 +81,13 @@ class PolicyDecision(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     recommended_action: str | None = None
     policy_revision: str = Field(min_length=1)
-    # Temporary compatibility fields, removed after full canonical contract migration.
-    decision: LegacyPolicyDecision
+    decision: RuntimeDecision
     rule_id: str = Field(min_length=1)
 
     model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="after")
-    def validate_legacy_compatibility(self) -> "PolicyDecision":
+    def validate_decision_contract(self) -> "PolicyDecision":
         if self.rule_id not in self.rule_ids:
             raise ValueError("rule_id must be present in rule_ids.")
 
@@ -96,11 +95,11 @@ class PolicyDecision(BaseModel):
         if len(obligation_types) != len(set(obligation_types)):
             raise ValueError("obligation types must be unique.")
 
-        expected_effect = EXPECTED_EFFECT_BY_LEGACY_DECISION[self.decision]
+        expected_effect = EXPECTED_EFFECT_BY_RUNTIME_DECISION[self.decision]
         if self.effect != expected_effect:
-            raise ValueError("effect is not coherent with legacy decision.")
+            raise ValueError("effect is not coherent with decision.")
 
-        required_obligations = REQUIRED_OBLIGATIONS_BY_LEGACY_DECISION[self.decision]
+        required_obligations = REQUIRED_OBLIGATIONS_BY_RUNTIME_DECISION[self.decision]
         if not required_obligations.issubset(set(obligation_types)):
             raise ValueError("decision is missing required obligations.")
 

@@ -2,7 +2,6 @@ import asyncio
 import json
 import sys
 import unittest
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -24,12 +23,12 @@ except RuntimeError as exc:
     TESTCLIENT_IMPORT_ERROR = str(exc)
 
 from app.main import app  # noqa: E402
-from app.core.config import PolicyEngineMode, settings  # noqa: E402
+from app.schemas.policy_decision import PolicyDecision  # noqa: E402
 from app.schemas.policy_context import RuntimePolicyInput  # noqa: E402
 from app.services import policy_runtime  # noqa: E402
-from app.services.policy_engine import evaluate_policy  # noqa: E402
 from proxy.mcp_proxy import MCPProxy  # noqa: E402
 from proxy.tool_request_preparation import prepare_tool_request  # noqa: E402
+from test_policy_decision import valid_decision_payload  # noqa: E402
 
 
 class MinimalASGIResponse:
@@ -581,65 +580,9 @@ class ProxyPolicyContextTests(unittest.TestCase):
             RuntimePolicyInput.model_validate(context)
 
 
-class PolicyEngineNestedContextTests(unittest.TestCase):
-    def test_contract_read_still_allows(self) -> None:
-        decision = evaluate_policy(valid_context())
-
-        self.assertEqual(decision["decision"], "ALLOW")
-        self.assertEqual(decision["rule_id"], "allow_contracts_read")
-
-    def test_sensitive_path_still_blocks(self) -> None:
-        payload = deepcopy(valid_context())
-        payload["request"]["arguments"] = {"path": ".env"}
-        payload["request"]["canonical_resource"] = ".env"
-
-        decision = evaluate_policy(payload)
-
-        self.assertEqual(decision["decision"], "BLOCK")
-        self.assertEqual(decision["rule_id"], "deny_sensitive_paths")
-
-    def test_invalid_arguments_block_before_lower_priority_rules(self) -> None:
-        payload = deepcopy(valid_context())
-        payload["request"]["arguments_valid"] = False
-        payload["request"]["validation_error_codes"] = ["invalid_type:path"]
-        payload["request"]["canonical_resource"] = None
-
-        decision = evaluate_policy(payload)
-
-        self.assertEqual(decision["decision"], "BLOCK")
-        self.assertEqual(decision["rule_id"], "deny_invalid_arguments")
-
-    def test_canonical_sensitive_path_overrides_raw_contract(self) -> None:
-        payload = deepcopy(valid_context())
-        payload["request"]["arguments"] = {"path": "contracts/contract1.txt"}
-        payload["request"]["canonical_resource"] = ".env"
-
-        decision = evaluate_policy(payload)
-
-        self.assertEqual(decision["decision"], "BLOCK")
-        self.assertEqual(decision["rule_id"], "deny_sensitive_paths")
-
-    def test_canonical_contract_path_overrides_raw_sensitive_path(self) -> None:
-        payload = deepcopy(valid_context())
-        payload["request"]["arguments"] = {"path": ".env"}
-        payload["request"][
-            "canonical_resource"
-        ] = "fs.project_workspace:/contracts/contract1.txt"
-
-        decision = evaluate_policy(payload)
-
-        self.assertEqual(decision["decision"], "ALLOW")
-        self.assertEqual(decision["rule_id"], "allow_contracts_read")
-
-
 class RuntimeDecisionHttpTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.original_mode = settings.policy_engine_mode
-        settings.policy_engine_mode = PolicyEngineMode.LEGACY
         self.client = TestClient(app)
-
-    def tearDown(self) -> None:
-        settings.policy_engine_mode = self.original_mode
 
     def test_runtime_decision_returns_422_for_invalid_payload(self) -> None:
         payload = valid_context()
@@ -650,11 +593,17 @@ class RuntimeDecisionHttpTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     def test_runtime_decision_accepts_valid_payload(self) -> None:
+        class FakeOPAClient:
+            def evaluate(self, context: dict) -> PolicyDecision:
+                payload = valid_decision_payload()
+                payload["policy_revision"] = "opa-runtime-v1"
+                return PolicyDecision.model_validate(payload)
+
         with patch.object(
             policy_runtime,
             "verify_trusted_identity_context",
             side_effect=lambda **kwargs: trust_identity(kwargs["context"]),
-        ):
+        ), patch.object(policy_runtime, "OPAClient", return_value=FakeOPAClient()):
             response = self.client.post(
                 "/api/v1/runtime/decision",
                 json=valid_context(),

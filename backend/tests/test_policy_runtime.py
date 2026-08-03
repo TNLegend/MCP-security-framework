@@ -1,12 +1,9 @@
+import importlib.util
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
-
-from fastapi import BackgroundTasks
-from pydantic import ValidationError
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_DIR = REPO_ROOT / "backend"
@@ -14,7 +11,6 @@ BACKEND_DIR = REPO_ROOT / "backend"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(BACKEND_DIR))
 
-from app.core.config import PolicyEngineMode, Settings, settings  # noqa: E402
 from app.schemas.policy_decision import PolicyDecision  # noqa: E402
 from app.services import policy_runtime  # noqa: E402
 from app.services.internal_identity_assertion import (  # noqa: E402
@@ -117,68 +113,40 @@ def evaluate_with_trusted_identity(**kwargs) -> PolicyDecision:
 
 
 class PolicyRuntimeTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.original_mode = settings.policy_engine_mode
-
-    def tearDown(self) -> None:
-        settings.policy_engine_mode = self.original_mode
-
-    def test_legacy_mode_returns_yaml_without_opa_or_shadow(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.LEGACY
-        background_tasks = BackgroundTasks()
-
-        with patch.object(policy_runtime, "evaluate_policy") as yaml, patch.object(
-            policy_runtime,
-            "OPAClient",
-        ) as opa_client:
-            yaml.return_value = valid_decision_payload()
-            decision = evaluate_with_trusted_identity(
-                context=valid_context(),
-                background_tasks=background_tasks,
-                resolver=FakeAuthorizationResolver(),
-            )
-
-        yaml.assert_called_once()
-        opa_client.assert_not_called()
-        self.assertEqual(len(background_tasks.tasks), 0)
-        self.assertEqual(decision.decision, "ALLOW")
-
-    def test_shadow_mode_returns_yaml_and_adds_background_task(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.SHADOW
-        background_tasks = BackgroundTasks()
-
-        with patch.object(policy_runtime, "evaluate_policy") as yaml:
-            yaml.return_value = valid_decision_payload()
-            decision = evaluate_with_trusted_identity(
-                context=valid_context(),
-                background_tasks=background_tasks,
-                resolver=FakeAuthorizationResolver(),
-            )
-
-        yaml.assert_called_once()
-        self.assertEqual(decision.decision, "ALLOW")
-        self.assertEqual(len(background_tasks.tasks), 1)
-
-    def test_opa_mode_returns_opa_decision_without_yaml(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.OPA
+    def test_runtime_always_calls_opa_after_identity_and_authorization(self) -> None:
         fake_client = FakeOPAClient()
 
-        with patch.object(policy_runtime, "evaluate_policy") as yaml, patch.object(
-            policy_runtime,
-            "OPAClient",
-            return_value=fake_client,
-        ):
+        with patch.object(policy_runtime, "OPAClient", return_value=fake_client):
             decision = evaluate_with_trusted_identity(
                 context=valid_context(),
-                background_tasks=BackgroundTasks(),
                 resolver=FakeAuthorizationResolver(),
             )
 
-        yaml.assert_not_called()
         self.assertEqual(len(fake_client.evaluate_calls), 1)
         self.assertEqual(decision.policy_revision, "opa-runtime-v1")
 
-    def test_opa_unavailable_fails_closed_without_yaml(self) -> None:
+    def test_no_python_policy_engine_module_is_accessible(self) -> None:
+        self.assertIsNone(importlib.util.find_spec("app.services.policy_engine"))
+
+    def test_no_runtime_mode_setting_exists(self) -> None:
+        self.assertFalse(hasattr(policy_runtime.settings, "policy_engine_mode"))
+
+    def test_opa_receives_enriched_context(self) -> None:
+        fake_client = FakeOPAClient()
+
+        with patch.object(policy_runtime, "OPAClient", return_value=fake_client):
+            evaluate_with_trusted_identity(
+                context=valid_context(),
+                resolver=FakeAuthorizationResolver(),
+            )
+
+        self.assertEqual(
+            fake_client.evaluate_calls[0]["subject"]["authorization_status"],
+            "resolved",
+        )
+        self.assertEqual(fake_client.evaluate_calls[0]["subject"]["role"], "legal_agent")
+
+    def test_opa_unavailable_fails_closed(self) -> None:
         decision = self.assert_opa_error_fails_closed(
             OPAClientError("opa_unavailable", "OPA unavailable."),
             "opa_unavailable",
@@ -192,12 +160,6 @@ class PolicyRuntimeTests(unittest.TestCase):
             "opa_timeout",
         )
 
-    def test_opa_http_error_fails_closed(self) -> None:
-        self.assert_opa_error_fails_closed(
-            OPAClientError("opa_http_error", "OPA HTTP error."),
-            "opa_http_error",
-        )
-
     def test_opa_invalid_decision_fails_closed(self) -> None:
         self.assert_opa_error_fails_closed(
             OPAClientError("opa_invalid_decision", "OPA invalid decision."),
@@ -205,21 +167,14 @@ class PolicyRuntimeTests(unittest.TestCase):
         )
 
     def test_opa_unexpected_error_fails_closed(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.OPA
         fake_client = FakeOPAClient(error=RuntimeError("boom"))
 
-        with patch.object(policy_runtime, "evaluate_policy") as yaml, patch.object(
-            policy_runtime,
-            "OPAClient",
-            return_value=fake_client,
-        ):
+        with patch.object(policy_runtime, "OPAClient", return_value=fake_client):
             decision = evaluate_with_trusted_identity(
                 context=valid_context(),
-                background_tasks=BackgroundTasks(),
                 resolver=FakeAuthorizationResolver(),
             )
 
-        yaml.assert_not_called()
         self.assertEqual(decision.effect, "DENY")
         self.assertEqual(decision.decision, "BLOCK")
         self.assertEqual(decision.rule_id, "opa_authoritative_unexpected_error")
@@ -241,7 +196,10 @@ class PolicyRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(enriched["subject"]["role"], "legal_agent")
-        self.assertEqual(enriched["subject"]["allowed_capabilities"], ["filesystem.read", "filesystem.list"])
+        self.assertEqual(
+            enriched["subject"]["allowed_capabilities"],
+            ["filesystem.read", "filesystem.list"],
+        )
         self.assertEqual(enriched["subject"]["allowed_scopes"], ["fs.project_workspace"])
         self.assertEqual(
             enriched["subject"]["grants"],
@@ -260,72 +218,16 @@ class PolicyRuntimeTests(unittest.TestCase):
         self.assertEqual(enriched["subject"]["authorization_status"], "unknown")
         self.assertEqual(enriched["subject"]["grants"], [])
 
-    def test_legacy_receives_enriched_context(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.LEGACY
-
-        with patch.object(policy_runtime, "evaluate_policy") as yaml:
-            yaml.return_value = valid_decision_payload()
-            evaluate_with_trusted_identity(
-                context=valid_context(),
-                background_tasks=BackgroundTasks(),
-                resolver=FakeAuthorizationResolver(),
-            )
-
-        context = yaml.call_args.args[0]
-        self.assertEqual(context["subject"]["role"], "legal_agent")
-
-    def test_shadow_yaml_and_opa_receive_same_enriched_context(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.SHADOW
-        background_tasks = BackgroundTasks()
-
-        with patch.object(policy_runtime, "evaluate_policy") as yaml:
-            yaml.return_value = valid_decision_payload()
-            evaluate_with_trusted_identity(
-                context=valid_context(),
-                background_tasks=background_tasks,
-                resolver=FakeAuthorizationResolver(),
-            )
-
-        yaml_context = yaml.call_args.args[0]
-        shadow_kwargs = background_tasks.tasks[0].kwargs
-        self.assertEqual(shadow_kwargs["context"], yaml_context)
-        self.assertEqual(yaml_context["subject"]["authorization_status"], "resolved")
-
-    def test_opa_receives_enriched_context(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.OPA
-        fake_client = FakeOPAClient()
-
-        with patch.object(policy_runtime, "OPAClient", return_value=fake_client):
-            evaluate_with_trusted_identity(
-                context=valid_context(),
-                background_tasks=BackgroundTasks(),
-                resolver=FakeAuthorizationResolver(),
-            )
-
-        self.assertEqual(
-            fake_client.evaluate_calls[0]["subject"]["authorization_status"],
-            "resolved",
-        )
-
-    def test_resolver_error_skips_yaml_opa_and_background_tasks(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.SHADOW
-        background_tasks = BackgroundTasks()
-
-        with patch.object(policy_runtime, "evaluate_policy") as yaml, patch.object(
-            policy_runtime,
-            "OPAClient",
-        ) as opa_client:
+    def test_resolver_error_skips_opa(self) -> None:
+        with patch.object(policy_runtime, "OPAClient") as opa_client:
             decision = evaluate_with_trusted_identity(
                 context=valid_context(),
-                background_tasks=background_tasks,
                 resolver=FakeAuthorizationResolver(
                     error_code="subject_authorization_invalid_yaml"
                 ),
             )
 
-        yaml.assert_not_called()
         opa_client.assert_not_called()
-        self.assertEqual(len(background_tasks.tasks), 0)
         self.assertEqual(decision.effect, "DENY")
         self.assertEqual(decision.decision, "BLOCK")
         self.assertEqual(decision.rule_id, "subject_authorization_unavailable")
@@ -343,30 +245,20 @@ class PolicyRuntimeTests(unittest.TestCase):
 
         self.assertEqual(validated.rule_id, "opa_unavailable")
 
-    def test_invalid_policy_engine_mode_is_rejected_by_settings(self) -> None:
-        with self.assertRaises(ValidationError):
-            Settings(policy_engine_mode="automatic")
-
     def assert_opa_error_fails_closed(
         self,
         error: OPAClientError,
         expected_rule_id: str,
     ) -> PolicyDecision:
-        settings.policy_engine_mode = PolicyEngineMode.OPA
         fake_client = FakeOPAClient(error=error)
 
-        with patch.object(policy_runtime, "evaluate_policy") as yaml, patch.object(
-            policy_runtime,
-            "OPAClient",
-            return_value=fake_client,
-        ):
+        with patch.object(policy_runtime, "OPAClient", return_value=fake_client):
             decision = evaluate_with_trusted_identity(
                 context=valid_context(),
-                background_tasks=BackgroundTasks(),
                 resolver=FakeAuthorizationResolver(),
             )
 
-        yaml.assert_not_called()
+        self.assertEqual(len(fake_client.evaluate_calls), 1)
         self.assertEqual(decision.effect, "DENY")
         self.assertEqual(decision.decision, "BLOCK")
         self.assertEqual(decision.rule_id, expected_rule_id)

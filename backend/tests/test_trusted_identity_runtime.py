@@ -1,10 +1,8 @@
-import unittest
 import sys
+import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
-
-from fastapi import BackgroundTasks
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_DIR = REPO_ROOT / "backend"
@@ -12,7 +10,7 @@ BACKEND_DIR = REPO_ROOT / "backend"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(BACKEND_DIR))
 
-from app.core.config import PolicyEngineMode, settings
+from app.schemas.policy_decision import PolicyDecision
 from app.services import policy_runtime
 from app.services.identity_replay_store import IdentityReplayError
 from app.services.internal_identity_assertion import (
@@ -24,6 +22,7 @@ from app.services.subject_authorization import (
     ResolvedSubjectAuthorization,
 )
 from identity_test_helpers import runtime_context
+from runtime_policy_eval import evaluate_runtime_policy_with_opa_cli
 
 
 class RecordingAssertionVerifier:
@@ -78,14 +77,16 @@ class RecordingAuthorizationResolver:
         )
 
 
+class RegoOPAClient:
+    def __init__(self) -> None:
+        self.contexts = []
+
+    def evaluate(self, context: dict) -> PolicyDecision:
+        self.contexts.append(context)
+        return PolicyDecision.model_validate(evaluate_runtime_policy_with_opa_cli(context))
+
+
 class TrustedIdentityRuntimeTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.original_mode = settings.policy_engine_mode
-        settings.policy_engine_mode = PolicyEngineMode.LEGACY
-
-    def tearDown(self) -> None:
-        settings.policy_engine_mode = self.original_mode
-
     def evaluate(
         self,
         *,
@@ -93,42 +94,43 @@ class TrustedIdentityRuntimeTests(unittest.TestCase):
         verifier=None,
         replay_consumer=None,
         resolver=None,
+        opa_client=None,
     ):
-        return policy_runtime.evaluate_runtime_policy(
-            context=context or runtime_context(),
-            background_tasks=BackgroundTasks(),
-            identity_assertion="test.assertion",
-            db=object(),
-            assertion_verifier=verifier or RecordingAssertionVerifier(),
-            replay_consumer=replay_consumer or (lambda **kwargs: None),
-            resolver=resolver or RecordingAuthorizationResolver(),
-        )
+        client = opa_client or RegoOPAClient()
+        with patch.object(policy_runtime, "OPAClient", return_value=client):
+            return policy_runtime.evaluate_runtime_policy(
+                context=context or runtime_context(),
+                identity_assertion="test.assertion",
+                db=object(),
+                assertion_verifier=verifier or RecordingAssertionVerifier(),
+                replay_consumer=replay_consumer or (lambda **kwargs: None),
+                resolver=resolver or RecordingAuthorizationResolver(),
+            )
 
-    def test_missing_assertion_fails_closed_before_resolver_yaml_and_opa(self) -> None:
+    def test_missing_assertion_fails_closed_before_resolver_and_opa(self) -> None:
         resolver = Mock()
-        settings.policy_engine_mode = PolicyEngineMode.SHADOW
-        with patch.object(policy_runtime, "evaluate_policy") as yaml, patch.object(
-            policy_runtime,
-            "OPAClient",
-        ) as opa:
+
+        with patch.object(policy_runtime, "OPAClient") as opa:
             decision = self.evaluate(
                 verifier=FailingAssertionVerifier("identity_assertion_missing"),
                 resolver=resolver,
             )
 
         resolver.resolve.assert_not_called()
-        yaml.assert_not_called()
         opa.assert_not_called()
         self.assertEqual(decision.rule_id, "trusted_identity_required")
-        self.assertEqual(decision.evidence["identity_error_code"], "identity_assertion_missing")
+        self.assertEqual(
+            decision.evidence["identity_error_code"],
+            "identity_assertion_missing",
+        )
 
     def test_signature_error_fails_closed_before_policy(self) -> None:
-        with patch.object(policy_runtime, "evaluate_policy") as yaml:
+        with patch.object(policy_runtime, "OPAClient") as opa:
             decision = self.evaluate(
                 verifier=FailingAssertionVerifier("identity_assertion_signature_invalid")
             )
 
-        yaml.assert_not_called()
+        opa.assert_not_called()
         self.assertEqual(decision.effect, "DENY")
         self.assertEqual(
             decision.evidence["identity_error_code"],
@@ -148,7 +150,10 @@ class TrustedIdentityRuntimeTests(unittest.TestCase):
 
         resolver.resolve.assert_not_called()
         self.assertEqual(decision.rule_id, "trusted_identity_required")
-        self.assertEqual(decision.evidence["identity_error_code"], "identity_assertion_replayed")
+        self.assertEqual(
+            decision.evidence["identity_error_code"],
+            "identity_assertion_replayed",
+        )
 
     def test_replay_database_unavailable_fails_closed(self) -> None:
         def replay_consumer(**kwargs):
@@ -165,7 +170,6 @@ class TrustedIdentityRuntimeTests(unittest.TestCase):
     def test_db_none_fails_closed(self) -> None:
         decision = policy_runtime.evaluate_runtime_policy(
             context=runtime_context(),
-            background_tasks=BackgroundTasks(),
             identity_assertion="test.assertion",
             db=None,
             assertion_verifier=RecordingAssertionVerifier(),
@@ -210,70 +214,46 @@ class TrustedIdentityRuntimeTests(unittest.TestCase):
         self.assertEqual(resolver.agent_ids, ["agent-demo"])
         self.assertEqual(decision.rule_id, "allow_contracts_read")
 
-    def test_legacy_receives_verified_identity_only(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.LEGACY
-        with patch.object(policy_runtime, "evaluate_policy") as yaml:
-            yaml.return_value = {
-                "effect": "ALLOW",
-                "obligations": [{"type": "LOG", "parameters": {}}],
-                "rule_ids": ["allow_contracts_read"],
-                "reason": "Allowed.",
-                "severity": "low",
-                "evidence": {},
-                "recommended_action": None,
-                "policy_revision": "legacy-yaml-v1",
-                "decision": "ALLOW",
-                "rule_id": "allow_contracts_read",
-            }
-            self.evaluate()
+    def test_opa_receives_verified_identity_only(self) -> None:
+        opa_client = RegoOPAClient()
 
-        context = yaml.call_args.args[0]
+        self.evaluate(opa_client=opa_client)
+
+        context = opa_client.contexts[0]
         self.assertEqual(context["subject"]["identity_status"], "verified")
         self.assertEqual(context["subject"]["agent_id"], "agent-demo")
         self.assertNotIn("access_token", context)
 
-    def test_shadow_does_not_schedule_task_when_identity_invalid(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.SHADOW
-        background_tasks = BackgroundTasks()
+    def test_identity_invalid_does_not_call_opa(self) -> None:
+        with patch.object(policy_runtime, "OPAClient") as opa:
+            decision = policy_runtime.evaluate_runtime_policy(
+                context=runtime_context(),
+                identity_assertion="test.assertion",
+                db=object(),
+                assertion_verifier=FailingAssertionVerifier(
+                    "identity_assertion_key_unknown"
+                ),
+                replay_consumer=lambda **kwargs: None,
+                resolver=RecordingAuthorizationResolver(),
+            )
 
-        decision = policy_runtime.evaluate_runtime_policy(
-            context=runtime_context(),
-            background_tasks=background_tasks,
-            identity_assertion="test.assertion",
-            db=object(),
-            assertion_verifier=FailingAssertionVerifier("identity_assertion_key_unknown"),
-            replay_consumer=lambda **kwargs: None,
-            resolver=RecordingAuthorizationResolver(),
-        )
-
-        self.assertEqual(len(background_tasks.tasks), 0)
+        opa.assert_not_called()
         self.assertEqual(decision.rule_id, "trusted_identity_required")
 
-    def test_opa_mode_receives_verified_identity(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.OPA
-
-        class FakeOPA:
-            def __init__(self) -> None:
-                self.contexts = []
-
-            def evaluate(self, context):
-                self.contexts.append(context)
-                return policy_runtime.evaluate_legacy_policy(context)
-
-        fake_opa = FakeOPA()
-        with patch.object(policy_runtime, "OPAClient", return_value=fake_opa):
-            self.evaluate()
-
-        self.assertEqual(fake_opa.contexts[0]["subject"]["identity_status"], "verified")
-
     def test_opa_unavailable_after_valid_identity_is_fail_closed(self) -> None:
-        settings.policy_engine_mode = PolicyEngineMode.OPA
-
         with patch.object(policy_runtime, "OPAClient") as opa_client:
             opa_client.side_effect = RuntimeError("opa unavailable")
-            decision = self.evaluate()
+            decision = policy_runtime.evaluate_runtime_policy(
+                context=runtime_context(),
+                identity_assertion="test.assertion",
+                db=object(),
+                assertion_verifier=RecordingAssertionVerifier(),
+                replay_consumer=lambda **kwargs: None,
+                resolver=RecordingAuthorizationResolver(),
+            )
 
         self.assertEqual(decision.effect, "DENY")
+        self.assertEqual(decision.decision, "BLOCK")
         self.assertEqual(decision.rule_id, "opa_authoritative_unexpected_error")
 
     def test_invalid_arguments_remain_prioritized_after_identity_verification(self) -> None:
@@ -315,7 +295,10 @@ class TrustedIdentityRuntimeTests(unittest.TestCase):
 
         decision = self.evaluate(context=context)
 
-        self.assertIn(decision.rule_id, {"deny_scope_not_granted", "log_normal_runtime_call"})
+        self.assertIn(
+            decision.rule_id,
+            {"deny_scope_not_granted", "log_normal_runtime_call"},
+        )
 
 
 if __name__ == "__main__":
