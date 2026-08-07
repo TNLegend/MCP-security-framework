@@ -190,6 +190,15 @@ class PolicyToolContext(BaseModel):
     description_risk_score: Score = 0.0
     capability_mismatch: StrictBool = False
     drift_status: str = "unknown"
+    analysis_status: str = "missing"
+    current_fingerprint: str | None = None
+    approved_fingerprint_match: StrictBool = False
+    risk_level: str = "unknown"
+    semantic_flagged: StrictBool = False
+    deterministic_critical_finding: StrictBool = False
+    consistency_status: str = "unknown"
+    review_status: str = "missing"
+    analyzer_revision: str = "unknown"
 
     model_config = ConfigDict(extra="forbid")
 
@@ -212,6 +221,13 @@ class PolicyToolContext(BaseModel):
     def validate_profile_revision(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("profile_revision must not be empty.")
+        return value
+
+    @field_validator("analysis_status", "risk_level", "consistency_status", "drift_status", "review_status", "analyzer_revision")
+    @classmethod
+    def validate_analysis_fact(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("analysis facts must not be empty.")
         return value
 
 

@@ -21,6 +21,17 @@ class MCPToolCreate(BaseModel):
     policy_status: str = "not_reviewed"
     is_sensitive: bool = False
     last_analyzed_at: datetime | None = None
+    current_fingerprint: str | None = None
+    approved_fingerprint: str | None = None
+    approved_fingerprint_match: bool = False
+    analysis_status: str = "PENDING_ANALYSIS"
+    risk_level: str = "unknown"
+    semantic_flagged: bool = False
+    deterministic_critical_finding: bool = False
+    consistency_status: str = "unknown"
+    drift_status: str = "NONE"
+    review_status: str = "REVIEW_REQUIRED"
+    analyzer_revision: str | None = None
     status: str = "active"
 
 

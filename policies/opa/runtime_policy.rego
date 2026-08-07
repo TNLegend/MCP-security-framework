@@ -183,6 +183,62 @@ tool_profile_status := value if {
 	is_string(value)
 }
 
+default analysis_status := "missing"
+
+analysis_status := value if {
+	value := object.get(tool_object, "analysis_status", "missing")
+	is_string(value)
+}
+
+default approved_fingerprint_match := false
+
+approved_fingerprint_match := value if {
+	value := object.get(tool_object, "approved_fingerprint_match", false)
+	is_boolean(value)
+}
+
+default semantic_flagged := false
+
+semantic_flagged := value if {
+	value := object.get(tool_object, "semantic_flagged", false)
+	is_boolean(value)
+}
+
+default deterministic_critical_finding := false
+
+deterministic_critical_finding := value if {
+	value := object.get(tool_object, "deterministic_critical_finding", false)
+	is_boolean(value)
+}
+
+default consistency_status := "unknown"
+
+consistency_status := value if {
+	value := object.get(tool_object, "consistency_status", "unknown")
+	is_string(value)
+}
+
+default drift_status := "unknown"
+
+drift_status := value if {
+	value := object.get(tool_object, "drift_status", "unknown")
+	is_string(value)
+}
+
+default review_status := "missing"
+
+review_status := value if {
+	value := object.get(tool_object, "review_status", "missing")
+	is_string(value)
+}
+
+default analyzer_revision := "unknown"
+
+analyzer_revision := value if {
+	value := object.get(tool_object, "analyzer_revision", "unknown")
+	is_string(value)
+}
+
 default decision := {
 	"effect": "ALLOW",
 	"obligations": [{"type": "LOG", "parameters": {}}],
@@ -202,6 +258,50 @@ decision := candidate.decision if {
 }
 
 winning_precedence := max({candidate.precedence | some candidate in rule_candidates})
+
+rule_candidates contains {
+	"precedence": 1000,
+	"decision": deny_missing_or_unapproved_analysis_decision,
+} if {
+	analysis_blocks_runtime
+}
+
+rule_candidates contains {
+	"precedence": 999,
+	"decision": deny_tool_fingerprint_mismatch_decision,
+} if {
+	analysis_status == "APPROVED"
+	not approved_fingerprint_match
+}
+
+rule_candidates contains {
+	"precedence": 998,
+	"decision": deny_drift_not_approved_decision,
+} if {
+	drift_status in {"HIGH", "CRITICAL"}
+	not approved_fingerprint_match
+}
+
+rule_candidates contains {
+	"precedence": 997,
+	"decision": deny_deterministic_critical_finding_decision,
+} if {
+	deterministic_critical_finding
+}
+
+rule_candidates contains {
+	"precedence": 996,
+	"decision": deny_semantic_review_required_decision,
+} if {
+	semantic_flagged
+}
+
+rule_candidates contains {
+	"precedence": 995,
+	"decision": deny_review_required_decision,
+} if {
+	review_status == "REVIEW_REQUIRED"
+}
 
 rule_candidates contains {
 	"precedence": 900,
@@ -362,6 +462,17 @@ is_unknown_or_blocked_server if {
 	trust_status in {"unknown", "blocked"}
 }
 
+analysis_blocks_runtime if {
+	analysis_status in {
+		"missing",
+		"PENDING_ANALYSIS",
+		"QUARANTINED",
+		"ANALYSIS_FAILED",
+		"BLOCKED",
+		"STALE",
+	}
+}
+
 is_sensitive_path if {
 	some pattern in sensitive_path_patterns
 	contains(canonical_resource_lower, lower(pattern))
@@ -456,6 +567,79 @@ deny_unknown_tool_security_profile_decision := deny_decision(
 	"deny_unknown_tool_security_profile",
 	"Tool security profile is unknown.",
 )
+
+deny_missing_or_unapproved_analysis_decision := {
+	"effect": "DENY",
+	"obligations": [
+		{"type": "LOG", "parameters": {}},
+		{"type": "ALERT", "parameters": {}},
+	],
+	"rule_ids": ["deny_tool_analysis_not_approved"],
+	"reason": "Tool analysis is missing, pending, failed, blocked, stale, or not approved.",
+	"severity": "critical",
+	"evidence": {
+		"analysis_status": analysis_status,
+		"review_status": review_status,
+		"analyzer_revision": analyzer_revision,
+	},
+	"recommended_action": "Review and approve the exact analyzed tool fingerprint.",
+	"policy_revision": policy_revision,
+	"decision": "BLOCK",
+	"rule_id": "deny_tool_analysis_not_approved",
+}
+
+deny_tool_fingerprint_mismatch_decision := deny_decision(
+	"deny_tool_fingerprint_mismatch",
+	"Current tool fingerprint does not match the approved baseline.",
+)
+
+deny_drift_not_approved_decision := deny_decision(
+	"deny_tool_drift_not_approved",
+	"High or critical tool drift is not approved.",
+)
+
+deny_deterministic_critical_finding_decision := deny_decision(
+	"deny_tool_deterministic_critical_finding",
+	"Tool analysis has a deterministic critical finding.",
+)
+
+deny_semantic_review_required_decision := {
+	"effect": "DENY",
+	"obligations": [
+		{"type": "LOG", "parameters": {}},
+		{"type": "ALERT", "parameters": {}},
+	],
+	"rule_ids": ["deny_tool_semantic_review_required"],
+	"reason": "Semantic analysis flagged the tool for human review.",
+	"severity": "high",
+	"evidence": {
+		"analysis_status": analysis_status,
+		"review_status": review_status,
+	},
+	"recommended_action": "Review the semantic finding before approving this fingerprint.",
+	"policy_revision": policy_revision,
+	"decision": "BLOCK",
+	"rule_id": "deny_tool_semantic_review_required",
+}
+
+deny_review_required_decision := {
+	"effect": "DENY",
+	"obligations": [
+		{"type": "LOG", "parameters": {}},
+		{"type": "ALERT", "parameters": {}},
+	],
+	"rule_ids": ["deny_tool_review_required"],
+	"reason": "Tool analysis requires human review.",
+	"severity": "high",
+	"evidence": {
+		"analysis_status": analysis_status,
+		"review_status": review_status,
+	},
+	"recommended_action": "Approve or block the exact fingerprint through the review workflow.",
+	"policy_revision": policy_revision,
+	"decision": "BLOCK",
+	"rule_id": "deny_tool_review_required",
+}
 
 deny_tool_security_profile_drift_decision := deny_decision(
 	"deny_tool_security_profile_drift",

@@ -6,6 +6,7 @@ from app.api.routes_inventory import router as inventory_router
 from app.api.routes_policies import router as policies_router
 from app.api.routes_runtime import router as runtime_router
 from app.api.routes_servers import router as servers_router
+from app.api.routes_tool_analysis import router as tool_analysis_router
 from app.api.routes_tools import router as tools_router
 from app.core.config import settings
 
@@ -36,6 +37,7 @@ app.include_router(tools_router, prefix=settings.api_prefix)
 app.include_router(policies_router, prefix=settings.api_prefix)
 app.include_router(runtime_router, prefix=settings.api_prefix)
 app.include_router(inventory_router, prefix=settings.api_prefix)
+app.include_router(tool_analysis_router, prefix=settings.api_prefix)
 
 
 @app.get("/")

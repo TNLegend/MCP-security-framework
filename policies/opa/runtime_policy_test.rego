@@ -8,6 +8,19 @@ default_grants := [
 	{"capability": "filesystem.list", "scopes": ["fs.project_workspace"]},
 ]
 
+approved_analysis_facts := {
+	"analysis_status": "APPROVED",
+	"current_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	"approved_fingerprint_match": true,
+	"risk_level": "low",
+	"semantic_flagged": false,
+	"deterministic_critical_finding": false,
+	"consistency_status": "consistent",
+	"drift_status": "NONE",
+	"review_status": "APPROVED",
+	"analyzer_revision": "tool-description-analyzer-v1",
+}
+
 resolved_subject := {
 	"agent_id": "agent-test",
 	"identity_status": "verified",
@@ -73,19 +86,22 @@ runtime_input_full(trust_status, tool_name, risk_score, sensitivity, path, estim
 		"trust_status": trust_status,
 		"security_status": "pending_analysis",
 	},
-	"tool": {
-		"id": 1,
-		"name": tool_name,
-		"risk_score": risk_score,
-		"sensitivity": sensitivity,
-		"capabilities": [],
-		"admission_status": "unknown",
-		"profile_status": "resolved",
-		"profile_revision": "tool-security-profiles-test-v1",
-		"description_risk_score": 0,
-		"capability_mismatch": false,
-		"drift_status": "unknown",
-	},
+	"tool": object.union(
+		{
+			"id": 1,
+			"name": tool_name,
+			"risk_score": risk_score,
+			"sensitivity": sensitivity,
+			"capabilities": [],
+			"admission_status": "unknown",
+			"profile_status": "resolved",
+			"profile_revision": "tool-security-profiles-test-v1",
+			"description_risk_score": 0,
+			"capability_mismatch": false,
+			"drift_status": "unknown",
+		},
+		approved_analysis_facts,
+	),
 	"request": {
 		"operation": operation_for(tool_name),
 		"resource_type": resource_type_for(tool_name),
@@ -121,19 +137,22 @@ runtime_input_with_arguments(tool_name, arguments) := {
 		"trust_status": "lab_trusted",
 		"security_status": "pending_analysis",
 	},
-	"tool": {
-		"id": 1,
-		"name": tool_name,
-		"risk_score": 40,
-		"sensitivity": "medium",
-		"capabilities": [],
-		"admission_status": "unknown",
-		"profile_status": "resolved",
-		"profile_revision": "tool-security-profiles-test-v1",
-		"description_risk_score": 0,
-		"capability_mismatch": false,
-		"drift_status": "unknown",
-	},
+	"tool": object.union(
+		{
+			"id": 1,
+			"name": tool_name,
+			"risk_score": 40,
+			"sensitivity": "medium",
+			"capabilities": [],
+			"admission_status": "unknown",
+			"profile_status": "resolved",
+			"profile_revision": "tool-security-profiles-test-v1",
+			"description_risk_score": 0,
+			"capability_mismatch": false,
+			"drift_status": "unknown",
+		},
+		approved_analysis_facts,
+	),
 	"request": {
 		"operation": operation_for(tool_name),
 		"resource_type": resource_type_for(tool_name),
@@ -169,19 +188,22 @@ runtime_input_with_request(tool_name, request) := {
 		"trust_status": "lab_trusted",
 		"security_status": "pending_analysis",
 	},
-	"tool": {
-		"id": 1,
-		"name": tool_name,
-		"risk_score": 40,
-		"sensitivity": "medium",
-		"capabilities": [],
-		"admission_status": "unknown",
-		"profile_status": "resolved",
-		"profile_revision": "tool-security-profiles-test-v1",
-		"description_risk_score": 0,
-		"capability_mismatch": false,
-		"drift_status": "unknown",
-	},
+	"tool": object.union(
+		{
+			"id": 1,
+			"name": tool_name,
+			"risk_score": 40,
+			"sensitivity": "medium",
+			"capabilities": [],
+			"admission_status": "unknown",
+			"profile_status": "resolved",
+			"profile_revision": "tool-security-profiles-test-v1",
+			"description_risk_score": 0,
+			"capability_mismatch": false,
+			"drift_status": "unknown",
+		},
+		approved_analysis_facts,
+	),
 	"request": request,
 	"runtime": {
 		"environment": "local",
@@ -212,7 +234,7 @@ runtime_input_with_tool(tool, path) := {
 		"trust_status": "lab_trusted",
 		"security_status": "pending_analysis",
 	},
-	"tool": tool,
+	"tool": object.union(approved_analysis_facts, tool),
 	"request": {
 		"operation": operation_for(object.get(tool, "name", "")),
 		"resource_type": resource_type_for(object.get(tool, "name", "")),
@@ -872,4 +894,63 @@ test_list_files_authorized_with_exact_grant if {
 	input_value := object.union(runtime_input("list_files", "."), {"subject": subject})
 	d := runtime.decision with input as input_value
 	d.rule_id == "log_normal_runtime_call"
+}
+
+test_missing_analysis_blocks_runtime if {
+	input_value := runtime_input_with_tool(
+		{
+			"id": 1,
+			"name": "read_file",
+			"profile_status": "resolved",
+			"profile_revision": "tool-security-profiles-test-v1",
+			"analysis_status": "missing",
+			"approved_fingerprint_match": false,
+		},
+		"contracts/contract1.txt",
+	)
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_tool_analysis_not_approved"
+	d.decision == "BLOCK"
+}
+
+test_quarantined_tool_blocks_runtime if {
+	tool := object.union(approved_analysis_facts, {"analysis_status": "QUARANTINED", "review_status": "REVIEW_REQUIRED", "approved_fingerprint_match": false})
+	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"tool": tool})
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_tool_analysis_not_approved"
+}
+
+test_semantic_flagged_requires_review_and_blocks if {
+	tool := object.union(approved_analysis_facts, {"analysis_status": "REVIEW_REQUIRED", "review_status": "REVIEW_REQUIRED", "semantic_flagged": true, "approved_fingerprint_match": false})
+	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"tool": tool})
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_tool_semantic_review_required"
+}
+
+test_review_required_blocks_runtime if {
+	tool := object.union(approved_analysis_facts, {"analysis_status": "REVIEW_REQUIRED", "review_status": "REVIEW_REQUIRED", "approved_fingerprint_match": false})
+	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"tool": tool})
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_tool_review_required"
+}
+
+test_deterministic_critical_finding_blocks_runtime if {
+	tool := object.union(approved_analysis_facts, {"deterministic_critical_finding": true})
+	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"tool": tool})
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_tool_deterministic_critical_finding"
+}
+
+test_high_drift_without_approval_blocks_runtime if {
+	tool := object.union(approved_analysis_facts, {"drift_status": "HIGH", "approved_fingerprint_match": false})
+	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"tool": tool})
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_tool_fingerprint_mismatch"
+}
+
+test_approved_fingerprint_mismatch_blocks_runtime if {
+	tool := object.union(approved_analysis_facts, {"approved_fingerprint_match": false})
+	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"tool": tool})
+	d := runtime.decision with input as input_value
+	d.rule_id == "deny_tool_fingerprint_mismatch"
 }

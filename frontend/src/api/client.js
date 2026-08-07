@@ -30,3 +30,16 @@ export async function fetchRuntimeLogs() {
 export async function fetchHealth() {
   return request("/health");
 }
+
+export async function fetchToolAnalysisBundle(toolId) {
+  const [status, analyses, findings, versions, baseline, diff] = await Promise.all([
+    request(`/tool-analysis/tools/${toolId}/status`),
+    request(`/tool-analysis/tools/${toolId}/analyses`),
+    request(`/tool-analysis/tools/${toolId}/findings`),
+    request(`/tool-analysis/tools/${toolId}/versions`),
+    request(`/tool-analysis/tools/${toolId}/baseline`),
+    request(`/tool-analysis/tools/${toolId}/diff`),
+  ]);
+
+  return { status, analyses, findings, versions, baseline, diff };
+}

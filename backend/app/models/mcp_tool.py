@@ -31,5 +31,36 @@ class MCPTool(Base):
     )
     is_sensitive: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    current_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_fingerprint_match: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    analysis_status: Mapped[str] = mapped_column(
+        String(50),
+        default="PENDING_ANALYSIS",
+        nullable=False,
+    )
+    risk_level: Mapped[str] = mapped_column(String(50), default="unknown", nullable=False)
+    semantic_flagged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    deterministic_critical_finding: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    consistency_status: Mapped[str] = mapped_column(
+        String(50),
+        default="unknown",
+        nullable=False,
+    )
+    drift_status: Mapped[str] = mapped_column(String(50), default="NONE", nullable=False)
+    review_status: Mapped[str] = mapped_column(
+        String(50),
+        default="REVIEW_REQUIRED",
+        nullable=False,
+    )
+    analyzer_revision: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="active", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

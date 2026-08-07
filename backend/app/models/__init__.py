@@ -5,6 +5,13 @@ from app.models.mcp_tool import MCPTool
 from app.models.policy_decision import PolicyDecision
 from app.models.policy_rule import PolicyRule
 from app.models.runtime_call import RuntimeCall
+from app.models.tool_analysis import (
+    ToolAnalysis,
+    ToolAnalysisFinding,
+    ToolApprovedBaseline,
+    ToolHumanReview,
+    ToolObservedVersion,
+)
 from app.models.trusted_agent_session import TrustedAgentSession
 
 __all__ = [

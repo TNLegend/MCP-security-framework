@@ -1,6 +1,14 @@
 import shutil
 import subprocess
 import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_DIR = REPO_ROOT / "backend"
+sys.path.insert(0, str(BACKEND_DIR))
+
+from app.core.runtime_paths import OPA_EXE  # noqa: E402
 
 
 REQUIRED_COMMANDS = {
@@ -17,10 +25,11 @@ def command_exists(command: str) -> bool:
     return shutil.which(command) is not None
 
 
-def get_version(command: str) -> str:
+def get_version(command: str | list[str]) -> str:
     try:
+        command_line = command if isinstance(command, list) else [command, "--version"]
         result = subprocess.run(
-            [command, "--version"],
+            command_line,
             capture_output=True,
             text=True,
             timeout=5,
@@ -42,6 +51,12 @@ def main() -> int:
         else:
             print(f"[MISSING] {label}: command '{command}' not found")
             missing.append(label)
+
+    if OPA_EXE.exists():
+        print(f"[OK] OPA local: {get_version([str(OPA_EXE), 'version'])}")
+    else:
+        print(f"[MISSING] OPA local: expected {OPA_EXE}")
+        missing.append("OPA local")
 
     print("=" * 50)
 

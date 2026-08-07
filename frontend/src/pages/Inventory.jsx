@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { fetchToolAnalysisBundle } from "../api/client";
 
 function Inventory({ servers = [], tools = [], loading = false }) {
   const [selectedServerId, setSelectedServerId] = useState(null);
   const [selectedToolId, setSelectedToolId] = useState(null);
+  const [toolAnalysis, setToolAnalysis] = useState(null);
+  const [toolAnalysisLoading, setToolAnalysisLoading] = useState(false);
 
   const selectedServer = useMemo(
     () => servers.find((server) => server.id === selectedServerId) || null,
@@ -53,6 +56,36 @@ function Inventory({ servers = [], tools = [], loading = false }) {
       setSelectedToolId(selectedServerTools[0]?.id ?? null);
     }
   }, [selectedServer, selectedServerTools, selectedToolId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedTool) {
+      setToolAnalysis(null);
+      return;
+    }
+
+    setToolAnalysisLoading(true);
+    fetchToolAnalysisBundle(selectedTool.id)
+      .then((bundle) => {
+        if (!cancelled) {
+          setToolAnalysis(bundle);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setToolAnalysis(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setToolAnalysisLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedTool]);
 
   if (loading) {
     return (
@@ -113,7 +146,13 @@ function Inventory({ servers = [], tools = [], loading = false }) {
           </div>
         )}
 
-        {selectedTool && <ToolDetailPanel tool={selectedTool} />}
+        {selectedTool && (
+          <ToolDetailPanel
+            tool={selectedTool}
+            analysis={toolAnalysis}
+            analysisLoading={toolAnalysisLoading}
+          />
+        )}
       </div>
     </section>
   );
@@ -269,7 +308,9 @@ function ServerDetailPanel({ server }) {
   );
 }
 
-function ToolDetailPanel({ tool }) {
+function ToolDetailPanel({ tool, analysis, analysisLoading }) {
+  const latestAnalysis = analysis?.analyses?.[0] || null;
+
   return (
     <div className="detail-panel">
       <h3>{getToolDisplayName(tool)}</h3>
@@ -298,7 +339,40 @@ function ToolDetailPanel({ tool }) {
             ["is_sensitive", tool.is_sensitive ? "true" : "false"],
             ["status", tool.status],
             ["last_analyzed_at", formatDate(tool.last_analyzed_at)],
+            ["analysis_status", tool.analysis_status, "badge"],
+            ["risk_level", tool.risk_level, "badge"],
+            ["semantic_flagged", tool.semantic_flagged ? "true" : "false"],
+            [
+              "deterministic_critical_finding",
+              tool.deterministic_critical_finding ? "true" : "false",
+            ],
+            ["consistency_status", tool.consistency_status, "badge"],
+            ["drift_status", tool.drift_status, "badge"],
+            ["review_status", tool.review_status, "badge"],
+            ["current_fingerprint", shortenFingerprint(tool.current_fingerprint)],
+            ["approved_fingerprint", shortenFingerprint(tool.approved_fingerprint)],
+            [
+              "approved_fingerprint_match",
+              tool.approved_fingerprint_match ? "true" : "false",
+            ],
+            ["analyzer_revision", tool.analyzer_revision],
           ]}
+        />
+        <MetadataSection
+          title="Tool analysis"
+          items={
+            analysisLoading
+              ? [["loading", "Loading analysis..."]]
+              : [
+                  ["latest_analysis", latestAnalysis?.id],
+                  ["semantic_scores", latestAnalysis?.semantic_scores, "json"],
+                  ["model_versions", latestAnalysis?.model_versions, "json"],
+                  ["baseline", analysis?.baseline, "json"],
+                  ["version_count", analysis?.versions?.length ?? 0],
+                  ["drift", analysis?.diff, "json"],
+                  ["findings", summarizeFindings(analysis?.findings), "json"],
+                ]
+          }
         />
       </div>
     </div>
@@ -384,6 +458,25 @@ function displayValue(value) {
   return value;
 }
 
+function shortenFingerprint(value) {
+  if (!value) {
+    return value;
+  }
+  return `${String(value).slice(0, 12)}...${String(value).slice(-8)}`;
+}
+
+function summarizeFindings(findings = []) {
+  return findings.map((finding) => ({
+    code: finding.code,
+    category: finding.category,
+    source: finding.source,
+    severity: finding.severity,
+    confidence: finding.confidence,
+    evidence: finding.evidence,
+    recommendation: finding.recommendation,
+  }));
+}
+
 function getBadgeClass(value) {
   const normalized = String(value || "unknown").toLowerCase();
 
@@ -394,17 +487,20 @@ function getBadgeClass(value) {
   if (
     normalized === "medium" ||
     normalized === "pending_analysis" ||
+    normalized === "quarantined" ||
+    normalized === "review_required" ||
+    normalized === "analysis_failed" ||
     normalized === "pending_review" ||
     normalized === "requires_policy_check"
   ) {
     return "badge-medium badge-warning";
   }
 
-  if (normalized === "high") {
+  if (normalized === "high" || normalized === "blocked" || normalized === "critical") {
     return "badge-high";
   }
 
-  if (normalized === "lab_trusted") {
+  if (normalized === "lab_trusted" || normalized === "approved" || normalized === "consistent") {
     return "badge-success";
   }
 
@@ -437,7 +533,11 @@ function hasPendingStatus(item, type) {
   return (
     !item.policy_status ||
     item.policy_status === "pending_analysis" ||
-    item.policy_status === "pending_review"
+    item.policy_status === "pending_review" ||
+    item.analysis_status === "PENDING_ANALYSIS" ||
+    item.analysis_status === "QUARANTINED" ||
+    item.analysis_status === "REVIEW_REQUIRED" ||
+    item.analysis_status === "ANALYSIS_FAILED"
   );
 }
 

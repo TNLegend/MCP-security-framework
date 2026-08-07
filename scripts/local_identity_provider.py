@@ -2,6 +2,7 @@ import argparse
 import base64
 import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,7 +15,13 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SECRET_DIR = Path.home() / ".mcp-security-framework" / "secrets"
+BACKEND_DIR = REPO_ROOT / "backend"
+sys.path.insert(0, str(BACKEND_DIR))
+
+from app.core.runtime_paths import RUNTIME_SECRETS_DIR, configure_runtime_environment  # noqa: E402
+
+configure_runtime_environment()
+DEFAULT_SECRET_DIR = RUNTIME_SECRETS_DIR
 DEFAULT_IDP_KEY_ID = "local-idp-rs256-1"
 
 

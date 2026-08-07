@@ -98,6 +98,16 @@ class FakeBackendClient:
             "sensitivity": "medium",
             "description_risk_score": 0,
             "input_schema": list_files_schema() if tool_name == "list_files" else read_file_schema(),
+            "analysis_status": "APPROVED",
+            "current_fingerprint": "a" * 64,
+            "approved_fingerprint_match": True,
+            "risk_level": "low",
+            "semantic_flagged": False,
+            "deterministic_critical_finding": False,
+            "consistency_status": "consistent",
+            "drift_status": "NONE",
+            "review_status": "APPROVED",
+            "analyzer_revision": "tool-description-analyzer-v1",
         }
 
     def request_policy_decision(self, context: dict, *, identity_assertion: str | None = None):

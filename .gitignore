@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+backend/.venv/
 .venv/
 venv/
 env/
@@ -12,6 +13,7 @@ env/
 .ruff_cache/
 
 # Node / Frontend
+frontend/node_modules/
 node_modules/
 dist/
 build/
@@ -41,11 +43,15 @@ secrets/
 Thumbs.db
 
 # Logs / temp
+.runtime/
 *.log
 logs/
 tmp/
 temp/
 .cache/
+.cache/mcp-security-framework/
+hf-cache/
+models--*/
 
 # Project private documents
 # Git should mainly contain code + README + config.

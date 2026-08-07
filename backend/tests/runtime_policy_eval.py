@@ -5,11 +5,12 @@ import tempfile
 from functools import lru_cache
 from pathlib import Path
 
+from app.core.runtime_paths import OPA_EXE
 from app.schemas.policy_decision import PolicyDecision
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OPA_POLICY_DIR = REPO_ROOT / "policies" / "opa"
-LOCAL_OPA = Path.home() / ".mcp-security-framework" / "tools" / "opa.exe"
+LOCAL_OPA = OPA_EXE
 
 
 def evaluate_runtime_policy_with_opa_cli(context: dict) -> dict:
@@ -54,9 +55,9 @@ def _evaluate_runtime_policy_cached(cache_key: str) -> dict:
 
 
 def _opa_executable() -> str:
+    if LOCAL_OPA.exists():
+        return str(LOCAL_OPA)
     opa = shutil.which("opa")
     if opa is not None:
         return opa
-    if LOCAL_OPA.exists():
-        return str(LOCAL_OPA)
     return "opa"

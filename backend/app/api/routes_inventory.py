@@ -8,6 +8,16 @@ from app.db.database import get_db
 from app.models.mcp_server import MCPServer
 from app.models.mcp_tool import MCPTool
 from app.schemas.inventory import DiscoveryImportPayload
+from app.services.tool_analysis import ToolAnalysisService
+
+try:
+    from proxy.tool_security_profiles import (
+        ToolSecurityProfileResolver,
+        server_ref_for_server,
+    )
+except Exception:  # pragma: no cover - import fallback for unusual launch paths
+    ToolSecurityProfileResolver = None
+    server_ref_for_server = None
 
 router = APIRouter(prefix="/inventory", tags=["Inventory"])
 
@@ -20,6 +30,9 @@ def import_discovery(payload: DiscoveryImportPayload, db: Session = Depends(get_
 
     tools_created = 0
     tools_updated = 0
+    tools_quarantined = 0
+    tools_approved_current = 0
+    analysis_service = ToolAnalysisService()
 
     for tool_payload in payload.tools:
         existing_tool = db.scalar(
@@ -36,6 +49,19 @@ def import_discovery(payload: DiscoveryImportPayload, db: Session = Depends(get_
             tools_updated += 1
 
         apply_tool_metadata(existing_tool, tool_payload.model_dump(), now)
+        db.flush()
+        server_ref = _server_ref(server)
+        profile_snapshot = _tool_profile_snapshot(server_ref, existing_tool.name)
+        analysis = analysis_service.observe_and_analyze(
+            db=db,
+            tool=existing_tool,
+            server_ref=server_ref,
+            profile_snapshot=profile_snapshot,
+        )
+        if analysis.analysis_status == "APPROVED":
+            tools_approved_current += 1
+        else:
+            tools_quarantined += 1
 
     db.commit()
     db.refresh(server)
@@ -46,6 +72,8 @@ def import_discovery(payload: DiscoveryImportPayload, db: Session = Depends(get_
         "tools_created": tools_created,
         "tools_updated": tools_updated,
         "total_tools_imported": len(payload.tools),
+        "tools_quarantined": tools_quarantined,
+        "tools_approved_current": tools_approved_current,
     }
 
 
@@ -109,7 +137,7 @@ def apply_tool_metadata(tool: MCPTool, tool_payload: dict, now: datetime) -> Non
     tool.annotations = tool_payload.get("annotations")
     tool.execution = tool_payload.get("execution")
     tool.raw_tool_definition = tool_payload.get("raw_tool_definition")
-    tool.status = "active"
+    tool.status = "QUARANTINED"
     tool.last_analyzed_at = now
 
     enrichment = security_enrichment_for_tool(tool.name)
@@ -117,6 +145,36 @@ def apply_tool_metadata(tool: MCPTool, tool_payload: dict, now: datetime) -> Non
     tool.risk_score = enrichment["risk_score"]
     tool.policy_status = enrichment["policy_status"]
     tool.is_sensitive = enrichment["is_sensitive"]
+
+
+def _server_ref(server: MCPServer) -> str:
+    payload = {
+        "transport": server.transport,
+        "endpoint": server.endpoint,
+    }
+    if server_ref_for_server is not None:
+        return server_ref_for_server(payload)
+    return f"{server.transport or 'streamable_http'}:{server.endpoint}"
+
+
+def _tool_profile_snapshot(server_ref: str, tool_name: str) -> dict | None:
+    if ToolSecurityProfileResolver is None:
+        return None
+    try:
+        profile = ToolSecurityProfileResolver().resolve(
+            server_ref=server_ref,
+            tool_name=tool_name,
+        )
+    except Exception:
+        return None
+    return {
+        "revision": profile.revision,
+        "server_ref": profile.server_ref,
+        "tool_name": profile.tool_name,
+        "operation": profile.operation,
+        "required_capability": profile.required_capability,
+        "resource": profile.resource.model_dump(mode="json"),
+    }
 
 
 def is_local_lab_endpoint(endpoint: str) -> bool:

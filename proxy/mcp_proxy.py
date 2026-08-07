@@ -576,6 +576,21 @@ class MCPProxy:
                 "description_risk_score": tool.get("description_risk_score", 0.0),
                 "capability_mismatch": tool.get("capability_mismatch", False),
                 "drift_status": tool.get("drift_status") or "unknown",
+                "analysis_status": tool.get("analysis_status") or "missing",
+                "current_fingerprint": tool.get("current_fingerprint"),
+                "approved_fingerprint_match": tool.get(
+                    "approved_fingerprint_match",
+                    False,
+                ),
+                "risk_level": tool.get("risk_level") or "unknown",
+                "semantic_flagged": tool.get("semantic_flagged", False),
+                "deterministic_critical_finding": tool.get(
+                    "deterministic_critical_finding",
+                    False,
+                ),
+                "consistency_status": tool.get("consistency_status") or "unknown",
+                "review_status": tool.get("review_status") or "missing",
+                "analyzer_revision": tool.get("analyzer_revision") or "unknown",
             },
             "request": {
                 "operation": prepared_request.operation,
