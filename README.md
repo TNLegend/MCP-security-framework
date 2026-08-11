@@ -57,6 +57,54 @@ LLM provider -> direct MCP tool execution
 
 Gemini and Groq are demo providers only. The framework is provider-agnostic through a common LLM provider interface.
 
+## Control Plane Foundation
+
+The Control Plane separates human administration from AI agent identity.
+
+Human Control Plane users are stored in PostgreSQL as `ControlPlaneUser` records and have exactly one of two roles:
+
+- `ADMIN`: full Control Plane administration.
+- `VIEWER`: authenticated read-only access, with no user-management privileges.
+
+AI agents remain separate. Agent identity continues to use upstream identities, identity bindings, trusted sessions, capabilities, scopes, and Tool Analyzer facts. Control Plane web sessions are never agent trusted sessions.
+
+PostgreSQL is the only administrative runtime source of truth. Administrative
+runtime configuration is versioned in PostgreSQL:
+
+```text
+DRAFT -> VALIDATE -> PUBLISH -> ROLLBACK
+```
+
+`PUBLISHED` and `ARCHIVED` revisions are immutable. A publish transaction archives the previous active revision, marks the draft as published, and updates `ControlPlaneState.active_revision_id`. Runtime components read administrative facts through a `PublishedConfigurationSnapshot`; missing or corrupt active configuration fails closed. The administrative YAML files remain for bootstrap, import, export, tests, and examples, but they are not a silent runtime fallback.
+
+One tool call uses exactly one immutable published configuration snapshot:
+
+```text
+Tool Call A starts on Revision 4
+Revision 5 is published while A is running
+Tool Call A finishes on Revision 4
+Tool Call B starts on Revision 5
+```
+
+The proxy loads the snapshot once at the start of the call and uses that same `revision_id`, `revision_number`, and `content_hash` for identity bindings, agent authorization, tool security profiles, resource scopes, and policy settings. These metadata are included in the runtime context and protected by the signed proxy-to-backend assertion, so the backend resolves authorization from the same revision instead of asking for the active revision again.
+
+OPA/Rego remains the runtime policy engine. Python verifies identities, validates and loads trusted administrative facts, prepares policy context, and enforces fail-closed behavior. Rego decides `ALLOW` or `BLOCK`; the proxy enforces the decision and never calls MCP for blocked requests.
+
+The framework has four separate identity boundaries:
+
+```text
+HUMAN CONTROL PLANE -> HttpOnly session -> ADMIN / VIEWER
+AI AGENT            -> JWT/JWKS identity, trusted sessions, capabilities, scopes
+MCP_PROXY SERVICE   -> Ed25519 signed service requests
+MCP_DISCOVERY       -> Ed25519 signed service requests
+```
+
+Knowing an internal URL does not grant access. Internal service requests sign the service id, key id, HTTP method, exact path, timestamp, JTI, and canonical request body hash with Ed25519. The backend verifies the public key, timestamp window, anti-replay JTI, body integrity, and per-service permission. A public key cannot impersonate a service because only the corresponding private key can produce the signature.
+
+The proxy no longer uses human inventory routes. It reads inventory through signed internal endpoints and writes runtime logs with its `MCP_PROXY` service identity. Tool discovery import is signed by a separate `MCP_DISCOVERY` identity; no shared discovery bearer token is accepted. Human legacy mutations such as `/servers`, `/tools`, and `/policies` are ADMIN-only.
+
+Sensitive administrative actions are audited through `ControlPlaneAuditEvent`. Passwords, password hashes, session tokens, cookies, CSRF tokens, private keys, and secrets are excluded from audit payloads.
+
 ## Repository Structure
 
 ```text
@@ -250,6 +298,7 @@ Start MCP lab server:
 Discover and import the MCP lab server:
 
 ```powershell
+.\backend\.venv\Scripts\python.exe scripts\provision_service_identities.py
 .\backend\.venv\Scripts\python.exe scripts\discover_http_mcp_server.py
 ```
 
@@ -290,6 +339,7 @@ Compile Python code:
 Check runtime logs:
 
 ```powershell
+# Requires an authenticated Control Plane ADMIN or VIEWER session.
 Invoke-RestMethod http://127.0.0.1:8000/api/v1/runtime/logs
 ```
 
@@ -367,7 +417,7 @@ The runtime path enforces these rules:
 - No scanner or DevSecOps analysis yet.
 - No AWS integration yet.
 - No full audit report generation yet.
-- No production authentication or authorization layer yet.
+- Control Plane authentication is intentionally minimal and local-first: ADMIN/VIEWER, HttpOnly sessions, CSRF protection, and audit.
 
 ## Next Phases
 

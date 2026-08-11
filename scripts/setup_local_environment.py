@@ -34,6 +34,7 @@ def main() -> int:
     parser.add_argument("--skip-python-deps", action="store_true")
     parser.add_argument("--skip-models", action="store_true")
     parser.add_argument("--skip-opa", action="store_true")
+    parser.add_argument("--skip-service-identities", action="store_true")
     args = parser.parse_args()
 
     configured = configure_runtime_environment()
@@ -58,6 +59,9 @@ def main() -> int:
             ],
             env=env,
         )
+
+    if not args.skip_service_identities:
+        _run([python, str(REPO_ROOT / "scripts" / "provision_service_identities.py")], env=env)
 
     if not args.skip_models:
         _run([python, str(REPO_ROOT / "scripts" / "download_tool_analyzer_models.py")], env=env)

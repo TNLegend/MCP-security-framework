@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -8,25 +8,40 @@ from app.db.database import get_db
 from app.models.mcp_server import MCPServer
 from app.models.mcp_tool import MCPTool
 from app.schemas.inventory import DiscoveryImportPayload
+from app.services.published_configuration import PublishedConfigurationProvider
+from app.services.signed_service_request import (
+    PERMISSION_INVENTORY_IMPORT_DISCOVERY,
+    VerifiedServiceRequest,
+    require_internal_service_permission,
+)
 from app.services.tool_analysis import ToolAnalysisService
 
 try:
-    from proxy.tool_security_profiles import (
-        ToolSecurityProfileResolver,
-        server_ref_for_server,
-    )
+    from proxy.tool_security_profiles import server_ref_for_server
 except Exception:  # pragma: no cover - import fallback for unusual launch paths
-    ToolSecurityProfileResolver = None
     server_ref_for_server = None
 
 router = APIRouter(prefix="/inventory", tags=["Inventory"])
 
 
 @router.post("/import-discovery")
-def import_discovery(payload: DiscoveryImportPayload, db: Session = Depends(get_db)):
+def import_discovery(
+    payload: DiscoveryImportPayload,
+    _: VerifiedServiceRequest = Depends(
+        require_internal_service_permission(PERMISSION_INVENTORY_IMPORT_DISCOVERY)
+    ),
+    db: Session = Depends(get_db),
+):
     now = datetime.utcnow()
     server = upsert_server(payload, db, now)
     db.flush()
+    try:
+        config_snapshot = PublishedConfigurationProvider(db).load_active_snapshot()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="published_configuration_unavailable",
+        ) from exc
 
     tools_created = 0
     tools_updated = 0
@@ -51,7 +66,11 @@ def import_discovery(payload: DiscoveryImportPayload, db: Session = Depends(get_
         apply_tool_metadata(existing_tool, tool_payload.model_dump(), now)
         db.flush()
         server_ref = _server_ref(server)
-        profile_snapshot = _tool_profile_snapshot(server_ref, existing_tool.name)
+        profile_snapshot = _tool_profile_snapshot(
+            config_snapshot,
+            server_ref,
+            existing_tool.name,
+        )
         analysis = analysis_service.observe_and_analyze(
             db=db,
             tool=existing_tool,
@@ -157,11 +176,9 @@ def _server_ref(server: MCPServer) -> str:
     return f"{server.transport or 'streamable_http'}:{server.endpoint}"
 
 
-def _tool_profile_snapshot(server_ref: str, tool_name: str) -> dict | None:
-    if ToolSecurityProfileResolver is None:
-        return None
+def _tool_profile_snapshot(config_snapshot, server_ref: str, tool_name: str) -> dict | None:
     try:
-        profile = ToolSecurityProfileResolver().resolve(
+        profile = config_snapshot.get_tool_security_profile(
             server_ref=server_ref,
             tool_name=tool_name,
         )

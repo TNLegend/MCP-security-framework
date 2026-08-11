@@ -290,6 +290,9 @@ class PolicyRequestContext(BaseModel):
 class PolicyRuntimeContext(BaseModel):
     environment: str = "local"
     session_id: NonEmptyString
+    control_plane_revision_id: str = "unknown"
+    control_plane_revision_number: PositiveInt | None = None
+    control_plane_content_hash: str = "unknown"
 
     model_config = ConfigDict(extra="forbid")
 
@@ -298,6 +301,13 @@ class PolicyRuntimeContext(BaseModel):
     def validate_session_id(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("session_id must not be empty.")
+        return value
+
+    @field_validator("control_plane_revision_id", "control_plane_content_hash")
+    @classmethod
+    def validate_control_plane_metadata(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("control plane metadata must not be empty.")
         return value
 
 

@@ -252,6 +252,40 @@ class FakeResourceRegistryResolver:
         )
 
 
+class FakePublishedConfigurationSnapshot:
+    revision_id = "control-plane-revision-1"
+    revision_number = 1
+    content_hash = "c" * 64
+
+    def __init__(self) -> None:
+        self.identity_resolver = FakeIdentityBindingResolver()
+        self.tool_profile_resolver = FakeToolSecurityProfileResolver()
+        self.resource_registry_resolver = FakeResourceRegistryResolver()
+
+    def resolve(self, **kwargs):
+        if "issuer" in kwargs and "subject" in kwargs:
+            return self.identity_resolver.resolve(**kwargs)
+        if "server_ref" in kwargs and "tool_name" in kwargs:
+            return self.tool_profile_resolver.resolve(**kwargs)
+        raise AssertionError(f"unexpected snapshot resolution: {kwargs}")
+
+    def load(self) -> ResourceRegistry:
+        return self.resource_registry_resolver.load()
+
+
+class FakePublishedConfigurationSnapshotResolver:
+    def __init__(self) -> None:
+        self.snapshot = FakePublishedConfigurationSnapshot()
+
+    def load_active_snapshot(self) -> FakePublishedConfigurationSnapshot:
+        return self.snapshot
+
+
+class FailingPublishedConfigurationSnapshotResolver:
+    def load_active_snapshot(self):
+        raise RuntimeError("published configuration unavailable")
+
+
 class InventoryErrorBackendClient(FakeBackendClient):
     def find_server(self, server_id=None, endpoint=None):
         raise BackendClientError("Inventory unavailable.")
@@ -548,16 +582,11 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
     def setUp(self) -> None:
         self.default_identity_patches = [
             patch("proxy.mcp_proxy.JWTJWKSAgentIdentityVerifier", FakeIdentityVerifier),
-            patch("proxy.mcp_proxy.IdentityBindingResolver", FakeIdentityBindingResolver),
             patch("proxy.mcp_proxy.InternalIdentityAssertionSigner", FakeAssertionSigner),
             patch("proxy.mcp_proxy.TrustedSessionManager", FakeTrustedSessionManager),
             patch(
-                "proxy.mcp_proxy.ToolSecurityProfileResolver",
-                FakeToolSecurityProfileResolver,
-            ),
-            patch(
-                "proxy.mcp_proxy.ResourceRegistryResolver",
-                FakeResourceRegistryResolver,
+                "proxy.mcp_proxy.PublishedConfigurationSnapshotResolver",
+                FakePublishedConfigurationSnapshotResolver,
             ),
         ]
         for patcher in self.default_identity_patches:
@@ -1349,6 +1378,47 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
             {"path": "contracts/contract1.txt"},
         )
         self.assertEqual(TrackingMCPClient.last_arguments, {"path": "contracts/contract1.txt"})
+
+    def test_runtime_context_and_logs_include_control_plane_snapshot_metadata(self) -> None:
+        reset_tracking_mcp_client()
+        backend = FakeBackendClient(
+            policy_decision("ALLOW", [{"type": "LOG", "parameters": {}}])
+        )
+        proxy = MCPProxy(backend_client=backend, mcp_client_class=TrackingMCPClient)
+
+        result = proxy.handle_tool_call(tool_call())
+
+        self.assertTrue(result["mcp_called"])
+        self.assertEqual(
+            backend.last_policy_context["runtime"]["control_plane_revision_id"],
+            "control-plane-revision-1",
+        )
+        self.assertEqual(
+            backend.last_policy_context["runtime"]["control_plane_content_hash"],
+            "c" * 64,
+        )
+        self.assertEqual(
+            backend.created_logs[-1]["control_plane_revision_id"],
+            "control-plane-revision-1",
+        )
+
+    def test_published_config_snapshot_unavailable_blocks_before_mcp(self) -> None:
+        reset_tracking_mcp_client()
+        backend = FakeBackendClient(
+            policy_decision("ALLOW", [{"type": "LOG", "parameters": {}}])
+        )
+        proxy = MCPProxy(
+            backend_client=backend,
+            mcp_client_class=TrackingMCPClient,
+            config_snapshot_resolver=FailingPublishedConfigurationSnapshotResolver(),
+        )
+
+        result = proxy.handle_tool_call(tool_call())
+
+        self.assertFalse(result["mcp_called"])
+        self.assertFalse(TrackingMCPClient.called)
+        self.assertIsNone(backend.last_policy_context)
+        self.assertEqual(result["decision"]["rule_id"], "trusted_identity_required")
 
     def test_backslash_path_is_normalized_before_policy_and_mcp(self) -> None:
         reset_tracking_mcp_client()

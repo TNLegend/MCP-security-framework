@@ -15,6 +15,9 @@ class RuntimeCallCreate(BaseModel):
     rule_id: str | None = None
     decision_reason: str | None = None
     severity: str | None = None
+    control_plane_revision_id: str | None = None
+    control_plane_revision_number: int | None = None
+    control_plane_content_hash: str | None = None
     executed: bool = False
     execution_status: str | None = None
     result_summary: str | None = None
@@ -33,6 +36,9 @@ class RuntimeCallRead(BaseModel):
     rule_id: str | None = None
     decision_reason: str | None = None
     severity: str | None = None
+    control_plane_revision_id: str | None = None
+    control_plane_revision_number: int | None = None
+    control_plane_content_hash: str | None = None
     executed: bool = False
     execution_status: str | None = None
     result_summary: str | None = None

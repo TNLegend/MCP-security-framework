@@ -8,7 +8,13 @@ from app.models.runtime_call import RuntimeCall
 from app.schemas.policy_decision import PolicyDecision
 from app.schemas.policy_context import RuntimePolicyInput
 from app.schemas.runtime import RuntimeCallCreate, RuntimeCallRead
+from app.services.control_plane_auth import AuthenticatedControlPlaneUser, require_authenticated_user
 from app.services.policy_runtime import evaluate_runtime_policy
+from app.services.signed_service_request import (
+    PERMISSION_RUNTIME_LOGS_WRITE,
+    VerifiedServiceRequest,
+    require_internal_service_permission,
+)
 
 router = APIRouter(prefix="/runtime", tags=["Runtime"])
 
@@ -31,12 +37,21 @@ def resolve_server_id(server_id: int | str | None, db: Session) -> int | None:
 
 
 @router.get("/logs", response_model=list[RuntimeCallRead])
-def list_runtime_logs(db: Session = Depends(get_db)):
+def list_runtime_logs(
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
     return db.scalars(select(RuntimeCall).order_by(RuntimeCall.id)).all()
 
 
 @router.post("/logs", response_model=RuntimeCallRead)
-def create_runtime_log(log: RuntimeCallCreate, db: Session = Depends(get_db)):
+def create_runtime_log(
+    log: RuntimeCallCreate,
+    _: VerifiedServiceRequest = Depends(
+        require_internal_service_permission(PERMISSION_RUNTIME_LOGS_WRITE)
+    ),
+    db: Session = Depends(get_db),
+):
     log_data = log.model_dump()
     log_data["server_id"] = resolve_server_id(log.server_id, db)
 

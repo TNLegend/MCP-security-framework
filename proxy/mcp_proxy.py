@@ -4,6 +4,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
+backend_path = Path(__file__).resolve().parents[1] / "backend"
+if str(backend_path) not in sys.path:
+    sys.path.insert(0, str(backend_path))
+
 from proxy.agent_identity import (
     AgentIdentityError,
     AgentIdentityVerifier,
@@ -16,6 +20,11 @@ from proxy.http_mcp_client import (
     MCPHttpError,
     MCPProtocolError,
     SUPPORTED_PROTOCOL_VERSION,
+)
+from app.services.published_configuration import (
+    PublishedConfigurationError,
+    PublishedConfigurationSnapshot,
+    PublishedConfigurationSnapshotResolver,
 )
 from proxy.identity_binding import (
     IdentityBindingError,
@@ -54,8 +63,6 @@ from proxy.trusted_sessions import (
 try:
     from app.schemas.policy_decision import PolicyDecision, PolicyEffect
 except ModuleNotFoundError:
-    backend_path = Path(__file__).resolve().parents[1] / "backend"
-    sys.path.insert(0, str(backend_path))
     from app.schemas.policy_decision import PolicyDecision, PolicyEffect
 
 
@@ -137,22 +144,25 @@ class MCPProxy:
         trusted_session_manager: TrustedSessionManager | None = None,
         tool_profile_resolver: ToolSecurityProfileResolver | None = None,
         resource_registry_resolver: ResourceRegistryResolver | None = None,
+        config_snapshot_resolver: PublishedConfigurationSnapshotResolver | None = None,
     ) -> None:
         self.backend_client = backend_client or BackendClient()
         self.mcp_client_class = mcp_client_class
         self.identity_verifier = identity_verifier or JWTJWKSAgentIdentityVerifier()
-        self.identity_binding_resolver = (
-            identity_binding_resolver or IdentityBindingResolver()
-        )
+        self.identity_binding_resolver = identity_binding_resolver
         self.assertion_signer = assertion_signer or InternalIdentityAssertionSigner()
         self.trusted_session_manager = (
             trusted_session_manager or TrustedSessionManager()
         )
-        self.tool_profile_resolver = (
-            tool_profile_resolver or ToolSecurityProfileResolver()
+        self.tool_profile_resolver = tool_profile_resolver
+        self.resource_registry_resolver = resource_registry_resolver
+        self.config_snapshot_resolver = (
+            config_snapshot_resolver or PublishedConfigurationSnapshotResolver()
         )
-        self.resource_registry_resolver = (
-            resource_registry_resolver or ResourceRegistryResolver()
+        self._requires_config_snapshot = (
+            identity_binding_resolver is None
+            or tool_profile_resolver is None
+            or resource_registry_resolver is None
         )
 
     def handle_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -169,10 +179,39 @@ class MCPProxy:
             }
         }
 
+        config_snapshot = None
+        if self._requires_config_snapshot:
+            try:
+                config_snapshot = self._load_config_snapshot()
+            except PublishedConfigurationError as exc:
+                return self._trusted_identity_error_response(
+                    safe_input_tool_call,
+                    exc.code,
+                )
+            except Exception:
+                return self._trusted_identity_error_response(
+                    safe_input_tool_call,
+                    "published_config_unavailable",
+                )
+
+        identity_binding_resolver = self.identity_binding_resolver or config_snapshot
+        tool_profile_resolver = self.tool_profile_resolver or config_snapshot
+        resource_registry_resolver = self.resource_registry_resolver or config_snapshot
+        if (
+            identity_binding_resolver is None
+            or tool_profile_resolver is None
+            or resource_registry_resolver is None
+        ):
+            return self._trusted_identity_error_response(
+                safe_input_tool_call,
+                "published_config_unavailable",
+            )
+
         try:
             trusted_session = self._resolve_trusted_session(
                 tool_call,
                 claimed_agent_id=claimed_agent_id,
+                identity_binding_resolver=identity_binding_resolver,
             )
         except AgentIdentityError as exc:
             return self._trusted_identity_error_response(
@@ -204,6 +243,15 @@ class MCPProxy:
             "session_status": trusted_session.session_status,
             "session_reference": trusted_session.session_reference,
             "session_id": trusted_session.session_reference,
+            "control_plane_revision_id": (
+                config_snapshot.revision_id if config_snapshot is not None else "unknown"
+            ),
+            "control_plane_revision_number": (
+                config_snapshot.revision_number if config_snapshot is not None else None
+            ),
+            "control_plane_content_hash": (
+                config_snapshot.content_hash if config_snapshot is not None else "unknown"
+            ),
         }
 
         raw_arguments = tool_call.get("arguments", {})
@@ -224,11 +272,11 @@ class MCPProxy:
 
         server_ref = server_ref_for_server(server)
         try:
-            tool_profile = self.tool_profile_resolver.resolve(
+            tool_profile = tool_profile_resolver.resolve(
                 server_ref=server_ref,
                 tool_name=str(tool.get("name") or tool_call.get("tool_name") or ""),
             )
-            resource_registry = self.resource_registry_resolver.load()
+            resource_registry = resource_registry_resolver.load()
         except ToolSecurityProfileError as exc:
             return self._profile_error_response(tool_call, server.get("id"), exc.code)
         except ResourceRegistryError as exc:
@@ -428,8 +476,12 @@ class MCPProxy:
         )
 
     def create_trusted_session(self, access_token: str) -> dict[str, Any]:
+        config_snapshot = self._load_config_snapshot() if self.identity_binding_resolver is None else None
+        identity_binding_resolver = self.identity_binding_resolver or config_snapshot
+        if identity_binding_resolver is None:
+            raise IdentityBindingError("agent_identity_binding_unavailable")
         external_identity = self.identity_verifier.verify(access_token)
-        identity_binding = self.identity_binding_resolver.resolve(
+        identity_binding = identity_binding_resolver.resolve(
             issuer=external_identity.issuer,
             subject=external_identity.subject,
         )
@@ -449,11 +501,12 @@ class MCPProxy:
         tool_call: dict[str, Any],
         *,
         claimed_agent_id: Any,
+        identity_binding_resolver: IdentityBindingResolver,
     ) -> ProxyTrustedSession:
         session_token = tool_call.get("session_token")
         if session_token is not None:
             trusted_session = self.trusted_session_manager.validate_token(session_token)
-            binding = self.identity_binding_resolver.resolve(
+            binding = identity_binding_resolver.resolve(
                 issuer=trusted_session.identity_issuer,
                 subject=trusted_session.identity_subject,
             )
@@ -466,7 +519,7 @@ class MCPProxy:
             return trusted_session
 
         external_identity = self.identity_verifier.verify(tool_call.get("access_token"))
-        identity_binding = self.identity_binding_resolver.resolve(
+        identity_binding = identity_binding_resolver.resolve(
             issuer=external_identity.issuer,
             subject=external_identity.subject,
         )
@@ -475,6 +528,9 @@ class MCPProxy:
             external_identity=external_identity,
             identity_binding=identity_binding,
         )
+
+    def _load_config_snapshot(self) -> PublishedConfigurationSnapshot:
+        return self.config_snapshot_resolver.load_active_snapshot()
 
     def _verify_claimed_agent_id(
         self,
@@ -615,6 +671,17 @@ class MCPProxy:
             "runtime": {
                 "environment": tool_call.get("environment", "local"),
                 "session_id": tool_call["session_id"],
+                "control_plane_revision_id": tool_call.get(
+                    "control_plane_revision_id",
+                    "unknown",
+                ),
+                "control_plane_revision_number": tool_call.get(
+                    "control_plane_revision_number",
+                ),
+                "control_plane_content_hash": tool_call.get(
+                    "control_plane_content_hash",
+                    "unknown",
+                ),
             },
         }
 

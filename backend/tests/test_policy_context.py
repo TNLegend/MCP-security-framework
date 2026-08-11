@@ -185,6 +185,9 @@ def valid_context() -> dict:
         "runtime": {
             "environment": "local",
             "session_id": "session-demo",
+            "control_plane_revision_id": "control-plane-revision-1",
+            "control_plane_revision_number": 1,
+            "control_plane_content_hash": "c" * 64,
         },
     }
 
@@ -612,6 +615,10 @@ class RuntimeDecisionHttpTests(unittest.TestCase):
             policy_runtime,
             "verify_trusted_identity_context",
             side_effect=lambda **kwargs: trust_identity(kwargs["context"]),
+        ), patch.object(
+            policy_runtime,
+            "enrich_subject_authorization",
+            side_effect=lambda context, *args, **kwargs: context,
         ), patch.object(policy_runtime, "OPAClient", return_value=FakeOPAClient()):
             response = self.client.post(
                 "/api/v1/runtime/decision",

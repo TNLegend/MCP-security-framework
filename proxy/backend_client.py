@@ -1,7 +1,18 @@
 import json
+from pathlib import Path
+import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+backend_path = Path(__file__).resolve().parents[1] / "backend"
+if str(backend_path) not in sys.path:
+    sys.path.insert(0, str(backend_path))
+
+from app.services.signed_service_request import (  # noqa: E402
+    SignedServiceRequestSigner,
+    canonical_json_body,
+)
 
 
 DEFAULT_BACKEND_BASE_URL = "http://127.0.0.1:8000"
@@ -16,6 +27,7 @@ class BackendClient:
         self,
         backend_base_url: str = DEFAULT_BACKEND_BASE_URL,
         timeout_seconds: float = 10.0,
+        service_signer: SignedServiceRequestSigner | None = None,
     ) -> None:
         base_url = backend_base_url.rstrip("/")
         if base_url.endswith("/api/v1"):
@@ -23,17 +35,18 @@ class BackendClient:
         else:
             self.api_base_url = f"{base_url}/api/v1"
         self.timeout_seconds = timeout_seconds
+        self.service_signer = service_signer or SignedServiceRequestSigner.for_proxy()
 
     def list_servers(self) -> list[dict[str, Any]]:
-        data = self._request_json("GET", "/servers")
+        data = self._request_json("GET", "/internal/inventory/servers", sign_as_service=True)
         if not isinstance(data, list):
-            raise BackendClientError("Backend /servers response is not a list.")
+            raise BackendClientError("Backend internal inventory servers response is not a list.")
         return data
 
     def list_tools(self) -> list[dict[str, Any]]:
-        data = self._request_json("GET", "/tools")
+        data = self._request_json("GET", "/internal/inventory/tools", sign_as_service=True)
         if not isinstance(data, list):
-            raise BackendClientError("Backend /tools response is not a list.")
+            raise BackendClientError("Backend internal inventory tools response is not a list.")
         return data
 
     def find_server(
@@ -90,7 +103,12 @@ class BackendClient:
         return data
 
     def create_runtime_log(self, log_payload: dict[str, Any]) -> dict[str, Any]:
-        data = self._request_json("POST", "/runtime/logs", log_payload)
+        data = self._request_json(
+            "POST",
+            "/runtime/logs",
+            log_payload,
+            sign_as_service=True,
+        )
         if not isinstance(data, dict):
             raise BackendClientError("Backend runtime log response is not an object.")
         return data
@@ -102,16 +120,24 @@ class BackendClient:
         payload: dict[str, Any] | None = None,
         *,
         identity_assertion: str | None = None,
+        sign_as_service: bool = False,
     ) -> Any:
-        body = None
+        body = canonical_json_body(payload)
         headers = {"Accept": "application/json"}
         if payload is not None:
-            body = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
         if identity_assertion is not None:
             if len(identity_assertion.encode("utf-8")) > 16_384:
                 raise BackendClientError("Identity assertion header is too large.")
             headers["X-MCP-Identity-Assertion"] = identity_assertion
+        if sign_as_service:
+            headers.update(
+                self.service_signer.signed_headers(
+                    method=method,
+                    path=f"/api/v1{path}",
+                    body=body,
+                )
+            )
 
         request = Request(
             f"{self.api_base_url}{path}",

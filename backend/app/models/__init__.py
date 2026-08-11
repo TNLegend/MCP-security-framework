@@ -1,4 +1,11 @@
 from app.models.audit_event import AuditEvent
+from app.models.control_plane import (
+    ControlPlaneAuditEvent,
+    ControlPlaneConfigRevision,
+    ControlPlaneSession,
+    ControlPlaneState,
+    ControlPlaneUser,
+)
 from app.models.identity_assertion_replay import IdentityAssertionReplay
 from app.models.mcp_server import MCPServer
 from app.models.mcp_tool import MCPTool
@@ -23,4 +30,9 @@ __all__ = [
     "AuditEvent",
     "IdentityAssertionReplay",
     "TrustedAgentSession",
+    "ControlPlaneUser",
+    "ControlPlaneSession",
+    "ControlPlaneConfigRevision",
+    "ControlPlaneState",
+    "ControlPlaneAuditEvent",
 ]

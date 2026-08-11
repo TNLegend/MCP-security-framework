@@ -115,6 +115,12 @@ class InternalIdentityAssertionTestCase(unittest.TestCase):
             "resource_registry_revision": context["request"][
                 "resource_registry_revision"
             ],
+            "control_plane_revision_id": context["runtime"][
+                "control_plane_revision_id"
+            ],
+            "control_plane_content_hash": context["runtime"][
+                "control_plane_content_hash"
+            ],
         }
         if claims_override:
             for key, value in claims_override.items():

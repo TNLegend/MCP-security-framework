@@ -15,6 +15,7 @@ from app.services.internal_identity_assertion import (
     InternalIdentityAssertionVerifier,
 )
 from app.services.opa_client import OPAClient, OPAClientError
+from app.services.published_configuration import PublishedConfigurationProvider
 from app.services.subject_authorization import (
     SubjectAuthorizationError,
     SubjectAuthorizationResolver,
@@ -123,11 +124,40 @@ def verify_trusted_identity_context(
 def enrich_subject_authorization(
     context: dict[str, Any],
     resolver: SubjectAuthorizationResolver | None = None,
+    db: Session | None = None,
 ) -> dict[str, Any]:
     base_context = RuntimePolicyInput.model_validate(context).model_dump(mode="json")
     enriched_context = deepcopy(base_context)
     agent_id = enriched_context["subject"]["agent_id"]
-    subject_resolver = resolver or SubjectAuthorizationResolver()
+    if resolver is not None:
+        subject_resolver = resolver
+    else:
+        if db is None:
+            raise SubjectAuthorizationError("subject_authorization_unavailable")
+        revision_id = enriched_context["runtime"].get("control_plane_revision_id")
+        content_hash = enriched_context["runtime"].get("control_plane_content_hash")
+        if (
+            not isinstance(revision_id, str)
+            or not revision_id.strip()
+            or revision_id == "unknown"
+            or not isinstance(content_hash, str)
+            or not content_hash.strip()
+            or content_hash == "unknown"
+        ):
+            raise SubjectAuthorizationError("subject_authorization_unavailable")
+        try:
+            snapshot = PublishedConfigurationProvider(db).load_snapshot(
+                revision_id,
+                expected_content_hash=content_hash,
+                allow_archived=True,
+            )
+            resolved = snapshot.get_agent_authorization(agent_id)
+        except Exception as exc:
+            raise SubjectAuthorizationError("subject_authorization_unavailable") from exc
+        enriched_context["subject"].update(
+            resolved_authorization_to_policy_subject_fields(resolved)
+        )
+        return RuntimePolicyInput.model_validate(enriched_context).model_dump(mode="json")
     resolved = subject_resolver.resolve(agent_id)
     enriched_context["subject"].update(
         resolved_authorization_to_policy_subject_fields(resolved)
@@ -183,7 +213,7 @@ def evaluate_runtime_policy(
         )
 
     try:
-        authorized_context = enrich_subject_authorization(trusted_context, resolver)
+        authorized_context = enrich_subject_authorization(trusted_context, resolver, db)
     except SubjectAuthorizationError as exc:
         return build_subject_authorization_fail_closed_decision(error_code=exc.code)
     except Exception:

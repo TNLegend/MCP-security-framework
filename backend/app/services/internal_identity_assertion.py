@@ -94,6 +94,8 @@ class InternalIdentityAssertionVerifier:
                         "session_reference",
                         "tool_profile_revision",
                         "resource_registry_revision",
+                        "control_plane_revision_id",
+                        "control_plane_content_hash",
                     ],
                     "verify_signature": True,
                     "verify_exp": True,
@@ -213,6 +215,8 @@ class InternalIdentityAssertionVerifier:
             "session_reference",
             "tool_profile_revision",
             "resource_registry_revision",
+            "control_plane_revision_id",
+            "control_plane_content_hash",
         ):
             if not isinstance(claims.get(key), str) or not claims[key].strip():
                 raise InternalIdentityAssertionError("identity_assertion_malformed")
@@ -236,6 +240,16 @@ class InternalIdentityAssertionVerifier:
         if (
             claims["resource_registry_revision"]
             != context["request"]["resource_registry_revision"]
+        ):
+            raise InternalIdentityAssertionError("identity_assertion_request_mismatch")
+        if (
+            claims["control_plane_revision_id"]
+            != context["runtime"]["control_plane_revision_id"]
+        ):
+            raise InternalIdentityAssertionError("identity_assertion_request_mismatch")
+        if (
+            claims["control_plane_content_hash"]
+            != context["runtime"]["control_plane_content_hash"]
         ):
             raise InternalIdentityAssertionError("identity_assertion_request_mismatch")
         expected_hash = runtime_context_hash(context)

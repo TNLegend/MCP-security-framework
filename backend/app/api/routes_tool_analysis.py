@@ -11,12 +11,17 @@ from app.models.tool_analysis import (
     ToolHumanReview,
     ToolObservedVersion,
 )
+from app.services.control_plane_auth import AuthenticatedControlPlaneUser, require_authenticated_user
 
 router = APIRouter(prefix="/tool-analysis", tags=["Tool Analysis"])
 
 
 @router.get("/tools/{tool_id}/status")
-def tool_analysis_status(tool_id: int, db: Session = Depends(get_db)):
+def tool_analysis_status(
+    tool_id: int,
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
     tool = _tool_or_404(tool_id, db)
     return {
         "tool_id": tool.id,
@@ -38,7 +43,11 @@ def tool_analysis_status(tool_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/tools/{tool_id}/versions")
-def tool_versions(tool_id: int, db: Session = Depends(get_db)):
+def tool_versions(
+    tool_id: int,
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
     _tool_or_404(tool_id, db)
     versions = db.scalars(
         select(ToolObservedVersion)
@@ -61,7 +70,11 @@ def tool_versions(tool_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/tools/{tool_id}/analyses")
-def tool_analyses(tool_id: int, db: Session = Depends(get_db)):
+def tool_analyses(
+    tool_id: int,
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
     _tool_or_404(tool_id, db)
     analyses = db.scalars(
         select(ToolAnalysis)
@@ -72,7 +85,11 @@ def tool_analyses(tool_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/tools/{tool_id}/findings")
-def tool_findings(tool_id: int, db: Session = Depends(get_db)):
+def tool_findings(
+    tool_id: int,
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
     _tool_or_404(tool_id, db)
     analysis_ids = [
         analysis.id
@@ -91,7 +108,11 @@ def tool_findings(tool_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/tools/{tool_id}/baseline")
-def tool_baseline(tool_id: int, db: Session = Depends(get_db)):
+def tool_baseline(
+    tool_id: int,
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
     _tool_or_404(tool_id, db)
     baseline = db.scalar(
         select(ToolApprovedBaseline).where(ToolApprovedBaseline.tool_id == tool_id)
@@ -113,7 +134,11 @@ def tool_baseline(tool_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/tools/{tool_id}/reviews")
-def tool_reviews(tool_id: int, db: Session = Depends(get_db)):
+def tool_reviews(
+    tool_id: int,
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
     _tool_or_404(tool_id, db)
     reviews = db.scalars(
         select(ToolHumanReview)
@@ -137,7 +162,11 @@ def tool_reviews(tool_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/tools/{tool_id}/diff")
-def tool_diff(tool_id: int, db: Session = Depends(get_db)):
+def tool_diff(
+    tool_id: int,
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
     latest = db.scalar(
         select(ToolAnalysis)
         .where(ToolAnalysis.tool_id == tool_id)

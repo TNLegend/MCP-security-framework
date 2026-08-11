@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -27,6 +27,9 @@ class RuntimeCall(Base):
     rule_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     decision_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     severity: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    control_plane_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    control_plane_revision_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    control_plane_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     executed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     execution_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)

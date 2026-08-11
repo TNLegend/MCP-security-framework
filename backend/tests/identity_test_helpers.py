@@ -280,6 +280,9 @@ def runtime_context(**overrides: Any) -> dict[str, Any]:
         "runtime": {
             "environment": "local",
             "session_id": "session-001",
+            "control_plane_revision_id": "control-plane-revision-1",
+            "control_plane_revision_number": 1,
+            "control_plane_content_hash": "c" * 64,
         },
     }
     deep_update(context, overrides)

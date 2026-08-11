@@ -1,9 +1,20 @@
 import argparse
 import json
+from pathlib import Path
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_DIR = REPO_ROOT / "backend"
+sys.path.insert(0, str(BACKEND_DIR))
+
+from app.services.signed_service_request import (  # noqa: E402
+    SignedServiceRequestSigner,
+    canonical_json_body,
+)
 
 DEFAULT_MCP_ENDPOINT = "http://127.0.0.1:9000/mcp"
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8000/api/v1/inventory/import-discovery"
@@ -21,7 +32,10 @@ def main() -> int:
             mcp_endpoint=args.mcp_endpoint,
             protocol_version=args.protocol_version,
         )
-        import_summary = import_inventory(args.backend_url, discovery["payload"])
+        import_summary = import_inventory(
+            args.backend_url,
+            discovery["payload"],
+        )
     except Exception as exc:
         print(f"Discovery failed: {exc}", file=sys.stderr)
         return 1
@@ -182,12 +196,23 @@ def map_tool(tool: dict) -> dict:
 
 
 def import_inventory(backend_url: str, payload: dict) -> dict:
+    body = canonical_json_body(payload)
+    parsed_path = urllib.parse.urlsplit(backend_url)
+    request_path = parsed_path.path
+    if parsed_path.query:
+        request_path = f"{request_path}?{parsed_path.query}"
+    signer = SignedServiceRequestSigner.for_discovery()
     request = urllib.request.Request(
         backend_url,
-        data=json.dumps(payload).encode("utf-8"),
+        data=body,
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
+            **signer.signed_headers(
+                method="POST",
+                path=request_path,
+                body=body,
+            ),
         },
         method="POST",
     )

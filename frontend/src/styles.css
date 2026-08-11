@@ -68,6 +68,58 @@ h1 {
   padding: 10px 14px;
 }
 
+.session-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.session-user {
+  display: grid;
+  justify-items: end;
+  line-height: 1.2;
+}
+
+.session-user span {
+  color: #506074;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.login-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+}
+
+.login-panel {
+  width: min(420px, 100%);
+  border: 1px solid #d7deea;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 28px;
+}
+
+.login-form {
+  display: grid;
+  gap: 14px;
+}
+
+.login-form label {
+  display: grid;
+  gap: 6px;
+  color: #374255;
+  font-weight: 700;
+}
+
+.login-form input {
+  width: 100%;
+  border: 1px solid #cbd3df;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: inherit;
+}
+
 .app-nav {
   display: flex;
   flex-wrap: wrap;

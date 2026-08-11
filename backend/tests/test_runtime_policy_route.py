@@ -53,11 +53,16 @@ class RuntimePolicyRouteTests(unittest.TestCase):
                 "verify_trusted_identity_context",
                 side_effect=trusted_context,
             ):
-                response = self.client.post(
-                    "/api/v1/runtime/decision",
-                    json=valid_context(),
-                    headers=TRUSTED_IDENTITY_HEADERS,
-                )
+                with patch.object(
+                    policy_runtime,
+                    "enrich_subject_authorization",
+                    side_effect=lambda context, *args, **kwargs: context,
+                ):
+                    response = self.client.post(
+                        "/api/v1/runtime/decision",
+                        json=valid_context(),
+                        headers=TRUSTED_IDENTITY_HEADERS,
+                    )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["policy_revision"], "opa-runtime-v1")
@@ -74,11 +79,16 @@ class RuntimePolicyRouteTests(unittest.TestCase):
                 "verify_trusted_identity_context",
                 side_effect=trusted_context,
             ):
-                response = self.client.post(
-                    "/api/v1/runtime/decision",
-                    json=valid_context(),
-                    headers=TRUSTED_IDENTITY_HEADERS,
-                )
+                with patch.object(
+                    policy_runtime,
+                    "enrich_subject_authorization",
+                    side_effect=lambda context, *args, **kwargs: context,
+                ):
+                    response = self.client.post(
+                        "/api/v1/runtime/decision",
+                        json=valid_context(),
+                        headers=TRUSTED_IDENTITY_HEADERS,
+                    )
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()

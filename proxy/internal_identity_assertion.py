@@ -54,6 +54,12 @@ class InternalIdentityAssertionSigner:
             "resource_registry_revision": context["request"][
                 "resource_registry_revision"
             ],
+            "control_plane_revision_id": context["runtime"][
+                "control_plane_revision_id"
+            ],
+            "control_plane_content_hash": context["runtime"][
+                "control_plane_content_hash"
+            ],
         }
         headers = {
             "typ": ASSERTION_TYPE,

@@ -36,6 +36,10 @@ from runtime_policy_eval import evaluate_runtime_policy_with_opa_cli  # noqa: E4
 from test_policy_context import valid_context  # noqa: E402
 from test_proxy_policy_enforcement import (  # noqa: E402
     FakeBackendClient,
+    FakeAssertionSigner,
+    FakeIdentityVerifier,
+    FakePublishedConfigurationSnapshotResolver,
+    FakeTrustedSessionManager,
     MCPProxy,
     TrackingMCPClient,
     policy_decision,
@@ -574,7 +578,14 @@ class ToolAnalysisRuntimeTests(unittest.TestCase):
                 rule_id="deny_tool_analysis_not_approved",
             )
         )
-        proxy = MCPProxy(backend_client=backend, mcp_client_class=TrackingMCPClient)
+        proxy = MCPProxy(
+            backend_client=backend,
+            mcp_client_class=TrackingMCPClient,
+            identity_verifier=FakeIdentityVerifier(),
+            assertion_signer=FakeAssertionSigner(),
+            trusted_session_manager=FakeTrustedSessionManager(),
+            config_snapshot_resolver=FakePublishedConfigurationSnapshotResolver(),
+        )
 
         result = proxy.handle_tool_call(tool_call())
 
