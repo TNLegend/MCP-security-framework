@@ -25,6 +25,7 @@ from proxy.mcp_proxy import (
     _fail_closed_proxy_decision,
     _validate_policy_decision,
 )
+from proxy.protocol_profiles import LEGACY_PROFILE_ID
 from proxy.resource_adapters import revalidate_resource, resolve_resource
 from proxy.resource_registry import ResourceRegistry, ResolvedFilesystemScope
 from proxy.tool_security_profiles import (
@@ -299,12 +300,24 @@ class PolicyErrorBackendClient(FakeBackendClient):
 class TrackingMCPClient:
     called = False
     call_count = 0
+    constructor_count = 0
     last_tool_name = None
     last_arguments = None
+    last_protocol_profile_id = None
+    last_bearer_token = None
 
-    def __init__(self, endpoint: str, protocol_version: str) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        protocol_version: str,
+        protocol_profile_id: str | None = None,
+        bearer_token: str | None = None,
+    ) -> None:
+        TrackingMCPClient.constructor_count += 1
         self.endpoint = endpoint
         self.protocol_version = protocol_version
+        TrackingMCPClient.last_protocol_profile_id = protocol_profile_id
+        TrackingMCPClient.last_bearer_token = bearer_token
 
     def call_tool(self, name: str, arguments: dict):
         TrackingMCPClient.called = True
@@ -319,6 +332,7 @@ def tool_call() -> dict:
         "agent_id": "agent-demo",
         "access_token": "token:agent-demo",
         "session_id": "session-001",
+        "server_id": 1,
         "tool_name": "read_file",
         "arguments": {"path": "contracts/contract1.txt"},
     }
@@ -366,8 +380,11 @@ class FakeAssertionSigner:
 def reset_tracking_mcp_client() -> None:
     TrackingMCPClient.called = False
     TrackingMCPClient.call_count = 0
+    TrackingMCPClient.constructor_count = 0
     TrackingMCPClient.last_tool_name = None
     TrackingMCPClient.last_arguments = None
+    TrackingMCPClient.last_protocol_profile_id = None
+    TrackingMCPClient.last_bearer_token = None
 
 
 def create_directory_link(link_path: Path, target_path: Path) -> None:
@@ -619,6 +636,146 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
             TrackingMCPClient.last_arguments,
             {"path": "contracts/contract1.txt"},
         )
+        self.assertEqual(TrackingMCPClient.constructor_count, 1)
+        self.assertEqual(
+            TrackingMCPClient.last_protocol_profile_id,
+            LEGACY_PROFILE_ID,
+        )
+        self.assertIsNone(TrackingMCPClient.last_bearer_token)
+
+    def test_framework_held_upstream_bearer_is_used_only_after_allow(self) -> None:
+        class AuthenticatedBackend(FakeBackendClient):
+            def find_server(self, server_id=None, endpoint=None):
+                server = super().find_server(server_id=server_id, endpoint=endpoint)
+                return {
+                    **server,
+                    "auth_mode": "BEARER",
+                    "credential_ref": "mcp/test/service.token",
+                }
+
+        class BearerAwareClient:
+            created = 0
+            bearer_token = None
+            protocol_profile_id = None
+
+            def __init__(
+                self,
+                endpoint,
+                protocol_version,
+                protocol_profile_id=None,
+                bearer_token=None,
+            ):
+                type(self).created += 1
+                type(self).bearer_token = bearer_token
+                type(self).protocol_profile_id = protocol_profile_id
+
+            def call_tool(self, name, arguments):
+                return {"isError": False, "content": [{"type": "text", "text": "ok"}]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            secret_root = Path(directory)
+            secret_path = secret_root / "mcp" / "test" / "service.token"
+            secret_path.parent.mkdir(parents=True)
+            secret_path.write_text("runtime-test-secret", encoding="utf-8")
+            backend = AuthenticatedBackend(
+                policy_decision("ALLOW", [{"type": "LOG", "parameters": {}}])
+            )
+            proxy = MCPProxy(backend_client=backend, mcp_client_class=BearerAwareClient)
+            with patch("common.upstream_auth.UPSTREAM_SECRET_DIR", secret_root):
+                result = proxy.handle_tool_call(tool_call())
+
+        self.assertTrue(result["mcp_called"])
+        self.assertEqual(BearerAwareClient.created, 1)
+        self.assertEqual(BearerAwareClient.bearer_token, "runtime-test-secret")
+        self.assertEqual(BearerAwareClient.protocol_profile_id, LEGACY_PROFILE_ID)
+        self.assertNotIn("runtime-test-secret", str(result["runtime_log"]))
+
+    def test_client_constructor_type_error_fails_closed_without_retry(self) -> None:
+        class AuthenticatedBackend(FakeBackendClient):
+            def find_server(self, server_id=None, endpoint=None):
+                server = super().find_server(server_id=server_id, endpoint=endpoint)
+                return {
+                    **server,
+                    "auth_mode": "BEARER",
+                    "credential_ref": "mcp/test/service.token",
+                }
+
+        class FailingClient:
+            attempts = []
+            tool_call_count = 0
+
+            def __init__(
+                self,
+                endpoint,
+                protocol_version,
+                protocol_profile_id=None,
+                bearer_token=None,
+            ):
+                type(self).attempts.append(
+                    {
+                        "endpoint": endpoint,
+                        "protocol_version": protocol_version,
+                        "protocol_profile_id": protocol_profile_id,
+                        "bearer_token": bearer_token,
+                    }
+                )
+                raise TypeError("constructor failure")
+
+            def call_tool(self, name, arguments):
+                type(self).tool_call_count += 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            secret_root = Path(directory)
+            secret_path = secret_root / "mcp" / "test" / "service.token"
+            secret_path.parent.mkdir(parents=True)
+            secret_path.write_text("runtime-test-secret", encoding="utf-8")
+            backend = AuthenticatedBackend(
+                policy_decision("ALLOW", [{"type": "LOG", "parameters": {}}])
+            )
+            proxy = MCPProxy(backend_client=backend, mcp_client_class=FailingClient)
+            with patch("common.upstream_auth.UPSTREAM_SECRET_DIR", secret_root):
+                result = proxy.handle_tool_call(tool_call())
+
+        self.assertEqual(len(FailingClient.attempts), 1)
+        self.assertEqual(
+            FailingClient.attempts[0]["protocol_profile_id"],
+            LEGACY_PROFILE_ID,
+        )
+        self.assertEqual(
+            FailingClient.attempts[0]["bearer_token"],
+            "runtime-test-secret",
+        )
+        self.assertEqual(FailingClient.tool_call_count, 0)
+        self.assertFalse(result["mcp_called"])
+        self.assertFalse(result["executed"])
+        self.assertEqual(result["execution_status"], "client_initialization_error")
+        self.assertNotIn("constructor failure", str(result))
+        self.assertNotIn("runtime-test-secret", str(result))
+
+    def test_blocked_call_does_not_resolve_or_send_upstream_bearer(self) -> None:
+        class AuthenticatedBackend(FakeBackendClient):
+            def find_server(self, server_id=None, endpoint=None):
+                server = super().find_server(server_id=server_id, endpoint=endpoint)
+                return {
+                    **server,
+                    "auth_mode": "BEARER",
+                    "credential_ref": "mcp/test/missing.token",
+                }
+
+        class NeverCreatedClient:
+            created = 0
+
+            def __init__(self, *args, **kwargs):
+                type(self).created += 1
+
+        backend = AuthenticatedBackend(policy_decision("DENY", [], "BLOCK"))
+        proxy = MCPProxy(backend_client=backend, mcp_client_class=NeverCreatedClient)
+
+        result = proxy.handle_tool_call(tool_call())
+
+        self.assertFalse(result["mcp_called"])
+        self.assertFalse(result["executed"])
+        self.assertEqual(NeverCreatedClient.created, 0)
 
     def test_absolute_path_outside_registered_scope_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1830,6 +1987,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
             "agent_id": "agent-demo",
             "access_token": "token:agent-demo",
             "session_id": "session-001",
+            "server_id": 1,
             "tool_name": "list_files",
             "arguments": {},
         }
@@ -1860,6 +2018,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
             "agent_id": "agent-demo",
             "access_token": "token:agent-demo",
             "session_id": "session-001",
+            "server_id": 1,
             "tool_name": "list_files",
             "arguments": {},
         }
@@ -1878,6 +2037,7 @@ class ProxyPolicyEnforcementTests(unittest.TestCase):
             "agent_id": "agent-contract-reader",
             "access_token": "token:agent-contract-reader",
             "session_id": "session-001",
+            "server_id": 1,
             "tool_name": "list_files",
             "arguments": {},
         }

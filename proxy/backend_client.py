@@ -1,9 +1,12 @@
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from common.mcp_endpoint import is_exact_local_lab_endpoint
 
 backend_path = Path(__file__).resolve().parents[1] / "backend"
 if str(backend_path) not in sys.path:
@@ -15,7 +18,9 @@ from app.services.signed_service_request import (  # noqa: E402
 )
 
 
-DEFAULT_BACKEND_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_BACKEND_HOST = "127.0.0.1"
+DEFAULT_BACKEND_PORT = 8000
+DEFAULT_BACKEND_BASE_URL = f"http://{DEFAULT_BACKEND_HOST}:{DEFAULT_BACKEND_PORT}"
 
 
 class BackendClientError(Exception):
@@ -25,11 +30,11 @@ class BackendClientError(Exception):
 class BackendClient:
     def __init__(
         self,
-        backend_base_url: str = DEFAULT_BACKEND_BASE_URL,
+        backend_base_url: str | None = None,
         timeout_seconds: float = 10.0,
         service_signer: SignedServiceRequestSigner | None = None,
     ) -> None:
-        base_url = backend_base_url.rstrip("/")
+        base_url = (backend_base_url or configured_backend_base_url()).rstrip("/")
         if base_url.endswith("/api/v1"):
             self.api_base_url = base_url
         else:
@@ -113,6 +118,21 @@ class BackendClient:
             raise BackendClientError("Backend runtime log response is not an object.")
         return data
 
+    def check_emergency_deny(self, context: dict[str, str]) -> dict[str, Any]:
+        data = self._request_json(
+            "POST",
+            "/internal/emergency-deny/check",
+            context,
+            sign_as_service=True,
+        )
+        if (
+            not isinstance(data, dict)
+            or not isinstance(data.get("blocked"), bool)
+            or (data.get("deny_id") is not None and not isinstance(data.get("deny_id"), str))
+        ):
+            raise BackendClientError("Backend emergency deny response is invalid.")
+        return data
+
     def _request_json(
         self,
         method: str,
@@ -169,6 +189,16 @@ class BackendClient:
 
 
 def is_local_http_endpoint(endpoint: str) -> bool:
-    return endpoint.startswith("http://127.0.0.1") or endpoint.startswith(
-        "http://localhost"
-    )
+    return is_exact_local_lab_endpoint(endpoint)
+
+
+def configured_backend_base_url() -> str:
+    host = os.getenv("BACKEND_HOST", DEFAULT_BACKEND_HOST).strip() or DEFAULT_BACKEND_HOST
+    raw_port = os.getenv("BACKEND_PORT", str(DEFAULT_BACKEND_PORT)).strip()
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise ValueError("Invalid BACKEND_PORT: expected an integer from 1 to 65535.") from exc
+    if port < 1 or port > 65535:
+        raise ValueError("Invalid BACKEND_PORT: expected an integer from 1 to 65535.")
+    return f"http://{host}:{port}"

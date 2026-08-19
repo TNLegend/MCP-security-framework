@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -16,6 +16,7 @@ sys.path.insert(0, str(TESTS_DIR))
 
 from app.db.database import Base  # noqa: E402
 from app.models.mcp_tool import MCPTool  # noqa: E402
+from app.models.tool_analysis import ToolAnalysisFinding, ToolProtocolObservation  # noqa: E402
 import app.services.tool_analysis as tool_analysis_service  # noqa: E402
 from app.schemas.policy_decision import PolicyDecision  # noqa: E402
 from app.services.tool_analysis import (  # noqa: E402
@@ -29,9 +30,11 @@ from app.services.tool_analysis import (  # noqa: E402
     ToolAnalysisService,
     ToolReviewService,
     analyze_tool_version,
+    compute_analysis_context_hash,
     compute_tool_fingerprint,
     tool_fingerprint_payload,
 )
+from proxy.protocol_profiles import LEGACY_PROFILE_ID, MODERN_PROFILE_ID  # noqa: E402
 from runtime_policy_eval import evaluate_runtime_policy_with_opa_cli  # noqa: E402
 from test_policy_context import valid_context  # noqa: E402
 from test_proxy_policy_enforcement import (  # noqa: E402
@@ -68,6 +71,16 @@ class MockSemanticModel:
         )
 
 
+class CountingSemanticModel(MockSemanticModel):
+    def __init__(self, category: str = "normal_tool_description", confidence: float = 0.05):
+        super().__init__(category, confidence)
+        self.calls = 0
+
+    def classify(self, text: str, categories: list[str]) -> SemanticResult:
+        self.calls += 1
+        return super().classify(text, categories)
+
+
 PROFILE = {
     "revision": "tool-security-profiles-test-v1",
     "server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
@@ -78,6 +91,60 @@ PROFILE = {
         "adapter": "filesystem",
         "argument_name": "path",
         "expected_type": "file",
+    },
+}
+
+
+SECRET_PROFILE = {
+    "revision": "tool-security-profiles-test-v2",
+    "server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
+    "tool_name": "read_file",
+    "operation": "secret",
+    "required_capability": "secret.access",
+    "resource": {
+        "adapter": "vault",
+        "argument_name": "path",
+        "expected_type": "secret",
+    },
+}
+
+
+V2_PROFILE_A = {
+    "revision": "global-config-hash-a",
+    "schema_version": 2,
+    "contract_hash": "a" * 64,
+    "contract": {
+        "contract_version": "2",
+        "server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
+        "tool_name": "read_file",
+        "effects": [
+            {
+                "effect_id": "fs.read",
+                "capability": "filesystem.read",
+                "resource_bindings": [],
+            }
+        ],
+        "unbound_arguments": [["path"]],
+    },
+}
+
+
+V2_PROFILE_B = {
+    "revision": "global-config-hash-b",
+    "schema_version": 2,
+    "contract_hash": "b" * 64,
+    "contract": {
+        "contract_version": "2",
+        "server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
+        "tool_name": "read_file",
+        "effects": [
+            {
+                "effect_id": "secret.read",
+                "capability": "secret.access",
+                "resource_bindings": [],
+            }
+        ],
+        "unbound_arguments": [["path"]],
     },
 }
 
@@ -342,6 +409,25 @@ class ToolAnalysisPersistenceTests(unittest.TestCase):
         Base.metadata.create_all(engine)
         self.Session = sessionmaker(bind=engine)
 
+    def _new_tool(self, db, schema=None) -> MCPTool:
+        tool = MCPTool(
+            server_id=1,
+            name="read_file",
+            description="Read a file from the workspace.",
+            input_schema=schema or tool_snapshot()["input_schema"],
+        )
+        db.add(tool)
+        db.flush()
+        return tool
+
+    def _finding_codes(self, db, analysis) -> set[str]:
+        findings = db.scalars(
+            select(ToolAnalysisFinding).where(
+                ToolAnalysisFinding.analysis_id == analysis.id
+            )
+        ).all()
+        return {finding.code for finding in findings}
+
     def test_approval_exact_fingerprint_and_invalidation_after_change(self) -> None:
         with self.Session() as db:
             tool = MCPTool(
@@ -400,6 +486,266 @@ class ToolAnalysisPersistenceTests(unittest.TestCase):
                     reviewer="security-reviewer",
                     justification="Old fingerprint should not be accepted.",
                 )
+
+    def test_legacy_context_change_invalidates_approved_baseline(self) -> None:
+        with self.Session() as db:
+            tool = self._new_tool(db)
+            semantic_model = CountingSemanticModel()
+            service = ToolAnalysisService(
+                semantic_model=semantic_model,
+                embedding_model=HashingEmbeddingModel(),
+            )
+            initial = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="streamable_http:http://127.0.0.1:9000/mcp",
+                profile_snapshot=PROFILE,
+            )
+            baseline = ToolReviewService().approve(
+                db=db,
+                tool_id=tool.id,
+                fingerprint=initial.fingerprint,
+                reviewer="security-reviewer",
+                justification="Approved legacy read profile.",
+            )
+            self.assertEqual(semantic_model.calls, 1)
+
+            changed = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="streamable_http:http://127.0.0.1:9000/mcp",
+                profile_snapshot=SECRET_PROFILE,
+            )
+
+            self.assertEqual(changed.fingerprint, initial.fingerprint)
+            self.assertNotEqual(
+                changed.analysis_context_hash,
+                initial.analysis_context_hash,
+            )
+            self.assertNotEqual(
+                baseline.analysis_context_hash,
+                changed.analysis_context_hash,
+            )
+            self.assertEqual(semantic_model.calls, 2)
+            self.assertNotEqual(changed.analysis_status, "APPROVED")
+            self.assertFalse(tool.approved_fingerprint_match)
+            self.assertIn("profile_secret_capability", self._finding_codes(db, changed))
+
+            new_baseline = ToolReviewService().approve(
+                db=db,
+                tool_id=tool.id,
+                fingerprint=changed.fingerprint,
+                reviewer="security-reviewer",
+                justification="Reviewed changed profile context.",
+            )
+            self.assertEqual(new_baseline.analysis_context_hash, changed.analysis_context_hash)
+            self.assertTrue(tool.approved_fingerprint_match)
+
+    def test_v2_contract_change_invalidates_approved_baseline(self) -> None:
+        with self.Session() as db:
+            tool = self._new_tool(db)
+            semantic_model = CountingSemanticModel()
+            service = ToolAnalysisService(
+                semantic_model=semantic_model,
+                embedding_model=HashingEmbeddingModel(),
+            )
+            initial = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="streamable_http:http://127.0.0.1:9000/mcp",
+                profile_snapshot=V2_PROFILE_A,
+            )
+            ToolReviewService().approve(
+                db=db,
+                tool_id=tool.id,
+                fingerprint=initial.fingerprint,
+                reviewer="security-reviewer",
+                justification="Approved v2 contract A.",
+            )
+
+            changed = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="streamable_http:http://127.0.0.1:9000/mcp",
+                profile_snapshot=V2_PROFILE_B,
+            )
+
+            self.assertEqual(changed.fingerprint, initial.fingerprint)
+            self.assertNotEqual(
+                compute_analysis_context_hash(V2_PROFILE_A),
+                compute_analysis_context_hash(V2_PROFILE_B),
+            )
+            self.assertNotEqual(
+                changed.analysis_context_hash,
+                initial.analysis_context_hash,
+            )
+            self.assertEqual(semantic_model.calls, 2)
+            self.assertNotEqual(changed.analysis_status, "APPROVED")
+            self.assertFalse(tool.approved_fingerprint_match)
+            self.assertIn("profile_secret_capability", self._finding_codes(db, changed))
+
+    def test_unrelated_v2_revision_change_keeps_approved_fast_path(self) -> None:
+        with self.Session() as db:
+            tool = self._new_tool(db)
+            semantic_model = CountingSemanticModel()
+            service = ToolAnalysisService(
+                semantic_model=semantic_model,
+                embedding_model=HashingEmbeddingModel(),
+            )
+            initial = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="streamable_http:http://127.0.0.1:9000/mcp",
+                profile_snapshot=V2_PROFILE_A,
+            )
+            ToolReviewService().approve(
+                db=db,
+                tool_id=tool.id,
+                fingerprint=initial.fingerprint,
+                reviewer="security-reviewer",
+                justification="Approved v2 contract A.",
+            )
+            same_contract_new_revision = dict(V2_PROFILE_A)
+            same_contract_new_revision["revision"] = "different-global-config-hash"
+
+            reused = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="streamable_http:http://127.0.0.1:9000/mcp",
+                profile_snapshot=same_contract_new_revision,
+            )
+
+            self.assertEqual(
+                compute_analysis_context_hash(V2_PROFILE_A),
+                compute_analysis_context_hash(same_contract_new_revision),
+            )
+            self.assertEqual(reused.analysis_context_hash, initial.analysis_context_hash)
+            self.assertEqual(reused.analysis_status, "APPROVED")
+            self.assertEqual(semantic_model.calls, 1)
+            self.assertTrue(tool.approved_fingerprint_match)
+
+    def test_null_context_baseline_is_not_reused(self) -> None:
+        with self.Session() as db:
+            tool = self._new_tool(db)
+            semantic_model = CountingSemanticModel()
+            service = ToolAnalysisService(
+                semantic_model=semantic_model,
+                embedding_model=HashingEmbeddingModel(),
+            )
+            initial = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="streamable_http:http://127.0.0.1:9000/mcp",
+                profile_snapshot=PROFILE,
+            )
+            baseline = ToolReviewService().approve(
+                db=db,
+                tool_id=tool.id,
+                fingerprint=initial.fingerprint,
+                reviewer="security-reviewer",
+                justification="Approved before context hash migration.",
+            )
+            baseline.analysis_context_hash = None
+            db.flush()
+
+            observed = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="streamable_http:http://127.0.0.1:9000/mcp",
+                profile_snapshot=PROFILE,
+            )
+
+            self.assertEqual(observed.fingerprint, initial.fingerprint)
+            self.assertEqual(observed.analysis_context_hash, initial.analysis_context_hash)
+            self.assertEqual(semantic_model.calls, 2)
+            self.assertNotEqual(observed.analysis_status, "APPROVED")
+            self.assertFalse(tool.approved_fingerprint_match)
+
+    def test_exact_context_reuse_keeps_approved_fast_path(self) -> None:
+        with self.Session() as db:
+            tool = self._new_tool(db)
+            semantic_model = CountingSemanticModel()
+            service = ToolAnalysisService(
+                semantic_model=semantic_model,
+                embedding_model=HashingEmbeddingModel(),
+            )
+            initial = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="streamable_http:http://127.0.0.1:9000/mcp",
+                profile_snapshot=PROFILE,
+            )
+            ToolReviewService().approve(
+                db=db,
+                tool_id=tool.id,
+                fingerprint=initial.fingerprint,
+                reviewer="security-reviewer",
+                justification="Approved exact context.",
+            )
+
+            reused = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="streamable_http:http://127.0.0.1:9000/mcp",
+                profile_snapshot=PROFILE,
+            )
+
+            self.assertEqual(reused.fingerprint, initial.fingerprint)
+            self.assertEqual(reused.analysis_context_hash, initial.analysis_context_hash)
+            self.assertEqual(reused.analysis_status, "APPROVED")
+            self.assertEqual(semantic_model.calls, 1)
+            self.assertTrue(tool.approved_fingerprint_match)
+
+    def test_same_definition_has_distinct_profile_observations(self) -> None:
+        with self.Session() as db:
+            tool = MCPTool(
+                server_id=1,
+                name="read_file",
+                description="Read a file from the workspace.",
+                input_schema=tool_snapshot()["input_schema"],
+            )
+            db.add(tool)
+            db.flush()
+            service = ToolAnalysisService(
+                semantic_model=MockSemanticModel(),
+                embedding_model=HashingEmbeddingModel(),
+            )
+            legacy_analysis = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="server-a",
+                profile_snapshot=PROFILE,
+                upstream_protocol_profile_id=LEGACY_PROFILE_ID,
+            )
+            modern_analysis = service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref="server-a",
+                profile_snapshot=PROFILE,
+                upstream_protocol_profile_id=MODERN_PROFILE_ID,
+            )
+            observations = db.query(ToolProtocolObservation).all()
+
+            self.assertEqual(legacy_analysis.fingerprint, modern_analysis.fingerprint)
+            self.assertEqual(len(observations), 2)
+            self.assertEqual(
+                {item.upstream_protocol_profile_id for item in observations},
+                {LEGACY_PROFILE_ID, MODERN_PROFILE_ID},
+            )
+            self.assertEqual(
+                {item.tool_fingerprint for item in observations},
+                {legacy_analysis.fingerprint},
+            )
+            metadata = {
+                item.upstream_protocol_profile_id: (
+                    item.protocol_era,
+                    item.protocol_version,
+                    item.transport_kind,
+                )
+                for item in observations
+            }
+            self.assertEqual(metadata[LEGACY_PROFILE_ID], ("legacy", "2025-11-25", "legacy_streamable_http"))
+            self.assertEqual(metadata[MODERN_PROFILE_ID], ("modern", "2026-07-28", "modern_streamable_http"))
 
     def test_approve_pending_analysis_is_rejected(self) -> None:
         with self.Session() as db:
@@ -507,6 +853,22 @@ class ToolAnalysisRuntimeTests(unittest.TestCase):
         decision = PolicyDecision.model_validate(evaluate_runtime_policy_with_opa_cli(context))
 
         self.assertEqual(decision.rule_id, "deny_tool_semantic_review_required")
+
+    def test_semantic_flag_after_exact_approval_continues_to_runtime_rules(self) -> None:
+        context = valid_context()
+        context["tool"].update(
+            {
+                "analysis_status": "APPROVED",
+                "review_status": "APPROVED",
+                "semantic_flagged": True,
+                "approved_fingerprint_match": True,
+            }
+        )
+
+        decision = PolicyDecision.model_validate(evaluate_runtime_policy_with_opa_cli(context))
+
+        self.assertEqual(decision.decision, "ALLOW")
+        self.assertEqual(decision.rule_id, "allow_contracts_read")
 
     def test_analysis_failed_runtime_blocks(self) -> None:
         context = valid_context()

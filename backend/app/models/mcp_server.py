@@ -14,6 +14,8 @@ class MCPServer(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     server_type: Mapped[str] = mapped_column(String(100), nullable=False)
     endpoint: Mapped[str] = mapped_column(String(500), nullable=False)
+    auth_mode: Mapped[str] = mapped_column(String(20), default="NONE", nullable=False)
+    credential_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="active", nullable=False)
     protocol_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
     server_info_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -36,6 +38,35 @@ class MCPServer(Base):
         JSON,
         nullable=True,
     )
+    detected_protocol_era: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    supported_protocol_versions: Mapped[list[str] | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+    preferred_protocol_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    negotiated_protocol_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    protocol_transport_kind: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    protocol_verdict_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    supported_protocol_profiles: Mapped[list[str] | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+    preferred_upstream_profile: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+    last_protocol_probe_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    protocol_probe_status: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+    protocol_probe_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     trust_status: Mapped[str] = mapped_column(String(50), default="unknown", nullable=False)
     security_status: Mapped[str] = mapped_column(
         String(50),

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import os
 from pathlib import Path
 import secrets
 import sys
@@ -7,6 +8,7 @@ from typing import Any
 import jwt
 from cryptography.hazmat.primitives import serialization
 
+from common.project_paths import is_path_within
 from proxy.identity_config import ProxyAssertionConfig, REPO_ROOT
 
 try:
@@ -19,6 +21,7 @@ except ModuleNotFoundError:
 
 ASSERTION_TYPE = "mcp-identity+jwt"
 ASSERTION_ALGORITHM = "EdDSA"
+RUNTIME_SECRETS_ROOT = REPO_ROOT / ".runtime" / "secrets"
 
 
 class InternalIdentityAssertionError(Exception):
@@ -79,11 +82,8 @@ class InternalIdentityAssertionSigner:
 
         key_path = self.config.private_key_path
         try:
-            resolved = key_path.resolve()
-            repo_root = REPO_ROOT.resolve()
-            if resolved == repo_root or repo_root in resolved.parents:
-                raise InternalIdentityAssertionError("identity_assertion_key_unavailable")
-            key_data = key_path.read_bytes()
+            trusted_path = validate_private_key_path(key_path)
+            key_data = trusted_path.read_bytes()
             private_key = serialization.load_pem_private_key(
                 key_data,
                 password=None,
@@ -97,3 +97,40 @@ class InternalIdentityAssertionSigner:
 
         self._private_key = private_key
         return private_key
+
+
+def validate_private_key_path(
+    key_path: Path,
+    *,
+    project_root: Path = REPO_ROOT,
+    runtime_secrets_root: Path = RUNTIME_SECRETS_ROOT,
+) -> Path:
+    candidate = key_path.expanduser()
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+    lexical_path = Path(os.path.abspath(candidate))
+    resolved_path = lexical_path.resolve(strict=False)
+    lexical_project_root = Path(os.path.abspath(project_root.expanduser()))
+    lexical_runtime_root = Path(os.path.abspath(runtime_secrets_root.expanduser()))
+    resolved_project_root = project_root.resolve(strict=False)
+    resolved_runtime_root = runtime_secrets_root.resolve(strict=False)
+
+    lexical_in_runtime = (
+        lexical_path == lexical_runtime_root
+        or lexical_runtime_root in lexical_path.parents
+    )
+    lexical_in_project = (
+        lexical_path == lexical_project_root
+        or lexical_project_root in lexical_path.parents
+    )
+    if lexical_in_runtime and is_path_within(
+        resolved_path,
+        resolved_runtime_root,
+    ):
+        return resolved_path
+    if lexical_in_project or is_path_within(
+        resolved_path,
+        resolved_project_root,
+    ):
+        raise InternalIdentityAssertionError("identity_assertion_key_unavailable")
+    return resolved_path

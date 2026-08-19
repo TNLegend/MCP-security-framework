@@ -148,6 +148,38 @@ class ProxyTrustedIdentityTests(unittest.TestCase):
             "verified",
         )
 
+    def test_metadata_authentication_uses_existing_bearer_identity_validation(self) -> None:
+        backend = CountingBackendClient(allow_decision())
+        verifier = StaticIdentityVerifier()
+        resolver = StaticBindingResolver()
+        proxy = self.build_proxy(backend, verifier=verifier, resolver=resolver)
+
+        trusted_session = proxy.authenticate_framework_identity(
+            {"access_token": "valid-token", "session_token": None}
+        )
+
+        self.assertEqual(trusted_session.agent_id, "agent-demo")
+        self.assertEqual(verifier.tokens, ["valid-token"])
+        self.assertEqual(resolver.requests, [("https://issuer.example/", "agent-demo")])
+        self.assertEqual(backend.find_server_calls, 0)
+        self.assertEqual(backend.request_policy_calls, 0)
+
+    def test_metadata_authentication_rejects_invalid_bearer_identity(self) -> None:
+        backend = CountingBackendClient(allow_decision())
+        proxy = self.build_proxy(
+            backend,
+            verifier=FailingIdentityVerifier("agent_access_token_signature_invalid"),
+        )
+
+        with self.assertRaises(AgentIdentityError) as raised:
+            proxy.authenticate_framework_identity(
+                {"access_token": "invalid-token", "session_token": None}
+            )
+
+        self.assertEqual(raised.exception.code, "agent_access_token_signature_invalid")
+        self.assertEqual(backend.find_server_calls, 0)
+        self.assertEqual(backend.request_policy_calls, 0)
+
     def test_matching_claimed_agent_is_accepted(self) -> None:
         reset_tracking_mcp_client()
         backend = CountingBackendClient(allow_decision())

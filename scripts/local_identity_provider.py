@@ -16,28 +16,21 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = REPO_ROOT / "backend"
-sys.path.insert(0, str(BACKEND_DIR))
+for import_path in (REPO_ROOT, BACKEND_DIR):
+    if str(import_path) not in sys.path:
+        sys.path.insert(0, str(import_path))
 
 from app.core.runtime_paths import RUNTIME_SECRETS_DIR, configure_runtime_environment  # noqa: E402
+from common.file_permissions import restrict_private_file, restrict_public_file  # noqa: E402
+from common.project_environment import load_project_environment  # noqa: E402
+from common.project_paths import resolve_project_path  # noqa: E402
 
-configure_runtime_environment()
 DEFAULT_SECRET_DIR = RUNTIME_SECRETS_DIR
 DEFAULT_IDP_KEY_ID = "local-idp-rs256-1"
 
 
 def load_project_env() -> None:
-    env_path = REPO_ROOT / ".env"
-    if not env_path.exists():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        name, value = stripped.split("=", 1)
-        name = name.strip()
-        value = value.strip().strip('"').strip("'")
-        if name and name not in os.environ:
-            os.environ[name] = value
+    load_project_environment()
 
 
 def issue_access_token(
@@ -91,11 +84,16 @@ def ensure_identity_material() -> dict[str, bool]:
                 encryption_algorithm=serialization.NoEncryption(),
             )
         )
+        restrict_private_file(key_path)
     private_key = _load_private_key(key_path)
+    if not isinstance(private_key, rsa.RSAPrivateKey):
+        raise RuntimeError(f"Existing local identity key is not RSA: {key_path}")
+    restrict_private_file(key_path)
     jwks_path.write_text(
         json.dumps({"keys": [_public_jwk(private_key, key_id)]}, indent=2),
         encoding="utf-8",
     )
+    restrict_public_file(jwks_path)
 
     return {
         "identity_signing_key_present": key_path.exists(),
@@ -138,6 +136,7 @@ def serve_jwks(*, host: str | None = None, port: int | None = None) -> None:
 
 
 def main() -> None:
+    configure_runtime_environment()
     parser = argparse.ArgumentParser(description="Local lab identity provider.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -170,21 +169,23 @@ def main() -> None:
 
 
 def _identity_private_key_path() -> Path:
-    return Path(
+    return resolve_project_path(
         os.getenv(
             "AGENT_IDENTITY_SIGNING_PRIVATE_KEY_PATH",
             str(DEFAULT_SECRET_DIR / "local-idp-private.pem"),
-        )
-    ).expanduser()
+        ),
+        project_root=REPO_ROOT,
+    )
 
 
 def _identity_public_jwks_path() -> Path:
-    return Path(
+    return resolve_project_path(
         os.getenv(
             "AGENT_IDENTITY_PUBLIC_JWKS_PATH",
             str(DEFAULT_SECRET_DIR / "local-idp-public-jwks.json"),
-        )
-    ).expanduser()
+        ),
+        project_root=REPO_ROOT,
+    )
 
 
 def _load_private_key(path: Path):

@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 import jwt
 
@@ -111,6 +112,27 @@ class AgentIdentityJWTTests(unittest.TestCase):
             identity = self.verifier(url).verify(token)
 
         self.assertEqual(identity.audience, (AUDIENCE, "other-audience"))
+
+    def test_unknown_kid_refreshes_jwks_for_key_rotation(self) -> None:
+        rotated_private_key, rotated_jwk = generate_rsa_identity_key("rsa-rotated")
+        token = make_access_token(
+            rotated_private_key,
+            kid="rsa-rotated",
+            issuer=ISSUER,
+            audience=AUDIENCE,
+        )
+        verifier = self.verifier("http://127.0.0.1:1/jwks.json")
+        with patch.object(
+            verifier,
+            "_get_jwks",
+            side_effect=[{"keys": [self.jwk]}, {"keys": [rotated_jwk]}],
+        ) as get_jwks:
+            identity = verifier.verify(token)
+
+        self.assertEqual(identity.subject, "agent-demo")
+        self.assertEqual(get_jwks.call_count, 2)
+        self.assertFalse(get_jwks.call_args_list[0].kwargs["refresh"])
+        self.assertTrue(get_jwks.call_args_list[1].kwargs["refresh"])
 
     def test_header_jku_is_ignored_and_configured_jwks_is_used(self) -> None:
         token = self.valid_token(

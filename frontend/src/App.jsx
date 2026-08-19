@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  fetchActiveConfigRevision,
+  fetchAllToolAnalyses,
+  fetchAuditEvents,
+  fetchConfigRevisions,
+  fetchEmergencyDenies,
   fetchHealth,
+  fetchLocalRuntimeStatus,
   fetchControlPlaneMe,
   loginControlPlane,
   logoutControlPlane,
@@ -9,17 +15,26 @@ import {
   fetchRuntimeLogs,
   fetchServers,
   fetchTools,
+  fetchUsers,
 } from "./api/client";
 import Dashboard from "./pages/Dashboard";
+import Audit from "./pages/Audit";
+import EmergencyDeny from "./pages/EmergencyDeny";
 import Inventory from "./pages/Inventory";
-import Policies from "./pages/Policies";
 import RuntimeLogs from "./pages/RuntimeLogs";
+import SecurityConfiguration from "./pages/SecurityConfiguration";
+import ToolAnalysis from "./pages/ToolAnalysis";
+import Users from "./pages/Users";
 
 const pages = [
   { id: "dashboard", label: "Dashboard" },
   { id: "inventory", label: "MCP Inventory" },
-  { id: "policies", label: "Policies" },
-  { id: "runtime", label: "Runtime Logs" },
+  { id: "analysis", label: "Tool Analysis" },
+  { id: "config", label: "Security Configuration" },
+  { id: "emergency", label: "Emergency Deny" },
+  { id: "runtime", label: "Runtime Calls" },
+  { id: "audit", label: "Audit" },
+  { id: "users", label: "Users", adminOnly: true },
 ];
 
 function App() {
@@ -28,12 +43,20 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [loginError, setLoginError] = useState("");
   const [health, setHealth] = useState(null);
+  const [runtimeStatus, setRuntimeStatus] = useState(null);
   const [servers, setServers] = useState([]);
   const [tools, setTools] = useState([]);
   const [policies, setPolicies] = useState([]);
   const [runtimeLogs, setRuntimeLogs] = useState([]);
+  const [toolAnalyses, setToolAnalyses] = useState([]);
+  const [configRevisions, setConfigRevisions] = useState([]);
+  const [activeRevision, setActiveRevision] = useState(null);
+  const [emergencyDenies, setEmergencyDenies] = useState([]);
+  const [auditEvents, setAuditEvents] = useState([]);
+  const [users, setUsers] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const isAdmin = user?.role === "ADMIN";
 
   async function restoreSession() {
     try {
@@ -67,20 +90,47 @@ function App() {
       setLoading(true);
       setError("");
 
-      const [healthData, serversData, toolsData, policiesData, runtimeData] =
+      const [
+        healthData,
+        runtimeStatusData,
+        serversData,
+        toolsData,
+        policiesData,
+        runtimeData,
+        analysesData,
+        revisionsData,
+        activeRevisionData,
+        emergencyDenyData,
+        auditData,
+        usersData,
+      ] =
         await Promise.all([
           fetchHealth(),
+          fetchLocalRuntimeStatus(),
           fetchServers(),
           fetchTools(),
           fetchPolicies(),
           fetchRuntimeLogs(),
+          fetchAllToolAnalyses(),
+          fetchConfigRevisions(),
+          fetchActiveConfigRevision(),
+          fetchEmergencyDenies(),
+          fetchAuditEvents(),
+          isAdmin ? fetchUsers() : Promise.resolve([]),
         ]);
 
       setHealth(healthData);
+      setRuntimeStatus(runtimeStatusData);
       setServers(serversData);
       setTools(toolsData);
       setPolicies(policiesData);
       setRuntimeLogs(runtimeData);
+      setToolAnalyses(analysesData);
+      setConfigRevisions(revisionsData);
+      setActiveRevision(activeRevisionData);
+      setEmergencyDenies(emergencyDenyData);
+      setAuditEvents(auditData);
+      setUsers(usersData);
     } catch (err) {
       setError(err.message || "Backend unavailable");
     } finally {
@@ -100,28 +150,99 @@ function App() {
 
   const pageContent = useMemo(() => {
     if (activePage === "inventory") {
-      return <Inventory servers={servers} tools={tools} loading={loading} />;
+      return (
+        <Inventory
+          isAdmin={isAdmin}
+          servers={servers}
+          tools={tools}
+          loading={loading}
+          onRefresh={loadData}
+          runtimeStatus={runtimeStatus}
+        />
+      );
     }
 
-    if (activePage === "policies") {
-      return <Policies policies={policies} loading={loading} />;
+    if (activePage === "analysis") {
+      return (
+        <ToolAnalysis
+          analyses={toolAnalyses}
+          isAdmin={isAdmin}
+          loading={loading}
+          onRefresh={loadData}
+          servers={servers}
+          tools={tools}
+        />
+      );
+    }
+
+    if (activePage === "config") {
+      return (
+        <SecurityConfiguration
+          activeRevision={activeRevision}
+          isAdmin={isAdmin}
+          loading={loading}
+          onRefresh={loadData}
+          policies={policies}
+          revisions={configRevisions}
+        />
+      );
+    }
+
+    if (activePage === "emergency") {
+      return (
+        <EmergencyDeny
+          denies={emergencyDenies}
+          isAdmin={isAdmin}
+          loading={loading}
+          onRefresh={loadData}
+        />
+      );
     }
 
     if (activePage === "runtime") {
       return <RuntimeLogs logs={runtimeLogs} loading={loading} />;
     }
 
+    if (activePage === "audit") {
+      return <Audit events={auditEvents} loading={loading} />;
+    }
+
+    if (activePage === "users" && isAdmin) {
+      return <Users users={users} loading={loading} onRefresh={loadData} />;
+    }
+
     return (
       <Dashboard
+        activeRevision={activeRevision}
+        auditEvents={auditEvents}
+        emergencyDenies={emergencyDenies}
         health={health}
+        isAdmin={isAdmin}
         servers={servers}
         tools={tools}
         policies={policies}
         runtimeLogs={runtimeLogs}
+        runtimeStatus={runtimeStatus}
         loading={loading}
+        onNavigate={setActivePage}
       />
     );
-  }, [activePage, health, loading, policies, runtimeLogs, servers, tools]);
+  }, [
+    activePage,
+    activeRevision,
+    auditEvents,
+    emergencyDenies,
+    health,
+    isAdmin,
+    loading,
+    policies,
+    runtimeLogs,
+    runtimeStatus,
+    servers,
+    toolAnalyses,
+    tools,
+    users,
+  ]);
 
   if (authLoading) {
     return <div className="app-shell">Loading session...</div>;
@@ -153,7 +274,7 @@ function App() {
       </header>
 
       <nav className="app-nav" aria-label="Main navigation">
-        {pages.map((page) => (
+        {pages.filter((page) => !page.adminOnly || isAdmin).map((page) => (
           <button
             className={activePage === page.id ? "active" : ""}
             key={page.id}

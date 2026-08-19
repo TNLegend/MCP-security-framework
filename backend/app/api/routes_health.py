@@ -1,8 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.database import engine
+from app.db.database import engine, get_db
+from app.services.control_plane_auth import AuthenticatedControlPlaneUser, require_authenticated_user
+from app.services.local_runtime_manager import LocalRuntimeManager
 
 router = APIRouter(tags=["Health"])
 
@@ -21,12 +24,12 @@ def health_check():
 def api_status():
     return {
         "status": "running",
-        "message": "Backend minimal opérationnel",
-        "phase": "Phase 1 - Architecture & environnement minimal",
-        "task": "Tâche 1.5 - Base PostgreSQL minimale",
+        "message": "Backend operational",
+        "phase": "Control Plane / Runtime Security",
+        "task": "Task 8A.6 - Control Center and local runtime",
         "next_modules": [
             "MCP inventory",
-            "Policy engine",
+            "OPA runtime authorization",
             "Runtime logs",
             "Audit events",
         ],
@@ -42,9 +45,19 @@ def db_check():
             "status": "ok",
             "database": "connected",
         }
-    except Exception as exc:
+    except Exception:
         return {
             "status": "error",
             "database": "not connected",
-            "detail": str(exc),
         }
+
+
+@router.get("/control-plane/local-runtime/status")
+def local_runtime_status(
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    return LocalRuntimeManager().status(
+        db=db,
+        backend_current_process=True,
+    ).as_dict(include_ownership=False)

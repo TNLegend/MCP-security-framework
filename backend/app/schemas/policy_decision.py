@@ -83,6 +83,10 @@ class PolicyDecision(BaseModel):
     policy_revision: str = Field(min_length=1)
     decision: RuntimeDecision
     rule_id: str = Field(min_length=1)
+    decision_id: str | None = None
+    control_plane_revision_id: str | None = None
+    control_plane_content_hash: str | None = None
+    canonical_arguments_hash: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 from typing import Any, Protocol
 
-import rfc8785
+from common.canonical_json import canonical_json_bytes
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,7 +22,9 @@ from app.models.tool_analysis import (
     ToolApprovedBaseline,
     ToolHumanReview,
     ToolObservedVersion,
+    ToolProtocolObservation,
 )
+from proxy.protocol_profiles import LEGACY_PROFILE_ID, ProtocolProfileError, ProtocolProfileRegistry
 
 
 ANALYZER_REVISION = "tool-description-analyzer-v1"
@@ -32,6 +34,7 @@ SEMANTIC_MODEL_VERSION = "local-cache"
 EMBEDDING_MODEL_VERSION = "local-cache"
 SEMANTIC_REVIEW_THRESHOLD = 0.74
 MIN_REVIEW_JUSTIFICATION_LENGTH = 8
+INVALID_ANALYSIS_CONTEXT_PREFIX = "invalid:"
 
 STATUS_PENDING_ANALYSIS = "PENDING_ANALYSIS"
 STATUS_QUARANTINED = "QUARANTINED"
@@ -69,6 +72,8 @@ CRITICAL_DETERMINISTIC_CODES = {
     "unexpected_destructive_operation",
     "suspicious_base64_payload",
 }
+
+SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 SENSITIVE_PARAMETER_NAMES = {
     "command",
@@ -271,10 +276,6 @@ class HashingEmbeddingModel:
         return len(left & right) / len(left | right)
 
 
-def canonical_json_bytes(value: Any) -> bytes:
-    return rfc8785.dumps(value)
-
-
 def tool_fingerprint_payload(
     *,
     server_ref: str,
@@ -285,19 +286,57 @@ def tool_fingerprint_payload(
     annotations: dict[str, Any] | None,
     profile: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    # Profile and registry identity are deliberately separate approval artifacts.
+    _ = server_ref, profile
     return {
-        "server_ref": server_ref,
         "tool_name": tool_name,
         "description": normalize_description(description),
         "input_schema": input_schema or {},
         "output_schema": output_schema or {},
         "annotations": annotations or {},
-        "security_profile": profile or {},
     }
 
 
 def compute_tool_fingerprint(payload: dict[str, Any]) -> str:
     return sha256(canonical_json_bytes(payload)).hexdigest()
+
+
+def analysis_context_payload(profile_snapshot: dict[str, Any] | None) -> dict[str, Any]:
+    if profile_snapshot is None:
+        return {"schema_version": 0, "profile": None}
+
+    if profile_snapshot.get("schema_version") == 2:
+        contract_hash = profile_snapshot.get("contract_hash")
+        if isinstance(contract_hash, str) and SHA256_HEX_RE.fullmatch(contract_hash):
+            return {
+                "schema_version": 2,
+                "contract_hash": contract_hash,
+            }
+        return {
+            "schema_version": 2,
+            "invalid_context": "missing_or_invalid_contract_hash",
+        }
+
+    return {
+        "schema_version": 1,
+        "server_ref": profile_snapshot.get("server_ref"),
+        "tool_name": profile_snapshot.get("tool_name"),
+        "operation": profile_snapshot.get("operation"),
+        "required_capability": profile_snapshot.get("required_capability"),
+        "resource": profile_snapshot.get("resource") or {},
+    }
+
+
+def compute_analysis_context_hash(profile_snapshot: dict[str, Any] | None) -> str:
+    payload = analysis_context_payload(profile_snapshot)
+    digest = sha256(canonical_json_bytes(payload)).hexdigest()
+    if payload.get("invalid_context"):
+        return f"{INVALID_ANALYSIS_CONTEXT_PREFIX}{digest[:56]}"
+    return digest
+
+
+def reusable_analysis_context_hash(value: str | None) -> bool:
+    return isinstance(value, str) and SHA256_HEX_RE.fullmatch(value) is not None
 
 
 def analyze_tool_version(
@@ -545,6 +584,7 @@ class ToolAnalysisService:
         tool: MCPTool,
         server_ref: str,
         profile_snapshot: dict[str, Any] | None,
+        upstream_protocol_profile_id: str = LEGACY_PROFILE_ID,
     ) -> ToolAnalysis:
         now = datetime.utcnow()
         snapshot = tool_snapshot_from_model(tool)
@@ -558,8 +598,14 @@ class ToolAnalysisService:
             profile=profile_snapshot,
         )
         fingerprint = compute_tool_fingerprint(fingerprint_payload)
+        analysis_context_hash = compute_analysis_context_hash(profile_snapshot)
         baseline = baseline_for_tool(db, tool.id)
-        approved_match = baseline is not None and baseline.fingerprint == fingerprint
+        approved_match = (
+            baseline is not None
+            and baseline.fingerprint == fingerprint
+            and reusable_analysis_context_hash(baseline.analysis_context_hash)
+            and baseline.analysis_context_hash == analysis_context_hash
+        )
 
         version = db.scalar(
             select(ToolObservedVersion).where(
@@ -595,7 +641,25 @@ class ToolAnalysisService:
         tool.last_analyzed_at = now
 
         if approved_match:
-            return self._record_approved_observation(db, tool, version, baseline, now)
+            analysis = self._record_approved_observation(
+                db,
+                tool,
+                version,
+                baseline,
+                analysis_context_hash,
+                now,
+            )
+            self._record_protocol_observation(
+                db,
+                tool=tool,
+                server_ref=server_ref,
+                upstream_protocol_profile_id=upstream_protocol_profile_id,
+                canonical_tool_definition=fingerprint_payload,
+                fingerprint=fingerprint,
+                analysis=analysis,
+                now=now,
+            )
+            return analysis
 
         baseline_snapshot = None
         if baseline is not None:
@@ -644,6 +708,7 @@ class ToolAnalysisService:
             tool_id=tool.id,
             version_id=version.id,
             fingerprint=fingerprint,
+            analysis_context_hash=analysis_context_hash,
             analysis_status=result["analysis_status"],
             risk_score=result["risk_score"],
             risk_level=result["risk_level"],
@@ -680,7 +745,68 @@ class ToolAnalysisService:
             )
 
         apply_analysis_to_tool(tool, analysis, baseline)
+        self._record_protocol_observation(
+            db,
+            tool=tool,
+            server_ref=server_ref,
+            upstream_protocol_profile_id=upstream_protocol_profile_id,
+            canonical_tool_definition=fingerprint_payload,
+            fingerprint=fingerprint,
+            analysis=analysis,
+            now=now,
+        )
         return analysis
+
+    def _record_protocol_observation(
+        self,
+        db: Session,
+        *,
+        tool: MCPTool,
+        server_ref: str,
+        upstream_protocol_profile_id: str,
+        canonical_tool_definition: dict[str, Any],
+        fingerprint: str,
+        analysis: ToolAnalysis,
+        now: datetime,
+    ) -> ToolProtocolObservation:
+        try:
+            protocol_profile = ProtocolProfileRegistry().get(upstream_protocol_profile_id)
+        except ProtocolProfileError as exc:
+            raise ValueError("unsupported_mcp_protocol_profile") from exc
+        observation = db.scalar(
+            select(ToolProtocolObservation).where(
+                ToolProtocolObservation.tool_id == tool.id,
+                ToolProtocolObservation.upstream_protocol_profile_id
+                == upstream_protocol_profile_id,
+                ToolProtocolObservation.tool_fingerprint == fingerprint,
+            )
+        )
+        if observation is None:
+            observation = ToolProtocolObservation(
+                tool_id=tool.id,
+                server_ref=server_ref,
+                upstream_protocol_profile_id=upstream_protocol_profile_id,
+                protocol_era=protocol_profile.protocol_era.value,
+                protocol_version=protocol_profile.protocol_version,
+                transport_kind=protocol_profile.transport_kind.value,
+                tool_name=tool.name,
+                canonical_tool_definition=canonical_tool_definition,
+                tool_fingerprint=fingerprint,
+                analysis_state=analysis.analysis_status,
+                analysis_id=analysis.id,
+                observed_at=now,
+                last_seen_at=now,
+            )
+            db.add(observation)
+        else:
+            observation.protocol_era = protocol_profile.protocol_era.value
+            observation.protocol_version = protocol_profile.protocol_version
+            observation.transport_kind = protocol_profile.transport_kind.value
+            observation.analysis_state = analysis.analysis_status
+            observation.analysis_id = analysis.id
+            observation.last_seen_at = now
+        db.flush()
+        return observation
 
     def _record_approved_observation(
         self,
@@ -688,12 +814,14 @@ class ToolAnalysisService:
         tool: MCPTool,
         version: ToolObservedVersion,
         baseline: ToolApprovedBaseline,
+        analysis_context_hash: str,
         now: datetime,
     ) -> ToolAnalysis:
         analysis = ToolAnalysis(
             tool_id=tool.id,
             version_id=version.id,
             fingerprint=version.fingerprint,
+            analysis_context_hash=analysis_context_hash,
             analysis_status=STATUS_APPROVED,
             risk_score=tool.risk_score,
             risk_level=tool.risk_level,
@@ -741,6 +869,7 @@ class ToolReviewService:
                 version_id=version.id,
                 analysis_id=analysis.id,
                 fingerprint=fingerprint,
+                analysis_context_hash=analysis.analysis_context_hash,
                 reviewer=reviewer,
                 justification=justification,
                 analyzer_revision=analysis.analyzer_revision,
@@ -751,6 +880,7 @@ class ToolReviewService:
             baseline.version_id = version.id
             baseline.analysis_id = analysis.id
             baseline.fingerprint = fingerprint
+            baseline.analysis_context_hash = analysis.analysis_context_hash
             baseline.reviewer = reviewer
             baseline.justification = justification
             baseline.analyzer_revision = analysis.analyzer_revision
@@ -866,11 +996,15 @@ def apply_analysis_to_tool(
     analysis: ToolAnalysis,
     baseline: ToolApprovedBaseline | None,
 ) -> None:
+    approved_context_match = (
+        baseline is not None
+        and baseline.fingerprint == analysis.fingerprint
+        and reusable_analysis_context_hash(baseline.analysis_context_hash)
+        and baseline.analysis_context_hash == analysis.analysis_context_hash
+    )
     tool.current_fingerprint = analysis.fingerprint
     tool.approved_fingerprint = baseline.fingerprint if baseline else None
-    tool.approved_fingerprint_match = (
-        baseline is not None and baseline.fingerprint == analysis.fingerprint
-    )
+    tool.approved_fingerprint_match = approved_context_match
     tool.analysis_status = analysis.analysis_status
     tool.review_status = analysis.review_status
     tool.risk_score = analysis.risk_score
@@ -1349,6 +1483,8 @@ def _validate_approvable_analysis(
         raise ValueError("analysis is not complete.")
     if version.fingerprint != fingerprint:
         raise ValueError("observed version fingerprint does not match.")
+    if not reusable_analysis_context_hash(analysis.analysis_context_hash):
+        raise ValueError("analysis context hash is missing or invalid.")
     tool = db.get(MCPTool, tool_id)
     if tool is None:
         raise ValueError("tool is missing.")

@@ -1,11 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchToolAnalysisBundle } from "../api/client";
+import { discoverHttpMcpServer, fetchToolAnalysisBundle } from "../api/client";
+import { buildGovernedEndpoint } from "../utils/gateway";
 
-function Inventory({ servers = [], tools = [], loading = false }) {
+function Inventory({
+  isAdmin = false,
+  onRefresh,
+  runtimeStatus,
+  servers = [],
+  tools = [],
+  loading = false,
+}) {
   const [selectedServerId, setSelectedServerId] = useState(null);
   const [selectedToolId, setSelectedToolId] = useState(null);
   const [toolAnalysis, setToolAnalysis] = useState(null);
   const [toolAnalysisLoading, setToolAnalysisLoading] = useState(false);
+  const [endpoint, setEndpoint] = useState("http://127.0.0.1:9000/mcp");
+  const [authMode, setAuthMode] = useState("NONE");
+  const [credentialRef, setCredentialRef] = useState("");
+  const [discovering, setDiscovering] = useState(false);
+  const [discoverResult, setDiscoverResult] = useState("");
+  const [discoverError, setDiscoverError] = useState("");
 
   const selectedServer = useMemo(
     () => servers.find((server) => server.id === selectedServerId) || null,
@@ -105,6 +119,44 @@ function Inventory({ servers = [], tools = [], loading = false }) {
         <p>{servers.length} server(s), {tools.length} tool(s)</p>
       </div>
 
+      {isAdmin && (
+        <form className="action-panel inline-form" onSubmit={handleDiscover}>
+          <label>
+            MCP HTTP endpoint
+            <input
+              onChange={(event) => setEndpoint(event.target.value)}
+              placeholder="http://127.0.0.1:9000/mcp"
+              required
+              type="url"
+              value={endpoint}
+            />
+          </label>
+          <label>
+            Upstream authentication
+            <select onChange={(event) => setAuthMode(event.target.value)} value={authMode}>
+              <option value="NONE">None</option>
+              <option value="BEARER">Bearer credential reference</option>
+            </select>
+          </label>
+          {authMode === "BEARER" && (
+            <label>
+              Credential secret reference
+              <input
+                onChange={(event) => setCredentialRef(event.target.value)}
+                placeholder="mcp/vendor/service.token"
+                required
+                value={credentialRef}
+              />
+            </label>
+          )}
+          <button className="secondary-action" disabled={discovering} type="submit">
+            {discovering ? "Discovering..." : "Register / Discover MCP"}
+          </button>
+          {discoverResult && <span className="success-text">{discoverResult}</span>}
+          {discoverError && <span className="error-text">{discoverError}</span>}
+        </form>
+      )}
+
       <div className="summary-grid">
         <SummaryCard label="MCP Servers" value={servers.length} />
         <SummaryCard label="MCP Tools" value={tools.length} />
@@ -127,7 +179,7 @@ function Inventory({ servers = [], tools = [], loading = false }) {
         </div>
 
         {selectedServer ? (
-          <ServerDetailPanel server={selectedServer} />
+          <ServerDetailPanel server={selectedServer} gatewayStatus={runtimeStatus?.gateway} />
         ) : (
           <EmptyState />
         )}
@@ -156,6 +208,29 @@ function Inventory({ servers = [], tools = [], loading = false }) {
       </div>
     </section>
   );
+
+  async function handleDiscover(event) {
+    event.preventDefault();
+    setDiscovering(true);
+    setDiscoverError("");
+    setDiscoverResult("");
+    try {
+      const result = await discoverHttpMcpServer(
+        endpoint,
+        "2025-11-25",
+        authMode,
+        credentialRef,
+      );
+      setDiscoverResult(
+        `Imported ${result.total_tools_imported} tool(s); ${result.tools_quarantined} require review.`,
+      );
+      await onRefresh?.();
+    } catch (err) {
+      setDiscoverError(err.message || "Discovery failed");
+    } finally {
+      setDiscovering(false);
+    }
+  }
 }
 
 function SummaryCard({ label, value }) {
@@ -271,16 +346,37 @@ function ToolsTable({ tools, selectedToolId, onSelectTool }) {
   );
 }
 
-function ServerDetailPanel({ server }) {
+function ServerDetailPanel({ server, gatewayStatus }) {
+  const governedEndpoint = buildGovernedEndpoint(gatewayStatus, server.id);
   return (
     <div className="detail-panel">
       <h3>{getServerDisplayName(server)}</h3>
+      <div className="endpoint-pair">
+        <div>
+          <span>Upstream</span>
+          <code>{displayValue(server.endpoint)}</code>
+        </div>
+        <div>
+          <span>Governed Endpoint</span>
+          <code>{governedEndpoint || "Gateway endpoint unavailable"}</code>
+          {governedEndpoint && (
+            <button
+              className="tiny-action"
+              onClick={() => navigator.clipboard?.writeText(governedEndpoint)}
+              type="button"
+            >
+              Copy
+            </button>
+          )}
+        </div>
+      </div>
       <div className="metadata-grid">
         <MetadataSection
           title="MCP native metadata"
           items={[
             ["protocol_version", server.protocol_version],
             ["transport", server.transport],
+            ["auth_mode", server.auth_mode],
             ["endpoint", server.endpoint],
             ["server_info_name", server.server_info_name],
             ["server_info_title", server.server_info_title],
@@ -406,8 +502,8 @@ function MetadataSection({ title, items }) {
 function EmptyState() {
   return (
     <div className="empty-state">
-      No MCP server discovered yet. Start the backend, start the MCP HTTP lab
-      server, then run the discovery script.
+      No MCP server discovered yet. An ADMIN can register and discover an MCP HTTP
+      endpoint from this page.
     </div>
   );
 }

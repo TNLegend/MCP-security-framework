@@ -2,6 +2,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
 
@@ -15,7 +16,7 @@ LOCAL_OPA = OPA_EXE
 
 def evaluate_runtime_policy_with_opa_cli(context: dict) -> dict:
     cache_key = json.dumps(context, sort_keys=True, separators=(",", ":"))
-    return _evaluate_runtime_policy_cached(cache_key)
+    return deepcopy(_evaluate_runtime_policy_cached(cache_key))
 
 
 @lru_cache(maxsize=256)

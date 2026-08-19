@@ -9,6 +9,12 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from proxy.tool_security_v2 import (
+    AuthorityResourceScope,
+    NormalizedFacts,
+    ToolObservationApproval,
+    ToolSecurityContract,
+)
 
 
 MAX_CANONICAL_RESOURCE_LENGTH = 4096
@@ -253,7 +259,15 @@ class PolicyRequestContext(BaseModel):
     resource_registry_revision: str = "unknown"
     tool_profile_revision: str = "unknown"
     operation_allowed_on_scope: StrictBool = False
+    canonical_arguments_hash: str = "unknown"
     estimated_output_size_mb: Annotated[float, Field(ge=0.0, strict=True)] = 0.001
+    security_model_version: Literal["1", "2"] = "1"
+    contract_hash: str | None = None
+    tool_security_contract: ToolSecurityContract | None = None
+    normalized_facts: NormalizedFacts | None = None
+    tool_observation_approval: ToolObservationApproval | None = None
+    authority_resource_scopes: list[AuthorityResourceScope] = Field(default_factory=list)
+    capability_catalog: list[dict[str, Any]] = Field(default_factory=list)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -279,6 +293,25 @@ class PolicyRequestContext(BaseModel):
                 "canonical_resource requires arguments_valid to be true."
             )
 
+        if self.security_model_version == "2":
+            required = (
+                self.contract_hash,
+                self.tool_security_contract,
+                self.normalized_facts,
+                self.tool_observation_approval,
+            )
+            if any(value is None for value in required) or not self.capability_catalog:
+                raise ValueError("security model v2 context is incomplete.")
+            if self.tool_security_contract.contract_hash != self.contract_hash:
+                raise ValueError("security contract hash does not match contract.")
+            if self.tool_observation_approval.contract_hash != self.contract_hash:
+                raise ValueError("approval contract hash does not match contract.")
+            if (
+                self.normalized_facts.request.get("canonical_args_hash")
+                != self.canonical_arguments_hash
+            ):
+                raise ValueError("normalized facts arguments hash does not match request.")
+
         return self
 
     @field_validator("required_capability")
@@ -293,6 +326,14 @@ class PolicyRuntimeContext(BaseModel):
     control_plane_revision_id: str = "unknown"
     control_plane_revision_number: PositiveInt | None = None
     control_plane_content_hash: str = "unknown"
+    client_protocol_profile_id: str = "mcp-legacy-2025-11-25-restricted-v1"
+    upstream_protocol_profile_id: str = "mcp-legacy-2025-11-25-restricted-v1"
+    client_protocol_era: str = "legacy"
+    client_protocol_version: str = "2025-11-25"
+    client_transport_kind: str = "legacy_streamable_http"
+    upstream_protocol_era: str = "legacy"
+    upstream_protocol_version: str = "2025-11-25"
+    upstream_transport_kind: str = "legacy_streamable_http"
 
     model_config = ConfigDict(extra="forbid")
 
@@ -303,7 +344,18 @@ class PolicyRuntimeContext(BaseModel):
             raise ValueError("session_id must not be empty.")
         return value
 
-    @field_validator("control_plane_revision_id", "control_plane_content_hash")
+    @field_validator(
+        "control_plane_revision_id",
+        "control_plane_content_hash",
+        "client_protocol_profile_id",
+        "upstream_protocol_profile_id",
+        "client_protocol_era",
+        "client_protocol_version",
+        "client_transport_kind",
+        "upstream_protocol_era",
+        "upstream_protocol_version",
+        "upstream_transport_kind",
+    )
     @classmethod
     def validate_control_plane_metadata(cls, value: str) -> str:
         if not value.strip():

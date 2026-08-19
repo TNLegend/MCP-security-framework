@@ -38,6 +38,11 @@ IGNORE_PATTERNS = [
     "rust_model.*",
 ]
 
+APPROVED_MODEL_REVISIONS = {
+    SEMANTIC_MODEL_NAME: "0a71e92a985b6e1ad1828cf67ce9c459639c1dca",
+    EMBEDDING_MODEL_NAME: "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+}
+
 
 def main() -> int:
     configure_runtime_environment()
@@ -65,6 +70,7 @@ def main() -> int:
         snapshot_path = Path(
             snapshot_download(
                 repo_id=repo_id,
+                revision=APPROVED_MODEL_REVISIONS[repo_id],
                 cache_dir=str(cache_dir),
                 local_files_only=False,
                 resume_download=True,

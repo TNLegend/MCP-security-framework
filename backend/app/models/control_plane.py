@@ -81,6 +81,11 @@ class ControlPlaneConfigRevision(Base):
         nullable=True,
     )
     change_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    previous_revision_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    signature: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signature_key_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    signature_algorithm: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    signature_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class ControlPlaneState(Base):
@@ -118,3 +123,16 @@ class ControlPlaneAuditEvent(Base):
     source_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     result: Mapped[str] = mapped_column(String(32), nullable=False, default="SUCCESS")
     event_metadata: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
+
+
+class EmergencyDeny(Base):
+    __tablename__ = "emergency_denies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    target_value: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    target_secondary_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)

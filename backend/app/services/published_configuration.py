@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from hashlib import sha256
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-import rfc8785
 from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+
+from common.canonical_json import sha256_canonical_json
 
 from app.db.database import SessionLocal
 from app.models.control_plane import ControlPlaneConfigRevision, ControlPlaneState
@@ -15,6 +16,11 @@ from app.schemas.control_plane import ControlPlaneConfigContent
 from app.services.subject_authorization import (
     ResolvedCapabilityGrant,
     ResolvedSubjectAuthorization,
+)
+from app.services.revision_signing import (
+    RevisionSignatureError,
+    revision_signature_payload,
+    verify_revision_payload,
 )
 from proxy.identity_binding import IdentityBindingError, ResolvedIdentityBinding
 from proxy.resource_registry import (
@@ -25,6 +31,15 @@ from proxy.resource_registry import (
 from proxy.tool_security_profiles import (
     ResolvedToolSecurityProfile,
     ToolSecurityProfileError,
+)
+from proxy.tool_security_v2 import (
+    AdapterResolution,
+    AuthorityResourceScope,
+    CapabilityCatalog,
+    ResourceTypeRegistry,
+    ToolObservationApproval,
+    ToolSecurityContract,
+    validate_scope,
 )
 
 
@@ -115,6 +130,8 @@ class PublishedConfigurationSnapshot:
         server_ref: str,
         tool_name: str,
     ) -> ResolvedToolSecurityProfile:
+        if self.schema_version != 1 or self.content.tool_security_profiles is None:
+            raise ToolSecurityProfileError("legacy_tool_security_profile_unavailable")
         for binding in self.content.tool_security_profiles.bindings:
             if binding.server_ref == server_ref and binding.tool_name == tool_name:
                 return ResolvedToolSecurityProfile(
@@ -128,6 +145,8 @@ class PublishedConfigurationSnapshot:
         raise ToolSecurityProfileError("unknown_tool_security_profile")
 
     def get_resource_registry(self) -> ResourceRegistry:
+        if self.schema_version != 1 or self.content.resource_scopes is None:
+            raise ResourceRegistryError("legacy_resource_registry_unavailable")
         resolved_scopes: dict[str, ResolvedFilesystemScope] = {}
         for scope_id, scope in self.content.resource_scopes.filesystem_scopes.items():
             raw_root = os.getenv(scope.root_env)
@@ -162,9 +181,67 @@ class PublishedConfigurationSnapshot:
     def get_policy_settings(self) -> dict[str, Any]:
         return self.content.policy_settings.model_dump(mode="json")
 
+    def get_tool_security_contract(
+        self,
+        *,
+        server_ref: str,
+        tool_name: str,
+    ) -> ToolSecurityContract:
+        if self.schema_version != 2 or self.content.tool_security_contracts is None:
+            raise PublishedConfigurationError("tool_security_contract_unavailable")
+        matches = [
+            contract
+            for contract in self.content.tool_security_contracts
+            if contract.server_ref == server_ref and contract.tool_name == tool_name
+        ]
+        if len(matches) != 1:
+            raise PublishedConfigurationError("tool_security_contract_missing_or_ambiguous")
+        return matches[0]
+
+    def get_authority_resource_scopes(self) -> tuple[AuthorityResourceScope, ...]:
+        if self.schema_version != 2 or self.content.authority_resource_scopes is None:
+            raise PublishedConfigurationError("authority_resource_scopes_unavailable")
+        return self.content.authority_resource_scopes
+
+    def get_adapter_resolutions(self, *, effect_id: str) -> tuple[AdapterResolution, ...]:
+        if self.schema_version != 2 or self.content.adapter_resolutions is None:
+            raise PublishedConfigurationError("adapter_resolutions_unavailable")
+        return tuple(
+            resolution
+            for resolution in self.content.adapter_resolutions
+            if resolution.effect_id == effect_id
+        )
+
+    def get_tool_observation_approval(
+        self,
+        *,
+        server_ref: str,
+        upstream_protocol_profile_id: str,
+        tool_fingerprint: str,
+    ) -> ToolObservationApproval:
+        approvals = self.content.tool_observation_approvals
+        if self.schema_version != 2 or approvals is None:
+            raise PublishedConfigurationError("tool_observation_approval_unavailable")
+        matches = [
+            approval
+            for approval in approvals
+            if approval.server_ref == server_ref
+            and approval.upstream_protocol_profile_id == upstream_protocol_profile_id
+            and approval.tool_fingerprint == tool_fingerprint
+        ]
+        if len(matches) != 1:
+            raise PublishedConfigurationError("tool_observation_approval_missing_or_ambiguous")
+        return matches[0]
+
+    def get_authority_context(self, authority: str) -> dict[str, Any]:
+        contexts = self.content.authority_contexts
+        if self.schema_version != 2 or contexts is None or authority not in contexts:
+            raise PublishedConfigurationError("authority_context_unavailable")
+        return contexts[authority].model_dump(mode="json")
+
 
 def config_content_hash(content: dict[str, Any]) -> str:
-    return sha256(rfc8785.dumps(content)).hexdigest()
+    return sha256_canonical_json(content)
 
 
 def _content_model_to_json(content: ControlPlaneConfigContent) -> dict[str, Any]:
@@ -189,6 +266,17 @@ class PublishedConfigurationProvider:
         if state is None or state.active_revision_id is None:
             raise PublishedConfigurationError("active_config_missing")
         revision = self.db.get(ControlPlaneConfigRevision, state.active_revision_id)
+        if revision is not None:
+            latest_activated_number = self.db.scalar(
+                select(func.max(ControlPlaneConfigRevision.revision_number)).where(
+                    ControlPlaneConfigRevision.status.in_({"PUBLISHED", "ARCHIVED"})
+                )
+            )
+            if (
+                latest_activated_number is not None
+                and revision.revision_number != latest_activated_number
+            ):
+                raise PublishedConfigurationError("active_config_rollback_detected")
         return self._snapshot_from_revision(revision, allowed_statuses={"PUBLISHED"})
 
     def load_snapshot(
@@ -254,6 +342,10 @@ class PublishedConfigurationProvider:
             content = validate_config_content(revision.content)
         except Exception as exc:
             raise PublishedConfigurationError("config_invalid") from exc
+        if revision.schema_version != content.schema_version:
+            raise PublishedConfigurationError("config_schema_version_mismatch")
+        if revision.schema_version == 2:
+            self._verify_v2_revision(revision)
         return PublishedConfigurationSnapshot(
             revision_id=revision.id,
             revision_number=revision.revision_number,
@@ -261,6 +353,61 @@ class PublishedConfigurationProvider:
             schema_version=revision.schema_version,
             content=content,
         )
+
+    def _verify_v2_revision(
+        self,
+        revision: ControlPlaneConfigRevision,
+        *,
+        seen: set[str] | None = None,
+    ) -> None:
+        chain_seen = seen or set()
+        if revision.id in chain_seen:
+            raise PublishedConfigurationError("revision_chain_cycle")
+        chain_seen.add(revision.id)
+        required = (
+            revision.previous_revision_hash,
+            revision.signature,
+            revision.signature_key_id,
+            revision.signature_algorithm,
+            revision.signature_version,
+        )
+        if not all(isinstance(value, str) and value for value in required):
+            raise PublishedConfigurationError("revision_signature_missing")
+        payload = revision_signature_payload(
+            revision_id=revision.id,
+            revision_number=revision.revision_number,
+            schema_version=revision.schema_version,
+            content_hash=revision.content_hash,
+            previous_revision_hash=revision.previous_revision_hash,
+        )
+        try:
+            verify_revision_payload(
+                payload,
+                signature=revision.signature,
+                key_id=revision.signature_key_id,
+                algorithm=revision.signature_algorithm,
+                version=revision.signature_version,
+            )
+        except RevisionSignatureError as exc:
+            raise PublishedConfigurationError(exc.code) from exc
+        if revision.previous_revision_hash == "0" * 64:
+            return
+        predecessor = self.db.scalar(
+            select(ControlPlaneConfigRevision).where(
+                ControlPlaneConfigRevision.content_hash == revision.previous_revision_hash,
+                ControlPlaneConfigRevision.revision_number < revision.revision_number,
+            ).order_by(ControlPlaneConfigRevision.revision_number.desc())
+        )
+        if predecessor is None:
+            raise PublishedConfigurationError("revision_chain_predecessor_missing")
+        try:
+            predecessor_hash = config_content_hash(predecessor.content)
+        except Exception as exc:
+            raise PublishedConfigurationError("revision_chain_predecessor_invalid") from exc
+        if predecessor_hash != predecessor.content_hash:
+            raise PublishedConfigurationError("revision_chain_predecessor_hash_mismatch")
+        if predecessor.schema_version == 2:
+            self._verify_v2_revision(predecessor, seen=chain_seen)
 
 
 class PublishedConfigurationSnapshotResolver:
@@ -332,6 +479,12 @@ def _validate_cross_references(content: ControlPlaneConfigContent) -> None:
         if binding.agent_id not in known_agents:
             raise ValueError("identity binding references unknown agent.")
 
+    if content.schema_version == 2:
+        _validate_v2_cross_references(content)
+        return
+
+    if content.resource_scopes is None or content.tool_security_profiles is None:
+        raise ValueError("legacy administrative documents are missing.")
     known_scopes = set(content.resource_scopes.filesystem_scopes)
     known_capabilities = {
         grant.capability
@@ -352,6 +505,74 @@ def _validate_cross_references(content: ControlPlaneConfigContent) -> None:
             referenced_scopes.add(resource.relative_base_scope)
         if not referenced_scopes <= known_scopes:
             raise ValueError("tool profile references unknown resource scope.")
+
+
+def _validate_v2_cross_references(content: ControlPlaneConfigContent) -> None:
+    contracts = content.tool_security_contracts or ()
+    scopes = content.authority_resource_scopes or ()
+    resolutions = content.adapter_resolutions or ()
+    approvals = content.tool_observation_approvals or ()
+    authority_contexts = content.authority_contexts or {}
+    catalog = CapabilityCatalog()
+    type_registry = ResourceTypeRegistry()
+
+    contract_keys = [(contract.server_ref, contract.tool_name) for contract in contracts]
+    if len(contract_keys) != len(set(contract_keys)):
+        raise ValueError("duplicate v2 tool security contract.")
+    effect_ids = [effect.effect_id for contract in contracts for effect in contract.effects]
+    if len(effect_ids) != len(set(effect_ids)):
+        raise ValueError("v2 effect ids must be globally unique within a revision.")
+    scope_ids = [scope.scope_id for scope in scopes]
+    if len(scope_ids) != len(set(scope_ids)):
+        raise ValueError("duplicate authority resource scope.")
+    approval_keys = [
+        (
+            approval.server_ref,
+            approval.upstream_protocol_profile_id,
+            approval.tool_fingerprint,
+        )
+        for approval in approvals
+    ]
+    if len(approval_keys) != len(set(approval_keys)):
+        raise ValueError("duplicate profile-specific tool approval.")
+
+    known_scopes = set(scope_ids)
+    for profile in content.agent_authorizations.subjects.values():
+        for grant in profile.grants:
+            catalog.get(grant.capability)
+            if not set(grant.scopes) <= known_scopes:
+                raise ValueError("authorization references unknown v2 scope.")
+
+    for scope in scopes:
+        if scope.authority not in authority_contexts:
+            raise ValueError("scope references unknown authority context.")
+        validated_scope = validate_scope(
+            scope,
+            registry=type_registry,
+            authority_config=authority_contexts[scope.authority].model_dump(mode="json"),
+        )
+        if validated_scope != scope:
+            raise ValueError("scope value must already be canonical.")
+
+    resolution_keys = [
+        (resolution.effect_id, resolution.resource_type) for resolution in resolutions
+    ]
+    if len(resolution_keys) != len(set(resolution_keys)):
+        raise ValueError("duplicate adapter resolution.")
+    known_effects = {
+        (effect.effect_id, binding.resource_type)
+        for contract in contracts
+        for effect in contract.effects
+        for binding in effect.resource_bindings
+    }
+    if set(resolution_keys) != known_effects:
+        raise ValueError("adapter resolutions do not exactly cover contract bindings.")
+    for contract in contracts:
+        for effect in contract.effects:
+            catalog.get(effect.capability)
+    contract_hashes = {contract.contract_hash for contract in contracts}
+    if any(approval.contract_hash not in contract_hashes for approval in approvals):
+        raise ValueError("approval references unknown contract hash.")
 
 
 def _is_absolute_path(raw_value: str, path: Path) -> bool:

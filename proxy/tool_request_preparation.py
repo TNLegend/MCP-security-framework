@@ -7,12 +7,32 @@ from typing import Any
 from jsonschema import Draft7Validator, Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
+from common.canonical_json import canonical_json_bytes, sha256_canonical_json
+
+from proxy.lab_tool_compat import (
+    is_lab_directory_listing_tool,
+    is_lab_file_read_tool,
+    lab_tool_descriptor,
+)
 from proxy.resource_adapters import (
     ResourceResolution,
     resolve_resource,
 )
 from proxy.resource_registry import ResourceRegistry
 from proxy.tool_security_profiles import ResolvedToolSecurityProfile
+from proxy.resource_adapters_v2 import AdapterRegistry, resolve_effect_facts
+from proxy.tool_security_v2 import (
+    AdapterResolution,
+    AuthorityResourceScope,
+    NormalizedFacts,
+    SecurityModelError,
+    ToolObservationApproval,
+    ToolSecurityContract,
+    CapabilityCatalog,
+    NormalizedEffectFacts,
+    ReferencePrecision,
+    validate_contract_for_schema,
+)
 
 
 MAX_SCHEMA_BYTES = 262_144
@@ -50,6 +70,7 @@ SUPPORTED_JSON_SCHEMA_VALIDATORS = {
 @dataclass(frozen=True)
 class PreparedToolRequest:
     arguments: dict[str, Any]
+    canonical_arguments_hash: str
     arguments_valid: bool
     validation_error_codes: tuple[str, ...]
     operation: str
@@ -66,6 +87,13 @@ class PreparedToolRequest:
     operation_allowed_on_scope: bool
     execution_arguments: dict[str, Any]
     resource_resolution: ResourceResolution | None = None
+    security_model_version: str = "1"
+    normalized_facts: dict[str, Any] | None = None
+    contract_hash: str | None = None
+    tool_observation_approval: dict[str, Any] | None = None
+    authority_resource_scopes: tuple[dict[str, Any], ...] = ()
+    security_contract: dict[str, Any] | None = None
+    capability_catalog: tuple[dict[str, Any], ...] = ()
 
 
 def prepare_tool_request(
@@ -114,6 +142,7 @@ def prepare_tool_request(
             tool_profile=tool_profile,
             resource_registry=resource_registry,
         )
+    canonical_arguments_hash = sha256_canonical_json(arguments)
 
     schema_errors, canonical_schema_json = _validate_input_schema(input_schema)
     if schema_errors:
@@ -146,6 +175,9 @@ def prepare_tool_request(
         )
         return PreparedToolRequest(
             arguments=dict(arguments) if resolution.resource_resolution_status == "resolved" else {},
+            canonical_arguments_hash=sha256_canonical_json(
+                resolution.execution_arguments
+            ),
             arguments_valid=True,
             validation_error_codes=(),
             operation=resolution.operation,
@@ -164,9 +196,10 @@ def prepare_tool_request(
             resource_resolution=resolution,
         )
 
-    if tool_name == "list_files":
+    if is_lab_directory_listing_tool(tool_name):
         return PreparedToolRequest(
             arguments={},
+            canonical_arguments_hash=EMPTY_ARGUMENTS_HASH,
             arguments_valid=True,
             validation_error_codes=(),
             operation="list",
@@ -184,7 +217,7 @@ def prepare_tool_request(
             execution_arguments={},
         )
 
-    if tool_name == "read_file":
+    if is_lab_file_read_tool(tool_name):
         canonical_resource, path_errors = _normalize_lab_relative_path(
             arguments.get("path")
         )
@@ -202,6 +235,7 @@ def prepare_tool_request(
         normalized_arguments["path"] = canonical_resource
         return PreparedToolRequest(
             arguments=normalized_arguments,
+            canonical_arguments_hash=sha256_canonical_json(normalized_arguments),
             arguments_valid=True,
             validation_error_codes=(),
             operation="read",
@@ -225,6 +259,7 @@ def prepare_tool_request(
 
     return PreparedToolRequest(
         arguments=dict(arguments),
+        canonical_arguments_hash=canonical_arguments_hash,
         arguments_valid=True,
         validation_error_codes=(),
         operation="unknown",
@@ -243,16 +278,194 @@ def prepare_tool_request(
     )
 
 
+def prepare_tool_request_v2(
+    *,
+    raw_arguments: Any,
+    input_schema: Any,
+    contract: ToolSecurityContract,
+    adapter_resolutions: tuple[AdapterResolution, ...],
+    approval: ToolObservationApproval,
+    authority_scopes: tuple[AuthorityResourceScope, ...],
+    authority_context: dict[str, Any],
+    client_protocol_profile_id: str,
+    upstream_protocol_profile_id: str,
+) -> PreparedToolRequest:
+    arguments = {} if raw_arguments is None else raw_arguments
+    if not isinstance(arguments, dict):
+        return _invalid_v2(("arguments_not_object",), contract)
+    try:
+        canonical_arguments = canonical_json_bytes(arguments)
+    except (TypeError, ValueError, RecursionError):
+        return _invalid_v2(("arguments_not_json_serializable",), contract)
+    if len(canonical_arguments) > MAX_ARGUMENTS_BYTES:
+        return _invalid_v2(("arguments_too_large",), contract)
+    if not isinstance(input_schema, dict):
+        return _invalid_v2(("input_schema_not_object",), contract)
+
+    try:
+        derived_resolutions = validate_contract_for_schema(contract, input_schema)
+    except (SecurityModelError, ValueError):
+        return _invalid_v2(("contract_or_schema_invalid",), contract)
+    if sorted(
+        (value.effect_id, value.resource_type, value.adapter_id,
+         value.adapter_api_version, value.implementation_version)
+        for value in derived_resolutions
+    ) != sorted(
+        (value.effect_id, value.resource_type, value.adapter_id,
+         value.adapter_api_version, value.implementation_version)
+        for value in adapter_resolutions
+    ):
+        return _invalid_v2(("adapter_resolution_snapshot_mismatch",), contract)
+
+    schema_errors, canonical_schema_json = _validate_input_schema(input_schema)
+    if schema_errors:
+        return _invalid_v2(schema_errors, contract)
+    validator = _compile_validator(canonical_schema_json)
+    validation_codes = _validation_error_codes(validator.iter_errors(arguments))
+    if validation_codes:
+        return _invalid_v2(validation_codes, contract)
+
+    registry = AdapterRegistry()
+    effect_facts = []
+    errors: list[str] = []
+    for effect in contract.effects:
+        effect_resolutions = tuple(
+            value for value in adapter_resolutions if value.effect_id == effect.effect_id
+        )
+        capability = CapabilityCatalog().get(effect.capability)
+        if not capability.requires_resource and not effect.resource_bindings:
+            effect_facts.append(
+                NormalizedEffectFacts(
+                    effect_id=effect.effect_id,
+                    capability_id=effect.capability,
+                    requires_resource=False,
+                    adapter_id="none",
+                    adapter_api_version="1",
+                    declared_reference_precision=effect.declared_reference_precision,
+                    runtime_reference_precision=ReferencePrecision.EXPLICIT,
+                    effective_reference_precision=effect.declared_reference_precision,
+                    max_resource_cardinality=effect.max_resource_cardinality,
+                    bindings=(),
+                )
+            )
+            continue
+        if not effect_resolutions:
+            errors.append("adapter_resolution_missing")
+            continue
+        adapter_keys = {
+            (value.adapter_id, value.adapter_api_version, value.implementation_version)
+            for value in effect_resolutions
+        }
+        if len(adapter_keys) != 1:
+            errors.append("effect_adapter_resolution_ambiguous")
+            continue
+        resolution = effect_resolutions[0]
+        try:
+            facts = resolve_effect_facts(
+                dict(arguments),
+                effect,
+                resolution,
+                {
+                    "authority": contract.server_ref,
+                    "resource_type_config": authority_context,
+                },
+                registry=registry,
+            )
+            effect_facts.append(facts)
+        except Exception as exc:
+            errors.append(
+                exc.code if isinstance(exc, SecurityModelError) else "adapter_resolution_failed"
+            )
+
+    canonical_hash = sha256_canonical_json(arguments)
+    normalized = NormalizedFacts(
+        request={
+            "server_ref": contract.server_ref,
+            "tool_name": contract.tool_name,
+            "canonical_args_hash": canonical_hash,
+            "client_protocol_profile_id": client_protocol_profile_id,
+            "upstream_protocol_profile_id": upstream_protocol_profile_id,
+        },
+        effects=tuple(effect_facts),
+        errors=tuple(errors),
+    )
+    first_effect = contract.effects[0]
+    first_binding = first_effect.resource_bindings[0] if first_effect.resource_bindings else None
+    first_facts = effect_facts[0] if effect_facts else None
+    first_reference = (
+        first_facts.bindings[0].references[0]
+        if first_facts and first_facts.bindings and first_facts.bindings[0].references
+        else None
+    )
+    return PreparedToolRequest(
+        arguments=dict(arguments) if not errors else {},
+        canonical_arguments_hash=canonical_hash if not errors else EMPTY_ARGUMENTS_HASH,
+        arguments_valid=not errors,
+        validation_error_codes=_sanitize_error_codes(errors),
+        operation=first_effect.capability,
+        required_capability=first_effect.capability,
+        resource_adapter=first_facts.adapter_id if first_facts else "unknown",
+        resource_type=first_binding.resource_type if first_binding else "none",
+        resource_scope="v2_authority_scopes",
+        canonical_resource=first_reference.canonical_value if first_reference else None,
+        resource_sensitivity="governed",
+        resource_resolution_status="resolved" if not errors else "invalid",
+        resource_flags=(),
+        resource_registry_revision="v2",
+        tool_profile_revision=contract.contract_hash,
+        operation_allowed_on_scope=False,
+        execution_arguments=dict(arguments) if not errors else {},
+        security_model_version="2",
+        normalized_facts=normalized.model_dump(mode="json"),
+        contract_hash=contract.contract_hash,
+        tool_observation_approval=approval.model_dump(mode="json"),
+        authority_resource_scopes=tuple(
+            scope.model_dump(mode="json") for scope in authority_scopes
+        ),
+        security_contract=contract.model_dump(mode="json"),
+        capability_catalog=tuple(CapabilityCatalog().as_policy_data()),
+    )
+
+
+def _invalid_v2(
+    error_codes: tuple[str, ...] | list[str],
+    contract: ToolSecurityContract,
+) -> PreparedToolRequest:
+    first = contract.effects[0]
+    return PreparedToolRequest(
+        arguments={},
+        canonical_arguments_hash=EMPTY_ARGUMENTS_HASH,
+        arguments_valid=False,
+        validation_error_codes=_sanitize_error_codes(error_codes),
+        operation=first.capability,
+        required_capability=first.capability,
+        resource_adapter="unknown",
+        resource_type="unknown",
+        resource_scope="invalid",
+        canonical_resource=None,
+        resource_sensitivity="unknown",
+        resource_resolution_status="invalid_arguments",
+        resource_flags=(),
+        resource_registry_revision="v2",
+        tool_profile_revision=contract.contract_hash,
+        operation_allowed_on_scope=False,
+        execution_arguments={},
+        security_model_version="2",
+        contract_hash=contract.contract_hash,
+        security_contract=contract.model_dump(mode="json"),
+        capability_catalog=tuple(CapabilityCatalog().as_policy_data()),
+    )
+
+
 def _resource_kind_for_tool(
     tool_name: str,
     tool_profile: ResolvedToolSecurityProfile | None = None,
 ) -> tuple[str, str]:
     if tool_profile is not None:
         return tool_profile.operation, f"{tool_profile.resource.adapter}.{tool_profile.resource.expected_type}"
-    if tool_name == "read_file":
-        return "read", "file"
-    if tool_name == "list_files":
-        return "list", "directory"
+    descriptor = lab_tool_descriptor(tool_name)
+    if descriptor is not None:
+        return descriptor.operation, descriptor.resource_type
     return "unknown", "unknown"
 
 
@@ -262,10 +475,9 @@ def _required_capability_for_tool(
 ) -> str:
     if tool_profile is not None:
         return tool_profile.required_capability
-    if tool_name == "read_file":
-        return "filesystem.read"
-    if tool_name == "list_files":
-        return "filesystem.list"
+    descriptor = lab_tool_descriptor(tool_name)
+    if descriptor is not None:
+        return descriptor.required_capability
     return "unclassified"
 
 
@@ -280,6 +492,7 @@ def _invalid_result(
 ) -> PreparedToolRequest:
     return PreparedToolRequest(
         arguments={},
+        canonical_arguments_hash=EMPTY_ARGUMENTS_HASH,
         arguments_valid=False,
         validation_error_codes=_sanitize_error_codes(error_codes),
         operation=operation,
@@ -305,12 +518,10 @@ def _invalid_result(
 
 
 def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    return canonical_json_bytes(value).decode("utf-8")
+
+
+EMPTY_ARGUMENTS_HASH = sha256_canonical_json({})
 
 
 def _validate_input_schema(input_schema: Any) -> tuple[tuple[str, ...], str]:

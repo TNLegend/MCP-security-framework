@@ -152,6 +152,8 @@ def enrich_subject_authorization(
                 allow_archived=True,
             )
             resolved = snapshot.get_agent_authorization(agent_id)
+            if base_context["request"].get("security_model_version") == "2":
+                _verify_v2_snapshot_context(enriched_context, snapshot)
         except Exception as exc:
             raise SubjectAuthorizationError("subject_authorization_unavailable") from exc
         enriched_context["subject"].update(
@@ -163,6 +165,32 @@ def enrich_subject_authorization(
         resolved_authorization_to_policy_subject_fields(resolved)
     )
     return RuntimePolicyInput.model_validate(enriched_context).model_dump(mode="json")
+
+
+def _verify_v2_snapshot_context(context: dict[str, Any], snapshot) -> None:
+    request = context["request"]
+    runtime = context["runtime"]
+    server_ref = context["server"]["server_ref"]
+    tool_name = context["tool"]["name"]
+    contract = snapshot.get_tool_security_contract(
+        server_ref=server_ref,
+        tool_name=tool_name,
+    )
+    if request.get("tool_security_contract") != contract.model_dump(mode="json"):
+        raise SubjectAuthorizationError("snapshot_contract_mismatch")
+    approval_payload = request.get("tool_observation_approval") or {}
+    approval = snapshot.get_tool_observation_approval(
+        server_ref=server_ref,
+        upstream_protocol_profile_id=runtime["upstream_protocol_profile_id"],
+        tool_fingerprint=approval_payload.get("tool_fingerprint", ""),
+    )
+    if approval_payload != approval.model_dump(mode="json"):
+        raise SubjectAuthorizationError("snapshot_approval_mismatch")
+    if request.get("authority_resource_scopes") != [
+        scope.model_dump(mode="json")
+        for scope in snapshot.get_authority_resource_scopes()
+    ]:
+        raise SubjectAuthorizationError("snapshot_scopes_mismatch")
 
 
 def evaluate_opa_authoritative(

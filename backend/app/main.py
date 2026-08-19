@@ -8,6 +8,7 @@ from app.api.routes_control_plane_tool_analysis import (
     router as control_plane_tool_analysis_router,
 )
 from app.api.routes_control_plane_users import router as control_plane_users_router
+from app.api.routes_emergency_deny import router as emergency_deny_router
 from app.api.routes_health import router as health_router
 from app.api.routes_internal import router as internal_router
 from app.api.routes_inventory import router as inventory_router
@@ -30,10 +31,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5173",
-        "http://localhost:5173",
-    ],
+    allow_origins=settings.control_center_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
     allow_headers=["*"],
@@ -52,6 +50,7 @@ app.include_router(control_plane_users_router, prefix=settings.api_prefix)
 app.include_router(control_plane_config_router, prefix=settings.api_prefix)
 app.include_router(control_plane_tool_analysis_router, prefix=settings.api_prefix)
 app.include_router(control_plane_audit_router, prefix=settings.api_prefix)
+app.include_router(emergency_deny_router, prefix=settings.api_prefix)
 
 
 @app.get("/")

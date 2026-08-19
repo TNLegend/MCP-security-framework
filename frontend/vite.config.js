@@ -1,6 +1,31 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { defineConfig, loadEnv } from "vite";
 
-export default defineConfig({
-  plugins: [react()],
+const frontendRoot = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(frontendRoot, "..");
+
+function parsePort(value, defaultPort) {
+  if (value === undefined || value === "") {
+    return defaultPort;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error("Invalid FRONTEND_PORT: expected an integer from 1 to 65535.");
+  }
+  return parsed;
+}
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, repoRoot, "");
+  return {
+    envDir: repoRoot,
+    plugins: [react()],
+    server: {
+      host: env.FRONTEND_HOST || "127.0.0.1",
+      port: parsePort(env.FRONTEND_PORT, 5173),
+      strictPort: true,
+    },
+  };
 });

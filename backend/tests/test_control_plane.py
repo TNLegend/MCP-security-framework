@@ -528,6 +528,18 @@ class ControlPlaneUserManagementTests(ControlPlaneTestCase):
 
 
 class ControlPlaneHumanRouteAuthTests(ControlPlaneTestCase):
+    def test_runtime_logs_empty_table_returns_empty_list_for_authenticated_users(self) -> None:
+        self.create_user("admin", "ADMIN")
+        self.create_user("viewer", "VIEWER")
+
+        for role in ("viewer", "admin"):
+            with self.subTest(role=role):
+                self.client = TestClient(app)
+                self.login(role)
+                response = self.client.get("/api/v1/runtime/logs")
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json(), [])
+
     def test_human_read_routes_require_login_and_allow_admin_and_viewer(self) -> None:
         self.create_user("admin", "ADMIN")
         self.create_user("viewer", "VIEWER")
@@ -550,6 +562,7 @@ class ControlPlaneHumanRouteAuthTests(ControlPlaneTestCase):
             "/api/v1/tools",
             "/api/v1/policies",
             "/api/v1/runtime/logs",
+            "/api/v1/control-plane/local-runtime/status",
             "/api/v1/control-plane/audit/events",
             f"/api/v1/tool-analysis/tools/{tool_id}/status",
         ]
@@ -1149,6 +1162,108 @@ class ControlPlaneConfigTests(ControlPlaneTestCase):
 
 
 class ControlPlaneToolAnalysisTests(ControlPlaneTestCase):
+    def test_admin_can_trigger_governed_discovery_through_backend(self) -> None:
+        self.create_user("viewer", "VIEWER")
+        admin = self.create_user("admin", "ADMIN")
+        discovery_payload = {
+            "payload": {
+                "server": {
+                    "endpoint": "http://127.0.0.1:9000/mcp",
+                    "transport": "streamable_http",
+                    "protocol_version": "2025-11-25",
+                    "auth_mode": "BEARER",
+                    "credential_ref": "mcp/vendor/service.token",
+                },
+                "tools": [
+                    {
+                        "name": "read_file",
+                        "description": "Read a file.",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        },
+                    }
+                ],
+            },
+            "tool_names": ["read_file"],
+        }
+        with self.Session() as db:
+            revision = create_revision(
+                db,
+                content=config_content(),
+                status="PUBLISHED",
+                actor=admin,
+                change_summary="initial",
+            )
+            db.add(ControlPlaneState(id=1, active_revision_id=revision.id))
+            db.commit()
+
+        class FakeAnalysis:
+            analysis_status = "REVIEW_REQUIRED"
+
+        class FakeToolAnalysisService:
+            def observe_and_analyze(self, **kwargs):
+                return FakeAnalysis()
+
+        viewer_csrf = self.login("viewer")
+        viewer_response = self.client.post(
+            "/api/v1/inventory/discover-http",
+            json={
+                "endpoint": "http://127.0.0.1:9000/mcp",
+                "auth_mode": "BEARER",
+                "credential_ref": "mcp/vendor/service.token",
+            },
+            headers={"x-csrf-token": viewer_csrf},
+        )
+        self.assertEqual(viewer_response.status_code, 403)
+
+        self.client = TestClient(app)
+        admin_csrf = self.login("admin")
+        with (
+            patch(
+                "app.api.routes_inventory.discover_http_mcp_server",
+                return_value=discovery_payload,
+            ) as discovery,
+            patch(
+                "app.api.routes_inventory.ToolAnalysisService",
+                return_value=FakeToolAnalysisService(),
+            ),
+        ):
+            response = self.client.post(
+                "/api/v1/inventory/discover-http",
+                json={
+                    "endpoint": "http://127.0.0.1:9000/mcp",
+                    "auth_mode": "BEARER",
+                    "credential_ref": "mcp/vendor/service.token",
+                },
+                headers={"x-csrf-token": admin_csrf},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["total_tools_imported"], 1)
+        discovery.assert_called_once()
+        self.assertEqual(discovery.call_args.kwargs["auth_mode"], "BEARER")
+        self.assertEqual(
+            discovery.call_args.kwargs["credential_ref"],
+            "mcp/vendor/service.token",
+        )
+        with self.Session() as db:
+            self.assertEqual(db.query(MCPServer).count(), 1)
+            self.assertEqual(db.query(MCPTool).count(), 1)
+            server = db.query(MCPServer).one()
+            self.assertEqual(server.auth_mode, "BEARER")
+            self.assertEqual(server.credential_ref, "mcp/vendor/service.token")
+            audit_events = db.query(ControlPlaneAuditEvent).all()
+            audit_actions = [event.action for event in audit_events]
+            discovery_audit = next(
+                event for event in audit_events if event.action == "MCP_DISCOVERY_IMPORTED"
+            )
+        self.assertIn("MCP_DISCOVERY_IMPORTED", audit_actions)
+        self.assertNotIn("credential_ref", discovery_audit.after_json)
+        self.assertNotIn("service.token", str(discovery_audit.after_json))
+
     def test_inventory_import_requires_service_token_and_published_config_profile(self) -> None:
         payload = {
             "server": {
@@ -1250,6 +1365,7 @@ class ControlPlaneToolAnalysisTests(ControlPlaneTestCase):
                 tool_id=tool.id,
                 version_id=version.id,
                 fingerprint="a" * 64,
+                analysis_context_hash="c" * 64,
                 analysis_status="REVIEW_REQUIRED",
                 risk_score=10,
                 risk_level="low",

@@ -24,6 +24,7 @@ from app.services.identity_replay_store import (
     IdentityReplayError,
     consume_identity_assertion_jti,
 )
+from common.canonical_json import canonical_json_bytes
 
 
 SERVICE_ID_PROXY = "MCP_PROXY"
@@ -33,6 +34,7 @@ PERMISSION_INTERNAL_INVENTORY_SERVERS_READ = "internal.inventory.servers.read"
 PERMISSION_INTERNAL_INVENTORY_TOOLS_READ = "internal.inventory.tools.read"
 PERMISSION_RUNTIME_LOGS_WRITE = "runtime.logs.write"
 PERMISSION_INVENTORY_IMPORT_DISCOVERY = "inventory.import_discovery"
+PERMISSION_EMERGENCY_DENY_CHECK = "emergency_deny.check"
 
 EMPTY_BODY_SHA256 = sha256(b"").hexdigest()
 
@@ -298,7 +300,7 @@ def require_internal_service_permission(required_permission: str):
 def canonical_json_body(payload: dict[str, Any] | None) -> bytes | None:
     if payload is None:
         return None
-    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return canonical_json_bytes(payload)
 
 
 def body_sha256(body: bytes | None) -> str:
@@ -309,7 +311,7 @@ def body_sha256(body: bytes | None) -> str:
     except Exception:
         canonical = body
     else:
-        canonical = json.dumps(parsed, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        canonical = canonical_json_bytes(parsed)
     return sha256(canonical).hexdigest()
 
 

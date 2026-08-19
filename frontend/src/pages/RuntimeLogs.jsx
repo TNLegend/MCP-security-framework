@@ -128,6 +128,7 @@ function RuntimeLogsTable({ logs, selectedLogId, onSelectLog }) {
             <th>Tool</th>
             <th>Decision</th>
             <th>Rule</th>
+            <th>Config Rev</th>
             <th>Executed</th>
             <th>Execution Status</th>
             <th>Severity</th>
@@ -155,6 +156,7 @@ function RuntimeLogsTable({ logs, selectedLogId, onSelectLog }) {
                 <Badge value={log.decision} className={getDecisionBadgeClass(log.decision)} />
               </td>
               <td>{displayValue(log.rule_id)}</td>
+              <td>{displayValue(log.control_plane_revision_number)}</td>
               <td>{formatBoolean(log.executed)}</td>
               <td>
                 <Badge
@@ -200,11 +202,18 @@ function RuntimeLogDetailPanel({ log }) {
             ["rule_id", log.rule_id],
             ["decision_reason", log.decision_reason],
             ["severity", log.severity, "severity"],
+            ["control_plane_revision_id", log.control_plane_revision_id],
+            ["control_plane_revision_number", log.control_plane_revision_number],
+            ["control_plane_content_hash", shorten(log.control_plane_content_hash)],
           ]}
         />
         <MetadataSection
-          title="Execution result"
+          title="Transport and execution"
           items={[
+            ["client_protocol_profile_id", log.client_protocol_profile_id],
+            ["client_protocol_era", log.client_protocol_era],
+            ["upstream_protocol_profile_id", log.upstream_protocol_profile_id],
+            ["upstream_protocol_era", log.upstream_protocol_era],
             ["executed", formatBoolean(log.executed)],
             ["execution_status", log.execution_status, "execution"],
             ["result_summary", log.result_summary],
@@ -372,6 +381,13 @@ function getSeverityBadgeClass(severity) {
 function getTimestamp(value) {
   const timestamp = Date.parse(value || "");
   return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function shorten(value) {
+  if (!value) {
+    return value;
+  }
+  return `${String(value).slice(0, 12)}...${String(value).slice(-8)}`;
 }
 
 export default RuntimeLogs;

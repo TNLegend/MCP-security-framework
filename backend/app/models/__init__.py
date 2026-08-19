@@ -5,6 +5,7 @@ from app.models.control_plane import (
     ControlPlaneSession,
     ControlPlaneState,
     ControlPlaneUser,
+    EmergencyDeny,
 )
 from app.models.identity_assertion_replay import IdentityAssertionReplay
 from app.models.mcp_server import MCPServer
@@ -18,6 +19,8 @@ from app.models.tool_analysis import (
     ToolApprovedBaseline,
     ToolHumanReview,
     ToolObservedVersion,
+    ToolObservationReviewApproval,
+    ToolProtocolObservation,
 )
 from app.models.trusted_agent_session import TrustedAgentSession
 
@@ -35,4 +38,7 @@ __all__ = [
     "ControlPlaneConfigRevision",
     "ControlPlaneState",
     "ControlPlaneAuditEvent",
+    "ToolProtocolObservation",
+    "ToolObservationReviewApproval",
+    "EmergencyDeny",
 ]

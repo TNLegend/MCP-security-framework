@@ -265,7 +265,10 @@ def tamper_jwt_signature(token: str) -> str:
     return ".".join((header, payload, replacement + signature[1:]))
 
 
-now = datetime.now(timezone.utc)
+def epoch_seconds_from_now(offset_seconds: int = 0) -> int:
+    return int((datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)).timestamp())
+
+
 ASSERTION_ERROR_CASES = [
     (
         "test_missing_assertion_is_rejected",
@@ -336,9 +339,9 @@ ASSERTION_ERROR_CASES = [
         lambda self, context: self.manual_assertion(
             context,
             claims_override={
-                "iat": int((now - timedelta(seconds=60)).timestamp()),
-                "nbf": int((now - timedelta(seconds=60)).timestamp()),
-                "exp": int((now - timedelta(seconds=30)).timestamp()),
+                "iat": epoch_seconds_from_now(-60),
+                "nbf": epoch_seconds_from_now(-60),
+                "exp": epoch_seconds_from_now(-30),
             },
         ),
         "identity_assertion_expired",
@@ -347,7 +350,7 @@ ASSERTION_ERROR_CASES = [
         "test_future_nbf_is_rejected",
         lambda self, context: self.manual_assertion(
             context,
-            claims_override={"nbf": int((now + timedelta(seconds=60)).timestamp())},
+            claims_override={"nbf": epoch_seconds_from_now(60)},
         ),
         "identity_assertion_not_yet_valid",
     ),
@@ -355,7 +358,7 @@ ASSERTION_ERROR_CASES = [
         "test_future_iat_is_rejected",
         lambda self, context: self.manual_assertion(
             context,
-            claims_override={"iat": int((now + timedelta(seconds=60)).timestamp())},
+            claims_override={"iat": epoch_seconds_from_now(60)},
         ),
         "identity_assertion_not_yet_valid",
     ),
@@ -364,9 +367,9 @@ ASSERTION_ERROR_CASES = [
         lambda self, context: self.manual_assertion(
             context,
             claims_override={
-                "iat": int(now.timestamp()),
-                "nbf": int(now.timestamp()),
-                "exp": int((now + timedelta(seconds=300)).timestamp()),
+                "iat": epoch_seconds_from_now(),
+                "nbf": epoch_seconds_from_now(),
+                "exp": epoch_seconds_from_now(300),
             },
         ),
         "identity_assertion_ttl_invalid",

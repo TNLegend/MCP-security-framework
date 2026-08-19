@@ -4,25 +4,38 @@ Framework local de securite et de gouvernance pour agents IA utilisant MCP.
 
 ## Objective
 
-The project protects MCP tool usage around this runtime rule:
+The project provides an opt-in security and governance layer for MCP client
+connections:
 
 ```text
-The LLM proposes a structured tool-call JSON.
-The MCP Security Framework decides whether it can run.
+MCP Client -> MCP Security Gateway -> Security Core -> upstream MCP
 ```
 
-The LLM must never execute MCP tools directly. It only proposes a tool call. The MCP Proxy resolves inventory metadata, asks the Policy Engine for a decision, calls the MCP server only after an `ALLOW` decision, and writes runtime logs. If the policy returns `BLOCK`, no MCP `tools/call` request is sent.
+For governed connections, the client is configured with a framework endpoint
+such as `/mcp/{server_id}`. The framework resolves the real upstream endpoint
+from trusted Inventory, applies identity, Tool Analyzer, ToolSecurityContract,
+scope, Emergency Deny, and OPA/Rego controls, and calls the upstream MCP only
+after an `ALLOW` decision. If the decision is `BLOCK`, no upstream MCP
+`tools/call` request is sent.
+
+The included LLM agent is a demo integration: the LLM proposes user-level tool
+intent, and the application builds a governed MCP request. The LLM does not
+execute tools directly and does not choose upstream endpoints, capabilities,
+roles, scopes, adapters, or trusted security facts.
 
 ## Current Status
 
-Phase 2 is complete.
+The current implementation includes the Control Plane foundation, OPA-only
+runtime authorization, Security Core v2, and the governed dual-era MCP Gateway.
 
 Implemented:
 
 - real local MCP Streamable HTTP lab server;
-- MCP discovery/import into the backend inventory;
+- local and remote HTTP/HTTPS MCP discovery/import into the backend inventory;
 - backend MCP inventory with native MCP metadata and framework security metadata;
-- React frontend views for dashboard, inventory, policies, and runtime logs;
+- React Control Center views for dashboard, inventory, analyzer review,
+  configuration revisions, Emergency Deny, runtime calls, audit, and ADMIN user
+  management;
 - MCP Proxy runtime enforcement;
 - Policy Engine decision before execution;
 - runtime logs stored in PostgreSQL;
@@ -30,26 +43,67 @@ Implemented:
 - provider-agnostic LLM agent demo;
 - mock, Gemini, and Groq providers;
 - fallback provider support;
-- safe result summaries instead of full tool output storage.
+- safe result summaries instead of full tool output storage;
+- PostgreSQL-backed Control Plane revisions and immutable published snapshots;
+- Tool Analyzer findings with human approval gates;
+- signed configuration revisions and service-to-service Ed25519 requests;
+- dual-era/multi-revision MCP gateway support for supported Legacy and Modern
+  HTTP MCP profiles;
+- framework-held Bearer authentication for upstream MCP servers through local
+  secret references.
 
 Docker is not used for the local MVP. The project runs directly with Python, Node.js, and PostgreSQL.
 
 ## Architecture Overview
 
 ```text
-User prompt
--> LLM provider selected by configuration
--> structured tool-call proposal JSON
--> Agent validates proposal
--> MCP Proxy
--> Backend inventory lookup
--> Policy Engine decision
--> ALLOW: MCP tools/call
--> BLOCK: no MCP call
--> Runtime logs
+User / LLM / Agent
+        |
+    MCP Client
+        |
+        | framework MCP endpoint
+        v
+MCP Security Gateway
+        |
+    Security Core
+        |
+Inventory-selected upstream connection
+        |
+ +------+------+---------------+
+ |             |               |
+Local MCP   AWS MCP   Third-party MCP
 ```
 
-The forbidden architecture is:
+The framework is deployment-agnostic. Upstream MCP infrastructure does not need
+framework-specific modification: local and remote HTTP MCP servers use the same
+Gateway abstraction, and a third-party MCP can be governed by registering it in
+Inventory and configuring the client to use the framework endpoint. The
+framework does not own arbitrary third-party MCP servers and does not claim that
+unrelated clients cannot contact them directly. Governance applies to the MCP
+connection configured through the framework.
+
+Outbound MCP endpoints are parsed structurally and limited to HTTP/HTTPS. URL
+userinfo, fragments, metadata/link-local/special destinations, and automatic
+redirect following are rejected. DNS answers are checked before each governed
+connection; the standard Python HTTP stack performs its own subsequent DNS
+resolution, so complete DNS-rebinding resistance still requires deployment
+egress controls or a future address-pinning transport. Private, loopback, LAN,
+enterprise, AWS-hosted, and public MCP endpoints remain supported. Local lab
+trust is assigned only to the exact parsed hosts `localhost`, `127.0.0.1`, and
+`::1` over HTTP, never by a hostname prefix.
+
+Optional network isolation, private subnets, AWS Security Groups, or mTLS can
+strengthen deployments where the organization controls the MCP infrastructure,
+but they are hardening measures rather than base requirements.
+
+For an upstream that accepts a static Bearer credential, Inventory stores only
+`auth_mode=BEARER` and a logical `credential_ref`. The token is read locally
+from `.runtime/secrets/upstream/<credential_ref>` by discovery and the Gateway;
+it is not returned by Inventory APIs or supplied by the agent. Generic
+interactive OAuth authorization, PKCE, refresh, and provider-specific flows are
+not implemented in this correction pass.
+
+For the included LLM demo, the forbidden architecture is:
 
 ```text
 LLM provider -> direct MCP tool execution
@@ -90,6 +144,67 @@ The proxy loads the snapshot once at the start of the call and uses that same `r
 
 OPA/Rego remains the runtime policy engine. Python verifies identities, validates and loads trusted administrative facts, prepares policy context, and enforces fail-closed behavior. Rego decides `ALLOW` or `BLOCK`; the proxy enforces the decision and never calls MCP for blocked requests.
 
+## Dual-Era Security Gateway
+
+The proxy terminates an explicit, registry-controlled set of restricted MCP
+profiles. Wire validation uses the pinned official `mcp-types` package, while the
+framework allowlist remains code-owned so a package upgrade cannot silently enable
+a future protocol revision.
+
+| MCP revision | Era | Transport | Status |
+| --- | --- | --- | --- |
+| `2024-11-05` | Legacy | HTTP+SSE | supported |
+| `2025-03-26` | Legacy | Streamable HTTP | supported |
+| `2025-06-18` | Legacy | Streamable HTTP | supported |
+| `2025-11-25` | Legacy | Streamable HTTP | supported |
+| `2026-07-28` | Modern | Streamable HTTP | supported |
+
+The `2024-11-05` path uses the historical HTTP+SSE transport: clients open a
+persistent SSE GET, receive an `endpoint` event, deliver JSON-RPC messages with
+POST to that endpoint, and receive JSON-RPC responses on the open SSE stream as
+`message` events. It does not use `Mcp-Session-Id` as its session primitive.
+Streamable HTTP revisions accept both `application/json` and request-scoped
+`text/event-stream` responses where the negotiated MCP revision permits them.
+Inbound MCP HTTP requests validate any supplied `Origin` against the configured
+`MCP_GATEWAY_ALLOWED_ORIGINS` list using scheme, host, and effective port. Missing
+`Origin` is accepted for non-browser clients; malformed or untrusted origins fail
+with HTTP 403.
+Gateway `GET /mcp/{server_id}` dispatches by selected transport: only
+`2024-11-05` historical HTTP+SSE emits the `endpoint` event. Streamable HTTP
+revisions return HTTP 405 for the optional/removed standalone GET stream in this
+restricted implementation.
+The restricted framework correlates SSE responses by JSON-RPC id, ignores only
+known harmless notifications while waiting for the final response, and fails
+closed for unsupported server-to-client requests, malformed events, wrong ids,
+timeouts, disconnects, oversized events, or duplicate final responses.
+
+`2024-10-07` is recognized only as a historical Legacy-era revision and is not
+enabled in this prototype because it is not present in the current pinned
+`mcp-types` registry. Unknown future revisions fail closed.
+
+Modern exposes `server/discover`, `tools/list`, and `tools/call`; Legacy exposes
+`initialize`, `notifications/initialized`, `tools/list`, and `tools/call`.
+Resources, Prompts, Sampling, Elicitation, MRTR, Tasks, and subscriptions are
+unsupported and fail closed even when a protocol revision defines them.
+
+Client and upstream eras/revisions are independent. All supported revision
+combinations normalize into one Tool Security Framework v2 based on approved
+profile-specific observations, `ToolSecurityContract`, capabilities, resource
+types, adapters, authority-qualified scopes, and OPA. No fallback to another
+upstream era or revision occurs after authorization.
+
+New v2 published revisions are signed with Ed25519 and form a verified predecessor
+chain. The private signing key remains under `.runtime/secrets/`. A v1 revision is
+migrated by creating a new v2 DRAFT; historical content and hashes are not rewritten.
+
+Discovery probes Modern and Legacy support independently. It records one tool
+observation per supported upstream profile/revision and uses a configurable
+periodic rediscovery interval (`MCP_PROTOCOL_REDISCOVERY_INTERVAL_SECONDS`,
+default 900).
+See [THREAT_MODEL.md](THREAT_MODEL.md) and
+[GOVERNED_CONNECTION_CONTRACT.md](GOVERNED_CONNECTION_CONTRACT.md) for the
+governed connection boundary, guarantees, and optional deployment hardening.
+
 The framework has four separate identity boundaries:
 
 ```text
@@ -110,9 +225,9 @@ Sensitive administrative actions are audited through `ControlPlaneAuditEvent`. P
 ```text
 mcp-security-framework/
 |-- backend/      FastAPI API, PostgreSQL models, inventory, policies, decisions, logs
-|-- frontend/     React/Vite UI for dashboard, inventory, policies, runtime logs
+|-- frontend/     React/Vite Control Center UI
 |-- mcp-lab/      Local MCP HTTP lab server and test data
-|-- scripts/      Dependency checks and MCP discovery/import script
+|-- scripts/      Dependency checks, provisioning, launcher, and discovery tools
 |-- proxy/        Runtime enforcement layer
 |-- agent/        Provider-agnostic LLM agent demo
 |-- policies/     Rego runtime policy and administrative YAML data
@@ -132,14 +247,27 @@ FastAPI backend backed by local PostgreSQL. It stores MCP servers, MCP tools, ru
 
 ### `frontend/`
 
-React/Vite frontend for:
+React/Vite Control Center for:
 
 - dashboard;
 - MCP inventory;
-- policies;
-- runtime logs.
+- Tool Analyzer evidence and ADMIN approval/block actions;
+- security configuration revisions;
+- Emergency Deny management;
+- runtime calls;
+- audit events;
+- ADMIN-only user management.
 
-The inventory view separates native MCP metadata from framework security metadata. The runtime logs view shows decisions, matched rules, execution status, and safe summaries.
+The inventory view separates native MCP metadata from framework security
+metadata and shows the governed Gateway endpoint to configure in external MCP
+clients or agents. That URL comes from the authenticated runtime status and is
+not hardcoded in React. VIEWER users can inspect evidence only. ADMIN users can use
+the existing backend APIs for discovery, approval, configuration lifecycle,
+Emergency Deny, and user management.
+
+The Control Center is not a chat application. External MCP clients and agents
+remain the framework consumers; the LLM demo is one integration, not the
+security boundary.
 
 ### `mcp-lab/http_server/`
 
@@ -165,7 +293,12 @@ Lab tools include:
 
 ### `scripts/discover_http_mcp_server.py`
 
-Discovers the local MCP HTTP server by calling `initialize` and `tools/list`, then imports the discovered server and tools into the backend inventory.
+Discovers an MCP HTTP server by probing supported Legacy and Modern profiles,
+then imports the discovered server and tools into the backend inventory through
+the signed `MCP_DISCOVERY` service identity. The backend also exposes an
+ADMIN-only discovery route used by the Control Center; both paths reuse the same
+discovery service and outbound endpoint policy. Use `--auth-mode BEARER
+--credential-ref <logical-ref>` for a framework-held static Bearer credential.
 
 ### `proxy/`
 
@@ -211,6 +344,11 @@ BACKEND_PORT=8000
 
 FRONTEND_HOST=127.0.0.1
 FRONTEND_PORT=5173
+VITE_API_BASE_URL=http://127.0.0.1:8000/api/v1
+MCP_SECURITY_API_BASE_URL=http://127.0.0.1:8000/api/v1
+
+MCP_GATEWAY_HOST=127.0.0.1
+MCP_GATEWAY_PORT=9001
 
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
@@ -230,8 +368,6 @@ GROQ_MODEL=openai/gpt-oss-20b
 LLM_TEMPERATURE=0
 LLM_TIMEOUT_SECONDS=20
 
-DEFAULT_POLICY_MODE=block
-ENABLE_RUNTIME_LOGGING=true
 ```
 
 Important:
@@ -239,43 +375,87 @@ Important:
 - `.env` must never be committed.
 - API keys must never be printed or exposed.
 - `.env.example` must contain placeholders only.
+- Local Backend, Gateway, and Frontend host/port values are configured from the
+  repository-root `.env`. Vite also reads this root `.env`, so no
+  `frontend/.env` is required; only `VITE_*` variables are exposed to browser
+  code.
 
 ## Local Setup
 
-Required local dependencies:
+The supported stage-MVP bootstrap target is a clean Windows installation. It
+requires:
 
 - Python 3.11+
-- pip
 - Node.js 20+
 - npm
 - PostgreSQL 15+
 - Git
 
-Check local tools:
+Create the local configuration from the tracked template and edit its external
+PostgreSQL value(s). If `.env` is absent, setup creates it from the template and
+stops with the names of values that still require operator input:
 
 ```powershell
-python scripts/check_dependencies.py
+Copy-Item .env.example .env
+# Edit POSTGRES_* for the target PostgreSQL installation.
+python scripts/setup_local_environment.py
 ```
 
-Install backend dependencies from `backend/`:
+The idempotent bootstrap performs the complete local provisioning flow:
+
+- creates `backend/.venv`, installs `backend/requirements.txt`, and runs
+  `npm ci` from the existing frontend lockfile;
+- creates `.runtime` and provisions the pinned local OPA `1.18.2` binary;
+- provisions the local Analyzer model snapshots
+  `MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli@0a71e92a985b6e1ad1828cf67ce9c459639c1dca`
+  and `intfloat/multilingual-e5-small@614241f622f53c4eeff9890bdc4f31cfecc418b3`;
+- generates installation-specific local IDP, Proxy assertion, MCP Proxy,
+  Discovery, and revision-signing material under `.runtime/secrets`;
+- generates the trusted-session pepper in ignored `.env` when it still has the
+  template placeholder;
+- checks PostgreSQL, runs the existing idempotent schema initialization, and
+  interactively creates the first ADMIN when no active ADMIN exists;
+- validates the installation without printing credentials or key material.
+
+Existing valid private keys and an existing active ADMIN are retained. Invalid
+private-key material fails setup instead of being silently overwritten. In a
+non-interactive environment, setup reports the exact command needed to create
+the initial ADMIN.
+
+The operator or provider remains responsible for PostgreSQL credentials,
+optional Gemini/Groq demo keys, third-party MCP Bearer credentials, and future
+cloud credentials. Third-party MCP credentials are stored through governed
+onboarding; the framework does not fabricate them. Optional LLM demo keys are
+not required by the core framework.
+
+After setup, start the Backend, local OPA, and Gateway supervisor:
 
 ```powershell
-cd backend
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-cd ..
+.\backend\.venv\Scripts\python.exe scripts\start_framework.py
 ```
 
-Install frontend dependencies from `frontend/`:
+Then start the already-provisioned frontend with `npm.cmd run dev` from
+`frontend/`. The dev server reads `FRONTEND_HOST`, `FRONTEND_PORT`, and
+`VITE_API_BASE_URL` from the repository-root `.env`. No separate `frontend/.env`,
+key generation, OPA/Gateway startup, model download, or schema command is
+required in the normal flow. Project-owned relative paths are resolved from the
+repository root, independently of the current directory; intentionally absolute
+external paths remain supported.
+
+Do not share a raw working-directory archive: it can include ignored `.env`,
+`.runtime`, virtual environments, `node_modules`, caches, and private keys.
+Create source distributions from tracked content instead:
 
 ```powershell
-cd frontend
-npm.cmd install
-cd ..
+git archive --format=zip --output=mcp-security-framework.zip HEAD
 ```
+
+Never copy `.runtime`, `.env`, or generated private keys from another
+installation. Each installation provisions its own identities.
 
 ## Run Order
 
-Initialize or sync database tables:
+For manual developer mode, initialize or sync database tables explicitly:
 
 ```powershell
 cd backend
@@ -289,18 +469,48 @@ Start backend:
 .\backend\.venv\Scripts\uvicorn.exe app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
+Easy local mode can use the framework launcher instead. It checks PostgreSQL,
+starts or reuses the project-local OPA process from `.runtime/tools/opa/opa.exe`,
+starts or reuses the configured local identity provider, Backend, and Gateway.
+An external JWKS provider is checked but never launched by the framework. It only uses
+fixed framework commands with `shell=False` and only terminates child processes
+it started. If PostgreSQL is unavailable and
+`LOCAL_RUNTIME_MANAGED_POSTGRES_COMMAND_JSON` contains an explicitly trusted
+local argv array, the launcher starts it and waits for readiness. Without that
+configuration startup fails clearly. A PostgreSQL process started this way is
+left running on framework shutdown because it is stateful infrastructure.
+Backend, OPA, and Gateway children are monitored; an unexpected exit stops the
+remaining framework-owned children and makes the launcher exit non-zero:
+
+```powershell
+.\backend\.venv\Scripts\python.exe scripts\start_framework.py
+```
+
+Manual mode remains available. Start OPA, Backend, and Gateway in separate
+terminals; the launcher reuses healthy externally started services and never
+terminates them:
+
+```powershell
+.\.runtime\tools\opa\opa.exe run --server --addr 127.0.0.1:8181 policies\opa
+.\backend\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+.\backend\.venv\Scripts\python.exe -m uvicorn proxy.gateway_app:app --host 127.0.0.1 --port 9001
+```
+
 Start MCP lab server:
 
 ```powershell
 .\backend\.venv\Scripts\uvicorn.exe server:app --app-dir mcp-lab/http_server --host 127.0.0.1 --port 9000
 ```
 
-Discover and import the MCP lab server:
+Discover and import the MCP lab server from the CLI, or use the ADMIN MCP
+Inventory page in the Control Center:
 
 ```powershell
-.\backend\.venv\Scripts\python.exe scripts\provision_service_identities.py
 .\backend\.venv\Scripts\python.exe scripts\discover_http_mcp_server.py
 ```
+
+The focused provisioning scripts remain available for manual debugging, but
+normal installation invokes them through `setup_local_environment.py`.
 
 Run proxy demo:
 
@@ -314,6 +524,9 @@ Run frontend:
 cd frontend
 npm.cmd run dev
 ```
+
+The frontend host and port come from the repository-root `.env`; the displayed
+URL below is the default configuration.
 
 On systems where PowerShell does not block npm scripts, this also works:
 
@@ -403,18 +616,24 @@ The runtime path enforces these rules:
 - the LLM only proposes a JSON tool call;
 - the agent validates the proposal and rejects invalid structures;
 - the proxy resolves backend inventory metadata;
-- OPA evaluates the call before execution;
-- `ALLOW`, `WARN`, and `LOG_ONLY` may execute;
-- `BLOCK` and `ASK_APPROVAL` do not execute in the current runtime;
+- OPA/Rego evaluates the call before execution;
+- only validated `ALLOW` decisions with supported obligations may execute;
+- `DENY`, `DEFER`, invalid decisions, unavailable OPA, missing trusted facts,
+  unapproved tools, and blocked analyzer states fail closed before MCP;
 - blocked calls still create runtime logs;
 - logs keep summaries, not full sensitive outputs.
 
 ## Current Limitations
 
-- MCP lab server is local and controlled.
+- Governance applies to MCP connections configured through the framework
+  endpoint. Direct client reconfiguration or unrelated clients directly
+  accessing a third-party MCP are outside the base framework boundary.
+- Interactive upstream OAuth is not implemented; the current generic upstream
+  authentication mode is a framework-held static Bearer credential reference.
+- DNS answers are screened for special destinations before outbound requests,
+  but transport-level DNS pinning is not yet implemented.
 - Runtime policy depends on OPA availability and fails closed when OPA is unavailable.
-- No human approval workflow yet.
-- No scanner or DevSecOps analysis yet.
+- Scanner and DevSecOps analysis are not a complete production pipeline yet.
 - No AWS integration yet.
 - No full audit report generation yet.
 - Control Plane authentication is intentionally minimal and local-first: ADMIN/VIEWER, HttpOnly sessions, CSRF protection, and audit.
@@ -423,10 +642,10 @@ The runtime path enforces these rules:
 
 Planned work:
 
-- MCP security scanner;
+- MCP security scanner expansion;
 - policy enrichment;
-- human approval workflow;
-- DevSecOps scanning;
+- Control Plane approval UX hardening;
+- DevSecOps scanning integration;
 - audit and reporting;
 - AWS/cloud integration later;
 - production hardening for authentication, authorization, and deployment.

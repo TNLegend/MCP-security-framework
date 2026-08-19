@@ -2,6 +2,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from common.project_paths import resolve_project_path
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -70,13 +72,14 @@ class ProxyAssertionConfig:
         return cls(
             issuer=os.getenv("PROXY_ASSERTION_ISSUER", "mcp-security-proxy"),
             audience=os.getenv("PROXY_ASSERTION_AUDIENCE", "mcp-security-backend"),
-            private_key_path=Path(
+            private_key_path=resolve_project_path(
                 os.getenv(
                     "PROXY_ASSERTION_PRIVATE_KEY_PATH",
-                    "<configure-outside-repository>",
-                )
+                    ".runtime/secrets/proxy-assertion-private.pem",
+                ),
+                project_root=REPO_ROOT,
             ),
-            key_id=os.getenv("PROXY_ASSERTION_KEY_ID", "<configure>"),
+            key_id=os.getenv("PROXY_ASSERTION_KEY_ID", "proxy-assertion-local"),
             ttl_seconds=int(
                 os.getenv(
                     "PROXY_ASSERTION_TTL_SECONDS",
@@ -93,14 +96,15 @@ class IdentityBindingConfig:
     @classmethod
     def from_env(cls) -> "IdentityBindingConfig":
         return cls(
-            path=Path(
+            path=resolve_project_path(
                 os.getenv(
                     "AGENT_IDENTITY_BINDINGS_PATH",
                     os.getenv(
                         "IDENTITY_BINDINGS_PATH",
                         str(REPO_ROOT / "policies" / "identity_bindings.yaml"),
                     ),
-                )
+                ),
+                project_root=REPO_ROOT,
             )
         )
 
@@ -112,11 +116,12 @@ class ToolSecurityProfilesConfig:
     @classmethod
     def from_env(cls) -> "ToolSecurityProfilesConfig":
         return cls(
-            path=Path(
+            path=resolve_project_path(
                 os.getenv(
                     "TOOL_SECURITY_PROFILES_PATH",
                     str(REPO_ROOT / "policies" / "tool_security_profiles.yaml"),
-                )
+                ),
+                project_root=REPO_ROOT,
             )
         )
 
@@ -133,11 +138,12 @@ class ResourceScopesConfig:
     @classmethod
     def from_env(cls) -> "ResourceScopesConfig":
         return cls(
-            path=Path(
+            path=resolve_project_path(
                 os.getenv(
                     "RESOURCE_SCOPES_PATH",
                     str(REPO_ROOT / "policies" / "resource_scopes.yaml"),
-                )
+                ),
+                project_root=REPO_ROOT,
             ),
             max_path_bytes=int(os.getenv("RESOURCE_MAX_PATH_BYTES", "4096")),
             max_path_segments=int(os.getenv("RESOURCE_MAX_PATH_SEGMENTS", "256")),

@@ -3,84 +3,499 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
+import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = REPO_ROOT / "backend"
+FRONTEND_DIR = REPO_ROOT / "frontend"
 VENV_DIR = BACKEND_DIR / ".venv"
-PYTHON_EXE = VENV_DIR / "Scripts" / "python.exe"
+ENV_EXAMPLE = REPO_ROOT / ".env.example"
+ENV_FILE = REPO_ROOT / ".env"
 
-sys.path.insert(0, str(BACKEND_DIR))
+for import_path in (REPO_ROOT, BACKEND_DIR):
+    if str(import_path) not in sys.path:
+        sys.path.insert(0, str(import_path))
 
 from app.core.runtime_paths import (  # noqa: E402
+    MODEL_CACHE_DIR,
     OPA_EXE,
+    RUNTIME_SECRETS_DIR,
     configure_runtime_environment,
+    ensure_runtime_directories,
+    runtime_directories,
     runtime_environment,
 )
 
 
-def _run(command: list[str], *, env: dict[str, str]) -> None:
-    subprocess.run(command, cwd=REPO_ROOT, env=env, check=True)
+SEMANTIC_MODEL_REPOSITORY = "MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli"
+EMBEDDING_MODEL_REPOSITORY = "intfloat/multilingual-e5-small"
+PLACEHOLDER_VALUES = {"", "change_me", "<configure>", "<required>"}
+REQUIRED_RUNTIME_CALL_COLUMNS = {
+    "control_plane_revision_id",
+    "control_plane_revision_number",
+    "control_plane_content_hash",
+    "client_protocol_profile_id",
+    "client_protocol_era",
+    "client_protocol_version",
+    "client_transport_kind",
+    "upstream_protocol_profile_id",
+    "upstream_protocol_era",
+    "upstream_protocol_version",
+    "upstream_transport_kind",
+}
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Prepare the project-local runtime, Python venv, models, and OPA."
-    )
-    parser.add_argument("--skip-venv", action="store_true")
-    parser.add_argument("--skip-python-deps", action="store_true")
-    parser.add_argument("--skip-models", action="store_true")
-    parser.add_argument("--skip-opa", action="store_true")
-    parser.add_argument("--skip-service-identities", action="store_true")
-    args = parser.parse_args()
+@dataclass(frozen=True)
+class SetupOptions:
+    post_deps: bool = False
+    non_interactive: bool = False
+    skip_venv: bool = False
+    skip_python_deps: bool = False
+    skip_frontend: bool = False
+    skip_models: bool = False
+    skip_opa: bool = False
+    skip_service_identities: bool = False
+    skip_local_idp: bool = False
+    skip_database: bool = False
+    skip_admin: bool = False
+    skip_self_check: bool = False
 
-    configured = configure_runtime_environment()
-    env = {**dict(os.environ), **runtime_environment()}
 
-    if not args.skip_venv and not PYTHON_EXE.exists():
-        _run([sys.executable, "-m", "venv", str(VENV_DIR)], env=env)
+def venv_python(venv_dir: Path = VENV_DIR) -> Path:
+    if os.name == "nt":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
 
-    python = str(PYTHON_EXE if PYTHON_EXE.exists() else Path(sys.executable))
 
-    if not args.skip_python_deps:
+def ensure_environment_file(
+    *,
+    env_file: Path = ENV_FILE,
+    env_example: Path = ENV_EXAMPLE,
+) -> bool:
+    if env_file.exists():
+        return False
+    if not env_example.is_file():
+        raise RuntimeError(f"Environment template is missing: {env_example}")
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(env_example, env_file)
+    return True
+
+
+def ensure_trusted_session_pepper(*, env_file: Path = ENV_FILE) -> bool:
+    lines = env_file.read_text(encoding="utf-8").splitlines()
+    generated = secrets.token_urlsafe(48)
+    changed = False
+    found = False
+    updated: list[str] = []
+    for line in lines:
+        if line.lstrip().startswith("TRUSTED_SESSION_TOKEN_PEPPER="):
+            found = True
+            _, current = line.split("=", 1)
+            if _is_placeholder(current):
+                updated.append(f"TRUSTED_SESSION_TOKEN_PEPPER={generated}")
+                changed = True
+            else:
+                updated.append(line)
+            continue
+        updated.append(line)
+    if not found:
+        updated.append(f"TRUSTED_SESSION_TOKEN_PEPPER={generated}")
+        changed = True
+    if changed:
+        env_file.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    return changed
+
+
+def missing_external_configuration(*, env_file: Path = ENV_FILE) -> list[str]:
+    file_values = _read_env_file(env_file)
+    missing = []
+    for name in ("POSTGRES_PASSWORD",):
+        value = os.environ.get(name, file_values.get(name, ""))
+        if _is_placeholder(value):
+            missing.append(name)
+    return missing
+
+
+def prepare_source_only_environment(
+    *,
+    env_file: Path = ENV_FILE,
+    env_example: Path = ENV_EXAMPLE,
+    project_root: Path = REPO_ROOT,
+) -> dict[str, bool]:
+    created = ensure_environment_file(env_file=env_file, env_example=env_example)
+    pepper_generated = ensure_trusted_session_pepper(env_file=env_file)
+    if project_root.resolve(strict=False) == REPO_ROOT.resolve(strict=False):
+        configure_runtime_environment()
+    else:
+        ensure_runtime_directories(project_root)
+    return {
+        "env_created": created,
+        "trusted_session_pepper_generated": pepper_generated,
+    }
+
+
+def run_post_dependency_setup(
+    options: SetupOptions,
+    *,
+    python: Path,
+) -> list[str]:
+    from common.project_environment import load_project_environment
+
+    load_project_environment()
+    configure_runtime_environment()
+    env = {**os.environ, **runtime_environment()}
+    completed: list[str] = []
+
+    if not options.skip_frontend:
+        npm = _required_npm_command()
+        _run([npm, "ci"], env=env, cwd=FRONTEND_DIR)
+        completed.append("frontend_dependencies")
+
+    if not options.skip_opa:
+        _run([python, REPO_ROOT / "scripts" / "download_opa.py"], env=env)
+        completed.append("opa")
+
+    if not options.skip_models:
+        _run(
+            [python, REPO_ROOT / "scripts" / "download_tool_analyzer_models.py"],
+            env=env,
+        )
+        completed.append("analyzer_models")
+
+    if not options.skip_service_identities:
+        _run(
+            [python, REPO_ROOT / "scripts" / "provision_service_identities.py"],
+            env=env,
+        )
+        completed.append("service_identities")
+
+    if not options.skip_local_idp:
         _run(
             [
                 python,
-                "-m",
-                "pip",
-                "install",
-                "--cache-dir",
-                configured["PIP_CACHE_DIR"],
-                "-r",
-                str(BACKEND_DIR / "requirements.txt"),
+                REPO_ROOT / "scripts" / "local_identity_provider.py",
+                "ensure-material",
             ],
             env=env,
         )
+        completed.append("local_identity_provider")
 
-    if not args.skip_service_identities:
-        _run([python, str(REPO_ROOT / "scripts" / "provision_service_identities.py")], env=env)
+    validate_internal_artifacts()
 
-    if not args.skip_models:
-        _run([python, str(REPO_ROOT / "scripts" / "download_tool_analyzer_models.py")], env=env)
+    if not options.skip_database:
+        initialize_database_schema()
+        completed.append("database_schema")
 
-    if not args.skip_opa:
-        _run([python, str(REPO_ROOT / "scripts" / "download_opa.py")], env=env)
+    if not options.skip_admin:
+        bootstrap_initial_admin(interactive=not options.non_interactive)
+        completed.append("initial_admin")
 
+    if not options.skip_self_check:
+        checks = installation_self_check(check_database=not options.skip_database)
+        _print_checks(checks)
+        failed = [check.name for check in checks if not check.ok]
+        if failed:
+            raise RuntimeError("Installation self-check failed: " + ", ".join(failed))
+        completed.append("self_check")
+    return completed
+
+
+def initialize_database_schema() -> None:
+    from app.db.init_db import init_db
+    from app.services.local_runtime_manager import LocalRuntimeManager
+
+    manager = LocalRuntimeManager(python_executable=venv_python())
+    try:
+        database = manager.ensure_database(auto_start=True)
+        if database.status != "healthy":
+            raise RuntimeError(
+                "PostgreSQL is unavailable. Configure POSTGRES_* or the explicitly "
+                "trusted LOCAL_RUNTIME_MANAGED_POSTGRES_COMMAND_JSON launcher."
+            )
+        init_db()
+    finally:
+        manager.shutdown()
+
+
+def bootstrap_initial_admin(*, interactive: bool) -> None:
+    from scripts.create_control_plane_user import (
+        BootstrapAdminRequired,
+        ensure_initial_admin,
+    )
+
+    try:
+        ensure_initial_admin(interactive=interactive)
+    except BootstrapAdminRequired as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+@dataclass(frozen=True)
+class InstallationCheck:
+    name: str
+    ok: bool
+    detail: str | None = None
+
+
+def installation_self_check(*, check_database: bool = True) -> list[InstallationCheck]:
+    checks = [
+        InstallationCheck("Environment", ENV_FILE.is_file()),
+        InstallationCheck("Python venv", venv_python().is_file()),
+        InstallationCheck("Frontend dependencies", (FRONTEND_DIR / "node_modules").is_dir()),
+        InstallationCheck("OPA", OPA_EXE.is_file()),
+        InstallationCheck("Analyzer models", _analyzer_models_available()),
+        InstallationCheck("Runtime directories", all(path.is_dir() for path in runtime_directories())),
+    ]
+    artifact_error = None
+    try:
+        validate_internal_artifacts()
+        artifacts_ok = True
+    except RuntimeError as exc:
+        artifacts_ok = False
+        artifact_error = str(exc)
+    checks.append(InstallationCheck("Internal identities", artifacts_ok, artifact_error))
+
+    if check_database:
+        from sqlalchemy import func, inspect, select, text
+
+        from app.db.database import SessionLocal, engine
+        from app.models.control_plane import ControlPlaneUser
+        from app.services.control_plane_auth import ROLE_ADMIN
+
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+            database_ok = True
+        except Exception:
+            database_ok = False
+        checks.append(
+            InstallationCheck(
+                "PostgreSQL",
+                database_ok,
+                None if database_ok else "unavailable",
+            )
+        )
+
+        schema_ok = False
+        admin_ok = False
+        if database_ok:
+            try:
+                inspector = inspect(engine)
+                tables = set(inspector.get_table_names())
+                schema_ok = {"control_plane_users", "mcp_servers", "mcp_tools"}.issubset(
+                    tables
+                ) and _runtime_calls_schema_ok(inspector)
+            except Exception:
+                schema_ok = False
+            if schema_ok:
+                try:
+                    with SessionLocal() as db:
+                        admin_count = int(
+                            db.scalar(
+                                select(func.count()).select_from(ControlPlaneUser).where(
+                                    ControlPlaneUser.role == ROLE_ADMIN,
+                                    ControlPlaneUser.enabled.is_(True),
+                                )
+                            )
+                            or 0
+                        )
+                    admin_ok = admin_count >= 1
+                except Exception:
+                    admin_ok = False
+        checks.extend(
+            [
+                InstallationCheck("DB schema", schema_ok),
+                InstallationCheck("Initial ADMIN", admin_ok),
+            ]
+        )
+    return checks
+
+
+def _runtime_calls_schema_ok(inspector) -> bool:  # noqa: ANN001
+    if "runtime_calls" not in set(inspector.get_table_names()):
+        return False
+    columns = {column["name"] for column in inspector.get_columns("runtime_calls")}
+    return REQUIRED_RUNTIME_CALL_COLUMNS.issubset(columns)
+
+
+def validate_internal_artifacts(*, secret_dir: Path = RUNTIME_SECRETS_DIR) -> None:
+    required = (
+        "mcp-proxy-service-ed25519.pem",
+        "mcp-discovery-service-ed25519.pem",
+        "internal-service-public-keys.json",
+        "control-plane-revision-ed25519.pem",
+        "control-plane-revision-ed25519.pub.pem",
+        "proxy-assertion-private.pem",
+        "proxy-assertion-public-jwks.json",
+        "local-idp-private.pem",
+        "local-idp-public-jwks.json",
+    )
+    missing = [name for name in required if not (secret_dir / name).is_file()]
+    if missing:
+        raise RuntimeError("Missing internal runtime artifacts: " + ", ".join(missing))
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    options = _parse_options(argv)
+    source_state = prepare_source_only_environment()
+    missing = missing_external_configuration()
+    if missing:
+        print(
+            "Configuration required before setup can continue: " + ", ".join(missing),
+            file=sys.stderr,
+        )
+        if source_state["env_created"]:
+            print("A local .env was created from .env.example.", file=sys.stderr)
+        return 2
+
+    python = venv_python()
+    env = {**os.environ, **runtime_environment()}
+    if not options.post_deps:
+        if not options.skip_venv and not python.exists():
+            _run([Path(sys.executable), "-m", "venv", VENV_DIR], env=env)
+        selected_python = python if python.exists() else Path(sys.executable)
+        if not options.skip_python_deps:
+            _run(
+                [
+                    selected_python,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--cache-dir",
+                    env["PIP_CACHE_DIR"],
+                    "-r",
+                    BACKEND_DIR / "requirements.txt",
+                ],
+                env=env,
+            )
+        if selected_python.resolve() != Path(sys.executable).resolve():
+            _run(
+                [
+                    selected_python,
+                    Path(__file__).resolve(),
+                    "--post-deps",
+                    *_forwarded_option_flags(options),
+                ],
+                env=env,
+            )
+            return 0
+        python = selected_python
+
+    completed = run_post_dependency_setup(options, python=python)
     print(
         json.dumps(
             {
-                "runtime_env": configured,
-                "python": python,
+                "ready": True,
+                "completed": completed,
+                "env_created": source_state["env_created"],
+                "trusted_session_pepper_generated": source_state[
+                    "trusted_session_pepper_generated"
+                ],
+                "python": str(python),
                 "opa": str(OPA_EXE),
-                "env_file_modified": False,
             },
             indent=2,
         )
     )
     return 0
+
+
+def _parse_options(argv: Sequence[str] | None) -> SetupOptions:
+    parser = argparse.ArgumentParser(
+        description="Provision a complete project-local MCP Security Framework installation."
+    )
+    parser.add_argument("--post-deps", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--non-interactive", action="store_true")
+    for name in (
+        "venv",
+        "python-deps",
+        "frontend",
+        "models",
+        "opa",
+        "service-identities",
+        "local-idp",
+        "database",
+        "admin",
+        "self-check",
+    ):
+        parser.add_argument(f"--skip-{name}", action="store_true")
+    return SetupOptions(**vars(parser.parse_args(argv)))
+
+
+def _forwarded_option_flags(options: SetupOptions) -> list[str]:
+    flags = []
+    for field_name, value in vars(options).items():
+        if field_name == "post_deps" or not value:
+            continue
+        flags.append("--" + field_name.replace("_", "-"))
+    return flags
+
+
+def _run(
+    command: Sequence[str | Path],
+    *,
+    env: dict[str, str],
+    cwd: Path = REPO_ROOT,
+) -> None:
+    subprocess.run(
+        [str(part) for part in command],
+        cwd=cwd,
+        env=env,
+        check=True,
+        shell=False,
+    )
+
+
+def _required_npm_command() -> str:
+    command = "npm.cmd" if os.name == "nt" else "npm"
+    located = shutil.which(command)
+    if located is None:
+        raise RuntimeError("Node.js/npm is required before frontend provisioning.")
+    return located
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.is_file():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        name, value = stripped.split("=", 1)
+        values[name.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _is_placeholder(value: str) -> bool:
+    stripped = value.strip()
+    return stripped in PLACEHOLDER_VALUES or (
+        stripped.startswith("<") and stripped.endswith(">")
+    )
+
+
+def _analyzer_models_available() -> bool:
+    for repository in (SEMANTIC_MODEL_REPOSITORY, EMBEDDING_MODEL_REPOSITORY):
+        model_dir = MODEL_CACHE_DIR / ("models--" + repository.replace("/", "--"))
+        snapshots = model_dir / "snapshots"
+        if not snapshots.is_dir() or not any(path.is_dir() for path in snapshots.iterdir()):
+            return False
+    return True
+
+
+def _print_checks(checks: list[InstallationCheck]) -> None:
+    for check in checks:
+        status = "OK" if check.ok else "FAILED"
+        suffix = f" ({check.detail})" if check.detail else ""
+        print(f"{check.name:<24} {status}{suffix}")
+    if all(check.ok for check in checks):
+        print("Installation ready.")
 
 
 if __name__ == "__main__":

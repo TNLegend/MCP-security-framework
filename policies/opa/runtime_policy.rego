@@ -141,6 +141,27 @@ required_capability := value if {
 	is_string(value)
 }
 
+default request_operation := "unknown"
+
+request_operation := value if {
+	value := object.get(request_object, "operation", "unknown")
+	is_string(value)
+}
+
+default resource_adapter := "unknown"
+
+resource_adapter := value if {
+	value := object.get(request_object, "resource_adapter", "unknown")
+	is_string(value)
+}
+
+default resource_type := "unknown"
+
+resource_type := value if {
+	value := object.get(request_object, "resource_type", "unknown")
+	is_string(value)
+}
+
 default resource_scope := "unknown"
 
 resource_scope := value if {
@@ -252,9 +273,330 @@ default decision := {
 	"rule_id": "log_normal_runtime_call",
 }
 
+security_model_v2 if {
+	object.get(request_object, "security_model_version", "1") == "2"
+}
+
+decision := generic_v2_allow_decision if {
+	security_model_v2
+	generic_v2_allow
+}
+
+decision := generic_v2_block_decision if {
+	security_model_v2
+	not generic_v2_allow
+}
+
 decision := candidate.decision if {
+	not security_model_v2
 	some candidate in rule_candidates
 	candidate.precedence == winning_precedence
+}
+
+generic_v2_allow if {
+	identity_status == "verified"
+	session_status == "active"
+	authorization_status == "resolved"
+	not is_unknown_or_blocked_server
+	arguments_valid
+	analysis_status == "APPROVED"
+	not deterministic_critical_finding
+	review_status == "APPROVED"
+	v2_snapshot_binding_valid
+	v2_approval_valid
+	v2_normalized_request_valid
+	v2_effect_sets_match
+	every effect in v2_contract_effects {
+		v2_effect_authorized(effect)
+	}
+}
+
+default v2_contract := {}
+
+v2_contract := value if {
+	value := object.get(request_object, "tool_security_contract", {})
+	is_object(value)
+}
+
+default v2_contract_effects := []
+
+v2_contract_effects := value if {
+	value := object.get(v2_contract, "effects", [])
+	is_array(value)
+}
+
+default v2_facts := {}
+
+v2_facts := value if {
+	value := object.get(request_object, "normalized_facts", {})
+	is_object(value)
+}
+
+default v2_fact_effects := []
+
+v2_fact_effects := value if {
+	value := object.get(v2_facts, "effects", [])
+	is_array(value)
+}
+
+default v2_approval := {}
+
+v2_approval := value if {
+	value := object.get(request_object, "tool_observation_approval", {})
+	is_object(value)
+}
+
+default v2_scopes := []
+
+v2_scopes := value if {
+	value := object.get(request_object, "authority_resource_scopes", [])
+	is_array(value)
+}
+
+default v2_capability_catalog := []
+
+v2_capability_catalog := value if {
+	value := object.get(request_object, "capability_catalog", [])
+	is_array(value)
+}
+
+default runtime_object := {}
+
+runtime_object := value if {
+	value := object.get(input_object, "runtime", {})
+	is_object(value)
+}
+
+v2_snapshot_binding_valid if {
+	revision_id := object.get(runtime_object, "control_plane_revision_id", "")
+	revision_hash := object.get(runtime_object, "control_plane_content_hash", "")
+	is_string(revision_id)
+	revision_id != ""
+	revision_id != "unknown"
+	is_string(revision_hash)
+	regex.match("^[0-9a-f]{64}$", revision_hash)
+	object.get(v2_contract, "contract_version", "") == "2"
+	object.get(v2_contract, "server_ref", "") == object.get(server_object, "server_ref", "")
+	object.get(v2_contract, "tool_name", "") == tool_name
+	count(v2_contract_effects) > 0
+}
+
+v2_approval_valid if {
+	object.get(v2_approval, "server_ref", "") == object.get(server_object, "server_ref", "")
+	object.get(v2_approval, "upstream_protocol_profile_id", "") == object.get(runtime_object, "upstream_protocol_profile_id", "")
+	object.get(v2_approval, "tool_fingerprint", "") == object.get(tool_object, "current_fingerprint", "")
+	object.get(v2_approval, "contract_hash", "") == object.get(request_object, "contract_hash", "")
+	object.get(v2_approval, "revision_id", "") == object.get(runtime_object, "control_plane_revision_id", "")
+	regex.match("^[0-9a-f]{64}$", object.get(v2_approval, "evidence_bundle_hash", ""))
+}
+
+v2_normalized_request_valid if {
+	object.get(v2_facts, "facts_schema_version", "") == "1"
+	count(object.get(v2_facts, "errors", ["missing"])) == 0
+	fact_request := object.get(v2_facts, "request", {})
+	is_object(fact_request)
+	object.get(fact_request, "server_ref", "") == object.get(server_object, "server_ref", "")
+	object.get(fact_request, "tool_name", "") == tool_name
+	object.get(fact_request, "canonical_args_hash", "") == object.get(request_object, "canonical_arguments_hash", "")
+	object.get(fact_request, "client_protocol_profile_id", "") == object.get(runtime_object, "client_protocol_profile_id", "")
+	object.get(fact_request, "upstream_protocol_profile_id", "") == object.get(runtime_object, "upstream_protocol_profile_id", "")
+}
+
+v2_effect_sets_match if {
+	count(v2_contract_effects) > 0
+	count(v2_contract_effects) == count(v2_fact_effects)
+	contract_ids := {object.get(effect, "effect_id", "") | some effect in v2_contract_effects}
+	fact_ids := {object.get(effect, "effect_id", "") | some effect in v2_fact_effects}
+	count(contract_ids) == count(v2_contract_effects)
+	count(fact_ids) == count(v2_fact_effects)
+	contract_ids == fact_ids
+}
+
+v2_effect_authorized(effect) if {
+	is_object(effect)
+	effect_id := object.get(effect, "effect_id", "")
+	capability_id := object.get(effect, "capability", "")
+	effect_id != ""
+	capability := v2_catalog_capability(capability_id)
+	object.get(capability, "lifecycle", "") == "ACTIVE"
+	fact := v2_fact_for_effect(effect_id)
+	object.get(fact, "capability_id", "") == capability_id
+	object.get(fact, "effective_reference_precision", "OPAQUE") == "EXPLICIT"
+	object.get(fact, "requires_resource", null) == object.get(capability, "requires_resource", null)
+	v2_subject_has_capability(capability_id)
+	v2_cardinality_valid(effect, fact)
+	v2_resource_semantics_valid(effect, fact, capability)
+}
+
+v2_catalog_capability(capability_id) := capability if {
+	matches := [item |
+		some item in v2_capability_catalog
+		is_object(item)
+		object.get(item, "id", "") == capability_id
+	]
+	count(matches) == 1
+	capability := matches[0]
+}
+
+v2_fact_for_effect(effect_id) := fact if {
+	matches := [item |
+		some item in v2_fact_effects
+		is_object(item)
+		object.get(item, "effect_id", "") == effect_id
+	]
+	count(matches) == 1
+	fact := matches[0]
+}
+
+v2_subject_has_capability(capability_id) if {
+	some grant in subject_grants
+	grant.capability == capability_id
+}
+
+v2_cardinality_valid(effect, fact) if {
+	maximum := object.get(effect, "max_resource_cardinality", null)
+	maximum == null
+	count(object.get(fact, "bindings", [])) >= 0
+}
+
+v2_cardinality_valid(effect, fact) if {
+	maximum := object.get(effect, "max_resource_cardinality", null)
+	is_number(maximum)
+	maximum >= 1
+	total := sum([object.get(binding, "occurrence_count", 0) |
+		some binding in object.get(fact, "bindings", [])
+		is_object(binding)
+	])
+	total <= maximum
+}
+
+v2_resource_semantics_valid(effect, fact, capability) if {
+	object.get(capability, "requires_resource", true) == false
+	count(object.get(effect, "resource_bindings", [])) == 0
+	count(object.get(fact, "bindings", [])) == 0
+}
+
+v2_resource_semantics_valid(effect, fact, capability) if {
+	object.get(capability, "requires_resource", false) == true
+	expected := object.get(effect, "resource_bindings", [])
+	actual := object.get(fact, "bindings", [])
+	is_array(expected)
+	is_array(actual)
+	count(expected) > 0
+	count(expected) == count(actual)
+	every binding in expected {
+		v2_binding_authorized(binding, actual, object.get(effect, "capability", ""))
+	}
+}
+
+v2_binding_authorized(expected, actual_bindings, capability_id) if {
+	path := object.get(expected, "path", [])
+	resource_type_id := object.get(expected, "resource_type", "")
+	matches := [binding |
+		some binding in actual_bindings
+		object.get(binding, "path", []) == path
+		object.get(binding, "resource_type", "") == resource_type_id
+	]
+	count(matches) == 1
+	binding := matches[0]
+	object.get(binding, "status", "") == "resolved"
+	object.get(binding, "truncated", true) == false
+	occurrences := object.get(binding, "occurrence_count", 0)
+	references := object.get(binding, "references", [])
+	occurrences > 0
+	count(references) == occurrences
+	every reference in references {
+		v2_reference_authorized(reference, capability_id)
+	}
+}
+
+v2_reference_authorized(reference, capability_id) if {
+	is_object(reference)
+	authority := object.get(reference, "authority", "")
+	resource_type_id := object.get(reference, "resource_type", "")
+	canonical_value := object.get(reference, "canonical_value", "")
+	authority != ""
+	resource_type_id != ""
+	canonical_value != ""
+	some grant in subject_grants
+	grant.capability == capability_id
+	some scope_id in grant.scopes
+	some scope in v2_scopes
+	object.get(scope, "scope_id", "") == scope_id
+	object.get(scope, "authority", "") == authority
+	object.get(scope, "resource_type", "") == resource_type_id
+	v2_scope_matches(scope, reference)
+}
+
+v2_scope_matches(scope, reference) if {
+	object.get(scope, "match_mode", "") == "SELF"
+	object.get(scope, "canonical_value", "") == object.get(reference, "canonical_value", "")
+}
+
+v2_scope_matches(scope, reference) if {
+	object.get(scope, "match_mode", "") == "SUBTREE"
+	ancestors := object.get(reference, "ancestors", [])
+	is_array(ancestors)
+	object.get(scope, "canonical_value", "") in ancestors
+}
+
+generic_v2_allow_decision := v2_decision(
+	"ALLOW",
+	"ALLOW",
+	"allow_generic_security_model_v2",
+	"All generic security model effects are authorized.",
+	"low",
+)
+
+generic_v2_block_decision := v2_decision(
+	"DENY",
+	"BLOCK",
+	"deny_generic_security_model_v2",
+	"Generic security model authorization requirements were not satisfied.",
+	"high",
+)
+
+v2_decision(effect, runtime_decision, rule_id, reason, severity) := {
+	"effect": effect,
+	"obligations": obligations,
+	"rule_ids": [rule_id],
+	"reason": reason,
+	"severity": severity,
+	"evidence": {},
+	"recommended_action": null,
+	"policy_revision": policy_revision,
+	"decision": runtime_decision,
+	"rule_id": rule_id,
+	"decision_id": sprintf("%s:%s", [object.get(runtime_object, "control_plane_revision_id", "unknown"), object.get(request_object, "canonical_arguments_hash", "unknown")]),
+	"control_plane_revision_id": object.get(runtime_object, "control_plane_revision_id", "unknown"),
+	"control_plane_content_hash": object.get(runtime_object, "control_plane_content_hash", "unknown"),
+	"canonical_arguments_hash": object.get(request_object, "canonical_arguments_hash", "unknown"),
+} if {
+	obligations := [{"type": "LOG", "parameters": {}}]
+	effect == "ALLOW"
+}
+
+v2_decision(effect, runtime_decision, rule_id, reason, severity) := {
+	"effect": effect,
+	"obligations": obligations,
+	"rule_ids": [rule_id],
+	"reason": reason,
+	"severity": severity,
+	"evidence": {},
+	"recommended_action": null,
+	"policy_revision": policy_revision,
+	"decision": runtime_decision,
+	"rule_id": rule_id,
+	"decision_id": sprintf("%s:%s", [object.get(runtime_object, "control_plane_revision_id", "unknown"), object.get(request_object, "canonical_arguments_hash", "unknown")]),
+	"control_plane_revision_id": object.get(runtime_object, "control_plane_revision_id", "unknown"),
+	"control_plane_content_hash": object.get(runtime_object, "control_plane_content_hash", "unknown"),
+	"canonical_arguments_hash": object.get(request_object, "canonical_arguments_hash", "unknown"),
+} if {
+	obligations := [
+		{"type": "LOG", "parameters": {}},
+		{"type": "ALERT", "parameters": {}},
+	]
+	effect == "DENY"
 }
 
 winning_precedence := max({candidate.precedence | some candidate in rule_candidates})
@@ -294,6 +636,7 @@ rule_candidates contains {
 	"decision": deny_semantic_review_required_decision,
 } if {
 	semantic_flagged
+	review_status != "APPROVED"
 }
 
 rule_candidates contains {
@@ -479,18 +822,32 @@ is_sensitive_path if {
 }
 
 is_contract_read if {
-	tool_name == "read_file"
+	request_operation == "read"
+	resource_adapter == "filesystem"
+	filesystem_file_resource
 	startswith(canonical_resource, "contracts/")
 }
 
 is_contract_read if {
-	tool_name == "read_file"
+	request_operation == "read"
+	resource_adapter == "filesystem"
+	filesystem_file_resource
 	startswith(canonical_resource, "fs.project_workspace:/contracts/")
 }
 
 is_contract_read if {
-	tool_name == "read_file"
+	request_operation == "read"
+	resource_adapter == "filesystem"
+	filesystem_file_resource
 	startswith(canonical_resource, "fs.legal_contracts:/")
+}
+
+filesystem_file_resource if {
+	resource_type == "file"
+}
+
+filesystem_file_resource if {
+	resource_type == "filesystem.file"
 }
 
 is_high_risk_tool if {

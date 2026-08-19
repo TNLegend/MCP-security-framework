@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from urllib.request import urlopen
@@ -46,6 +47,11 @@ def main() -> int:
         help="Re-download even when the local binary already matches.",
     )
     args = parser.parse_args()
+
+    if os.name != "nt":
+        raise SystemExit(
+            "The pinned local OPA provisioner currently supports Windows amd64 only."
+        )
 
     configure_runtime_environment()
     OPA_DIR.mkdir(parents=True, exist_ok=True)
