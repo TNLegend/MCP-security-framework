@@ -261,7 +261,7 @@ class PolicyRequestContext(BaseModel):
     operation_allowed_on_scope: StrictBool = False
     canonical_arguments_hash: str = "unknown"
     estimated_output_size_mb: Annotated[float, Field(ge=0.0, strict=True)] = 0.001
-    security_model_version: Literal["1", "2"] = "1"
+    security_model_version: Literal["2"] = "2"
     contract_hash: str | None = None
     tool_security_contract: ToolSecurityContract | None = None
     normalized_facts: NormalizedFacts | None = None
@@ -293,24 +293,26 @@ class PolicyRequestContext(BaseModel):
                 "canonical_resource requires arguments_valid to be true."
             )
 
-        if self.security_model_version == "2":
-            required = (
-                self.contract_hash,
-                self.tool_security_contract,
-                self.normalized_facts,
-                self.tool_observation_approval,
-            )
-            if any(value is None for value in required) or not self.capability_catalog:
-                raise ValueError("security model v2 context is incomplete.")
-            if self.tool_security_contract.contract_hash != self.contract_hash:
-                raise ValueError("security contract hash does not match contract.")
-            if self.tool_observation_approval.contract_hash != self.contract_hash:
-                raise ValueError("approval contract hash does not match contract.")
-            if (
-                self.normalized_facts.request.get("canonical_args_hash")
-                != self.canonical_arguments_hash
-            ):
-                raise ValueError("normalized facts arguments hash does not match request.")
+        if not self.arguments_valid:
+            return self
+
+        required = (
+            self.contract_hash,
+            self.tool_security_contract,
+            self.normalized_facts,
+            self.tool_observation_approval,
+        )
+        if any(value is None for value in required) or not self.capability_catalog:
+            raise ValueError("security model v2 context is incomplete.")
+        if self.tool_security_contract.contract_hash != self.contract_hash:
+            raise ValueError("security contract hash does not match contract.")
+        if self.tool_observation_approval.contract_hash != self.contract_hash:
+            raise ValueError("approval contract hash does not match contract.")
+        if (
+            self.normalized_facts.request.get("canonical_args_hash")
+            != self.canonical_arguments_hash
+        ):
+            raise ValueError("normalized facts arguments hash does not match request.")
 
         return self
 
@@ -369,6 +371,7 @@ class RuntimePolicyInput(BaseModel):
     tool: PolicyToolContext
     request: PolicyRequestContext
     runtime: PolicyRuntimeContext
+    policy_settings: dict[str, Any] = Field(default_factory=lambda: {"rules": {}})
 
     model_config = ConfigDict(extra="forbid")
 

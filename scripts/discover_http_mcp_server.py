@@ -35,7 +35,11 @@ def main() -> int:
             auth_mode=args.auth_mode,
             credential_ref=args.credential_ref,
         )
-        import_summary = import_inventory(args.backend_url, discovery["payload"])
+        import_summary = import_inventory(
+            args.backend_url,
+            discovery["payload"],
+            timeout_seconds=args.backend_timeout,
+        )
     except Exception as exc:
         print(f"Discovery failed: {exc}", file=sys.stderr)
         return 1
@@ -57,6 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--protocol-version", default=DEFAULT_PROTOCOL_VERSION)
     parser.add_argument("--auth-mode", choices=("NONE", "BEARER"), default="NONE")
     parser.add_argument("--credential-ref")
+    parser.add_argument("--backend-timeout", type=float, default=120.0)
     return parser.parse_args()
 
 
@@ -75,7 +80,12 @@ def discover_server(
     )
 
 
-def import_inventory(backend_url: str, payload: dict) -> dict:
+def import_inventory(
+    backend_url: str,
+    payload: dict,
+    *,
+    timeout_seconds: float = 120.0,
+) -> dict:
     body = canonical_json_body(payload)
     parsed_path = urllib.parse.urlsplit(backend_url)
     request_path = parsed_path.path
@@ -97,7 +107,7 @@ def import_inventory(backend_url: str, payload: dict) -> dict:
         method="POST",
     )
 
-    with urllib.request.urlopen(request, timeout=10) as response:
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

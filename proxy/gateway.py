@@ -23,7 +23,7 @@ from app.services.published_configuration import (
 )
 from proxy.backend_client import BackendClient, BackendClientError
 from proxy.mcp_origin import MCPOriginError, MCPOriginValidator
-from proxy.mcp_proxy import MCPProxy
+from proxy.mcp_proxy import MCPProxy, protocol_verdict_expired
 from proxy.protocol_profiles import (
     LEGACY_PROFILE_ID,
     LEGACY_PROTOCOL_VERSION,
@@ -43,7 +43,7 @@ from proxy.protocol_profiles import (
 )
 from proxy.protocol_revisions import ProtocolEra, TransportKind
 from proxy.protocol_sessions import LegacyClientSessionStore
-from proxy.strict_json import StrictJSONError, parse_strict_json
+from proxy.strict_json import MAX_JSON_BYTES, StrictJSONError, parse_strict_json
 
 
 class EraResolver:
@@ -95,9 +95,17 @@ class LegacyHTTPSSEConnection:
 
 
 class LegacyHTTPSSEConnectionStore:
-    def __init__(self, ttl_seconds: int = 900, queue_size: int = 64) -> None:
+    def __init__(
+        self,
+        ttl_seconds: int = 900,
+        queue_size: int = 64,
+        max_connections: int = 1_000,
+        max_connections_per_server: int = 200,
+    ) -> None:
         self.ttl = timedelta(seconds=ttl_seconds)
         self.queue_size = queue_size
+        self.max_connections = max_connections
+        self.max_connections_per_server = max_connections_per_server
         self._connections: dict[str, LegacyHTTPSSEConnection] = {}
         self._lock = threading.RLock()
 
@@ -110,6 +118,16 @@ class LegacyHTTPSSEConnectionStore:
             messages=queue.Queue(maxsize=self.queue_size),
         )
         with self._lock:
+            self._cleanup_expired_locked(now)
+            if len(self._connections) >= self.max_connections:
+                raise ProtocolProfileError("legacy_http_sse_connection_capacity_exceeded")
+            server_count = sum(
+                1 for item in self._connections.values() if item.server_id == server_id
+            )
+            if server_count >= self.max_connections_per_server:
+                raise ProtocolProfileError(
+                    "legacy_http_sse_server_connection_capacity_exceeded"
+                )
             self._connections[connection.connection_id] = connection
         return connection
 
@@ -174,6 +192,15 @@ class LegacyHTTPSSEConnectionStore:
         except queue.Full as exc:
             raise ProtocolProfileError("legacy_http_sse_response_queue_full") from exc
 
+    def _cleanup_expired_locked(self, now: datetime) -> None:
+        expired = [
+            connection_id
+            for connection_id, connection in self._connections.items()
+            if connection.expires_at <= now
+        ]
+        for connection_id in expired:
+            self._connections.pop(connection_id, None)
+
 
 class MCPGateway:
     def __init__(
@@ -216,7 +243,7 @@ class MCPGateway:
                 content_type = headers.get("content-type", "").split(";", 1)[0].lower()
                 if content_type != "application/json":
                     return _jsonrpc_error(None, -32600, "unsupported_content_type", 415)
-                payload = parse_strict_json(await request.body())
+                payload = parse_strict_json(await _read_bounded_json_body(request))
                 _validate_jsonrpc_envelope(payload)
                 sse_connection_id = request.query_params.get("sse_connection_id")
                 if sse_connection_id:
@@ -352,10 +379,18 @@ class MCPGateway:
                 }
             )
         if method == "tools/list":
-            auth_error = self._authenticate_tool_metadata_access(headers, request_id)
+            metadata_identity, auth_error = self._authenticate_tool_metadata_access(
+                headers,
+                request_id,
+            )
             if auth_error is not None:
                 return auth_error
-            return self._tools_list_response(server_id, request_id, profile_id)
+            return self._tools_list_response(
+                server_id,
+                request_id,
+                profile_id,
+                metadata_identity.agent_id,
+            )
         if method == "tools/call":
             return self._tool_call_response(server_id, payload, headers, profile_id)
         raise ProtocolProfileError("unsupported_mcp_method")
@@ -411,13 +446,21 @@ class MCPGateway:
         if not connection.initialized:
             raise ProtocolProfileError("legacy_protocol_session_not_initialized")
         if method == "tools/list":
-            auth_error = self._authenticate_tool_metadata_access(headers, request_id)
+            metadata_identity, auth_error = self._authenticate_tool_metadata_access(
+                headers,
+                request_id,
+            )
             if auth_error is not None:
                 self.legacy_http_sse_connections.enqueue_response(connection, auth_error)
                 return Response(status_code=202)
             self.legacy_http_sse_connections.enqueue_response(
                 connection,
-                self._tools_list_response(server_id, request_id, profile_id),
+                self._tools_list_response(
+                    server_id,
+                    request_id,
+                    profile_id,
+                    metadata_identity.agent_id,
+                ),
             )
             return Response(status_code=202)
         if method == "tools/call":
@@ -480,10 +523,18 @@ class MCPGateway:
         if not session.initialized:
             raise ProtocolProfileError("legacy_protocol_session_not_initialized")
         if method == "tools/list":
-            auth_error = self._authenticate_tool_metadata_access(headers, request_id)
+            metadata_identity, auth_error = self._authenticate_tool_metadata_access(
+                headers,
+                request_id,
+            )
             if auth_error is not None:
                 return auth_error
-            return self._tools_list_response(server_id, request_id, session.profile_id)
+            return self._tools_list_response(
+                server_id,
+                request_id,
+                session.profile_id,
+                metadata_identity.agent_id,
+            )
         if method == "tools/call":
             return self._tool_call_response(server_id, payload, headers, session.profile_id)
         raise ProtocolProfileError("unsupported_mcp_method")
@@ -492,65 +543,90 @@ class MCPGateway:
         self,
         headers: dict[str, str],
         request_id: Any,
-    ) -> Response | None:
+    ) -> tuple[Any | None, Response | None]:
         authorization = headers.get("authorization", "")
         access_token = authorization[7:] if authorization.lower().startswith("bearer ") else None
         session_token = headers.get("x-mcp-framework-session")
         if not access_token and not session_token:
-            return _framework_identity_error(request_id)
+            return None, _framework_identity_error(request_id)
         try:
-            self.proxy.authenticate_framework_identity(
+            identity = self.proxy.authenticate_framework_identity(
                 {
                     "access_token": access_token,
                     "session_token": session_token,
                 }
             )
         except Exception:
-            return _framework_identity_error(request_id)
-        return None
+            return None, _framework_identity_error(request_id)
+        return identity, None
 
-    def _approved_tools(self, server_id: int, profile_id: str) -> list[dict[str, Any]]:
+    def _approved_tools(
+        self,
+        server_id: int,
+        profile_id: str,
+        authenticated_agent_id: str,
+    ) -> list[dict[str, Any]]:
         server = self.backend_client.find_server(server_id=server_id)
         if server is None:
             raise BackendClientError("registered_server_missing")
+        if protocol_verdict_expired(server):
+            return []
         upstream_profile = (
             server.get("preferred_upstream_profile")
             or server.get("preferred_protocol_profile")
             or LEGACY_PROFILE_ID
         )
         snapshot = self.snapshot_resolver.load_active_snapshot()
+        authorization = snapshot.get_agent_authorization(authenticated_agent_id)
+        granted_capabilities = {
+            grant.capability for grant in authorization.grants
+        }
         result: list[dict[str, Any]] = []
         for tool in self.backend_client.list_tools():
             if tool.get("server_id") != server_id:
                 continue
-            fingerprint = tool.get("current_fingerprint")
-            if (
-                tool.get("analysis_status") != "APPROVED"
-                or tool.get("review_status") != "APPROVED"
-                or not isinstance(fingerprint, str)
-            ):
+            profile_tool = self.backend_client.find_tool(
+                server_id,
+                str(tool.get("name") or ""),
+                str(upstream_profile),
+            )
+            if profile_tool is None:
                 continue
-            if snapshot.schema_version == 2:
-                try:
-                    snapshot.get_tool_security_contract(
-                        server_ref=server.get("server_ref")
-                        or f"{server.get('transport') or 'streamable_http'}:{server.get('endpoint')}",
-                        tool_name=str(tool.get("name") or ""),
-                    )
-                    snapshot.get_tool_observation_approval(
-                        server_ref=server.get("server_ref")
-                        or f"{server.get('transport') or 'streamable_http'}:{server.get('endpoint')}",
-                        upstream_protocol_profile_id=str(upstream_profile),
-                        tool_fingerprint=fingerprint,
-                    )
-                except PublishedConfigurationError:
+            tool = profile_tool
+            fingerprint = tool.get("current_fingerprint")
+            if not isinstance(fingerprint, str):
+                continue
+            if tool.get("analysis_status") in {
+                "ANALYSIS_FAILED", "BLOCKED", "PENDING_ANALYSIS", "QUARANTINED", "STALE",
+            }:
+                continue
+            try:
+                contract = snapshot.get_tool_security_contract(
+                    server_ref=server.get("server_ref")
+                    or f"{server.get('transport') or 'streamable_http'}:{server.get('endpoint')}",
+                    tool_name=str(tool.get("name") or ""),
+                )
+                required_capabilities = {effect.capability for effect in contract.effects}
+                if not required_capabilities <= granted_capabilities:
                     continue
-            elif not tool.get("approved_fingerprint_match"):
+                snapshot.get_tool_observation_approval(
+                    server_ref=server.get("server_ref")
+                    or f"{server.get('transport') or 'streamable_http'}:{server.get('endpoint')}",
+                    upstream_protocol_profile_id=str(upstream_profile),
+                    tool_fingerprint=fingerprint,
+                )
+            except PublishedConfigurationError:
                 continue
             result.append(tool)
         return result
 
-    def _tools_list_response(self, server_id: int, request_id: Any, profile_id: str) -> Response:
+    def _tools_list_response(
+        self,
+        server_id: int,
+        request_id: Any,
+        profile_id: str,
+        authenticated_agent_id: str,
+    ) -> Response:
         tools = [
             {
                 "name": tool["name"],
@@ -567,7 +643,11 @@ class MCPGateway:
                     else {}
                 ),
             }
-            for tool in self._approved_tools(server_id, profile_id)
+            for tool in self._approved_tools(
+                server_id,
+                profile_id,
+                authenticated_agent_id,
+            )
         ]
         result: dict[str, Any] = {"tools": tools}
         if self.profiles.get(profile_id).protocol_era == ProtocolEra.MODERN:
@@ -657,6 +737,28 @@ def _strict_request_headers(request: Request) -> dict[str, str]:
             raise ProtocolProfileError("duplicate_protected_header")
         headers[name] = value
     return headers
+
+
+async def _read_bounded_json_body(request: Request) -> bytes:
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            length = int(content_length)
+        except ValueError as exc:
+            raise StrictJSONError("json_content_length_invalid") from exc
+        if length > MAX_JSON_BYTES:
+            raise StrictJSONError("json_body_empty_or_too_large")
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > MAX_JSON_BYTES:
+            raise StrictJSONError("json_body_empty_or_too_large")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _jsonrpc_error(

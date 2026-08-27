@@ -96,6 +96,9 @@ class ToolApprovedBaseline(Base):
     analysis_id: Mapped[int] = mapped_column(ForeignKey("tool_analyses.id"), nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     analysis_context_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approval_source: Mapped[str] = mapped_column(
+        String(32), default="ADMIN", nullable=False
+    )
     reviewer: Mapped[str] = mapped_column(String(255), nullable=False)
     justification: Mapped[str] = mapped_column(Text, nullable=False)
     analyzer_revision: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -165,6 +168,7 @@ class ToolObservationReviewApproval(Base):
     tool_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     contract_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence_bundle_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_bundle: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     admin_id: Mapped[str] = mapped_column(String(255), nullable=False)
     revision_id: Mapped[str] = mapped_column(String(64), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

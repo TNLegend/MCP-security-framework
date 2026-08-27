@@ -32,7 +32,8 @@ Gateway entirely.
 - periodic rediscovery limits, but does not eliminate, the drift detection window;
 - claimed filesystem references do not provide full remote filesystem containment;
 - local JWT/JWKS verification protects token integrity, while bearer-token theft remains possible;
-- responses receive protocol validation, not semantic DLP or taint analysis.
+- responses receive protocol validation plus bounded high-confidence DLP and
+  prompt-injection screening; this is not full semantic data classification.
 
 ## Outside The Guarantee
 
@@ -44,10 +45,11 @@ Gateway entirely.
   control the upstream infrastructure;
 - a compromised proxy, OPA, trusted adapter, database administration plane, or signing key;
 - dishonest server behavior with an unchanged declaration;
-- response prompt injection and read-then-send exfiltration across separately allowed calls;
+- paraphrased or encoded response attacks that do not match high-confidence guards;
 - SELECTOR and OPAQUE references, Resources, Prompts, MRTR, Tasks, subscriptions,
   Sampling, and Elicitation, which are unsupported and fail closed;
-- DLP, taint tracking, server implementation attestation, and malicious ADMIN collusion.
+- durable cross-process DLP/taint correlation, server implementation attestation,
+  and malicious ADMIN collusion.
 
 ## Trusted Computing Base
 

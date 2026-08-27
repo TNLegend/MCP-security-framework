@@ -99,9 +99,23 @@ but they are hardening measures rather than base requirements.
 For an upstream that accepts a static Bearer credential, Inventory stores only
 `auth_mode=BEARER` and a logical `credential_ref`. The token is read locally
 from `.runtime/secrets/upstream/<credential_ref>` by discovery and the Gateway;
-it is not returned by Inventory APIs or supplied by the agent. Generic
-interactive OAuth authorization, PKCE, refresh, and provider-specific flows are
-not implemented in this correction pass.
+it is not returned by Inventory APIs or supplied by the agent.
+
+For an HTTP MCP protected by OAuth, an ADMIN can select `OAuth 2.1 (PKCE)` in
+Inventory, register a pre-configured client ID (and optional client secret),
+then complete the provider consent flow. The framework discovers MCP Protected
+Resource Metadata and Authorization Server Metadata, requires PKCE `S256`,
+uses the MCP endpoint as the OAuth `resource` indicator, stores the resulting
+access/refresh-token bundle under `.runtime/secrets/upstream/`, and refreshes it
+only when the Gateway needs to call that same registered MCP. Tokens and client
+secrets are never returned by Inventory APIs, audited, or accepted from agents.
+
+Set `UPSTREAM_OAUTH_CALLBACK_URL` and `CONTROL_CENTER_PUBLIC_URL` for a
+deployed Control Plane. In local development the callback defaults to
+`http://127.0.0.1:8000/api/v1/control-plane/upstream-oauth/callback`; the
+Inventory form exposes the effective value to register with the OAuth provider.
+The current implementation intentionally supports pre-registered OAuth clients;
+dynamic client registration and OAuth client-credentials grants are not enabled.
 
 For the included LLM demo, the forbidden architecture is:
 
@@ -192,6 +206,22 @@ combinations normalize into one Tool Security Framework v2 based on approved
 profile-specific observations, `ToolSecurityContract`, capabilities, resource
 types, adapters, authority-qualified scopes, and OPA. No fallback to another
 upstream era or revision occurs after authorization.
+
+The v2 catalog is extended through versioned Security Packs. Built-in packs cover
+filesystem, HTTP/API, database, messaging, cloud objects, calendars, payments,
+process execution, identities, and secrets. An ADMIN can open a discovered tool's
+`Contract` tab, select a suggested template, map exact JSON Schema fields, define
+authority-qualified scopes, and create a DRAFT. Gemini with Groq fallback can be
+requested explicitly for a suggestion, but its output is constrained to installed
+templates and existing schema paths and never approves or publishes configuration.
+Safe declarative packs can be added through
+`POST /api/v1/control-plane/security-packs/declarative`; specialized parsing still
+requires a reviewed adapter implementation.
+
+The supported schema profile accepts bounded local `$defs`/`$ref`, nullable scalar
+types, and `oneOf`/`anyOf` variants only when every branch exposes the same
+accountable resource paths. External references, recursive references, open
+objects, unbounded arrays, and ambiguous unions continue to fail closed.
 
 New v2 published revisions are signed with Ed25519 and form a verified predecessor
 chain. The private signing key remains under `.runtime/secrets/`. A v1 revision is
@@ -323,7 +353,10 @@ The agent validates the structured proposal and sends only approved tool-call re
 
 ### `policies/opa/runtime_policy.rego`
 
-Authoritative Rego runtime policy evaluated by OPA. Current decisions include:
+Authoritative Rego runtime policy evaluated by OPA. Runtime execution currently
+supports `ALLOW`, `BLOCK`, `WARN`, and `LOG_ONLY`; decisions that require
+unsupported runtime obligations such as `LIMIT` or `ASK_APPROVAL` fail closed
+until their enforcement semantics are implemented.
 
 ```text
 ALLOW, BLOCK, WARN, LIMIT, ASK_APPROVAL, LOG_ONLY
@@ -442,6 +475,14 @@ required in the normal flow. Project-owned relative paths are resolved from the
 repository root, independently of the current directory; intentionally absolute
 external paths remain supported.
 
+On a pristine Control Plane configuration database, setup also imports the
+tracked administrative bootstrap YAML into PostgreSQL as the initial published
+configuration. YAML is only bootstrap/import material; runtime configuration
+reads PostgreSQL through the published configuration snapshot and has no YAML
+fallback. If configuration revisions already exist but no valid active
+configuration can be loaded, setup stops instead of selecting or publishing a
+revision automatically.
+
 Do not share a raw working-directory archive: it can include ignored `.env`,
 `.runtime`, virtual environments, `node_modules`, caches, and private keys.
 Create source distributions from tracked content instead:
@@ -496,11 +537,20 @@ terminates them:
 .\backend\.venv\Scripts\python.exe -m uvicorn proxy.gateway_app:app --host 127.0.0.1 --port 9001
 ```
 
-Start MCP lab server:
+Start the bundled MCP lab server in a separate terminal:
 
 ```powershell
-.\backend\.venv\Scripts\uvicorn.exe server:app --app-dir mcp-lab/http_server --host 127.0.0.1 --port 9000
+.\backend\.venv\Scripts\python.exe -m uvicorn server:app `
+  --app-dir mcp-lab/http_server `
+  --host 127.0.0.1 `
+  --port 9000
 ```
+
+The bundled MCP lab is an upstream test MCP server. It is intentionally not
+started by the framework supervisor because real upstream MCP servers may be
+local, LAN, enterprise-hosted, cloud-hosted, or third-party services with their
+own lifecycle. A simple liveness check with `curl.exe -i http://127.0.0.1:9000/mcp`
+is expected to return HTTP 405; MCP discovery uses the POST protocol flow.
 
 Discover and import the MCP lab server from the CLI, or use the ADMIN MCP
 Inventory page in the Control Center:
@@ -622,14 +672,18 @@ The runtime path enforces these rules:
   unapproved tools, and blocked analyzer states fail closed before MCP;
 - blocked calls still create runtime logs;
 - logs keep summaries, not full sensitive outputs.
+- high-confidence secrets and prompt injection in tool results are withheld;
+- temporary per-session content fingerprints block read-then-send replay without
+  retaining the returned content in the taint store.
 
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework
   endpoint. Direct client reconfiguration or unrelated clients directly
   accessing a third-party MCP are outside the base framework boundary.
-- Interactive upstream OAuth is not implemented; the current generic upstream
-  authentication mode is a framework-held static Bearer credential reference.
+- Upstream authentication supports no-auth, framework-held Bearer references, and
+  interactive OAuth 2.1 Authorization Code with PKCE for pre-registered clients.
+  Dynamic client registration and client-credentials grants remain unsupported.
 - DNS answers are screened for special destinations before outbound requests,
   but transport-level DNS pinning is not yet implemented.
 - Runtime policy depends on OPA availability and fails closed when OPA is unavailable.

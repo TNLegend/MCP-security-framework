@@ -18,9 +18,23 @@ class LegacyClientSession:
     transport_kind: str
 
 
+@dataclass
+class LegacyUpstreamSession:
+    client: Any
+    expires_at: datetime
+    framework_session_id: str
+
+
 class LegacyClientSessionStore:
-    def __init__(self, ttl_seconds: int = 900) -> None:
+    def __init__(
+        self,
+        ttl_seconds: int = 900,
+        max_sessions: int = 1_000,
+        max_sessions_per_server: int = 200,
+    ) -> None:
         self.ttl = timedelta(seconds=ttl_seconds)
+        self.max_sessions = max_sessions
+        self.max_sessions_per_server = max_sessions_per_server
         self._sessions: dict[str, LegacyClientSession] = {}
         self._lock = threading.RLock()
 
@@ -43,6 +57,14 @@ class LegacyClientSessionStore:
             transport_kind=transport_kind,
         )
         with self._lock:
+            self._cleanup_expired_locked(now)
+            if len(self._sessions) >= self.max_sessions:
+                raise ValueError("legacy_protocol_session_capacity_exceeded")
+            server_count = sum(
+                1 for item in self._sessions.values() if item.server_id == server_id
+            )
+            if server_count >= self.max_sessions_per_server:
+                raise ValueError("legacy_protocol_server_session_capacity_exceeded")
             self._sessions[session.session_id] = session
         return session
 
@@ -62,12 +84,29 @@ class LegacyClientSessionStore:
         session = self.get(session_id, server_id)
         session.initialized = True
 
+    def _cleanup_expired_locked(self, now: datetime) -> None:
+        expired = [
+            session_id
+            for session_id, session in self._sessions.items()
+            if session.expires_at <= now
+        ]
+        for session_id in expired:
+            self._sessions.pop(session_id, None)
+
 
 class LegacyUpstreamSessionPool:
     """Isolates stateful upstream sessions by trusted framework session and server."""
 
-    def __init__(self) -> None:
-        self._clients: dict[tuple[str, int, str, str], Any] = {}
+    def __init__(
+        self,
+        ttl_seconds: int = 900,
+        max_clients: int = 1_000,
+        max_clients_per_framework_session: int = 50,
+    ) -> None:
+        self.ttl = timedelta(seconds=ttl_seconds)
+        self.max_clients = max_clients
+        self.max_clients_per_framework_session = max_clients_per_framework_session
+        self._clients: dict[tuple[str, int, str, str], LegacyUpstreamSession] = {}
         self._lock = threading.RLock()
 
     def get_or_create(
@@ -80,9 +119,64 @@ class LegacyUpstreamSessionPool:
         factory: Callable[[], Any],
     ) -> Any:
         key = (framework_session_id, server_id, profile_id, connection_context_hash)
+        now = datetime.now(timezone.utc)
         with self._lock:
-            client = self._clients.get(key)
-            if client is None:
+            self._cleanup_expired_locked(now)
+            session = self._clients.get(key)
+            if session is None:
+                if len(self._clients) >= self.max_clients:
+                    raise RuntimeError("legacy_upstream_session_capacity_exceeded")
+                per_session_count = sum(
+                    1
+                    for item in self._clients.values()
+                    if item.framework_session_id == framework_session_id
+                )
+                if per_session_count >= self.max_clients_per_framework_session:
+                    raise RuntimeError(
+                        "legacy_upstream_framework_session_capacity_exceeded"
+                    )
                 client = factory()
-                self._clients[key] = client
-            return client
+                self._clients[key] = LegacyUpstreamSession(
+                    client=client,
+                    expires_at=now + self.ttl,
+                    framework_session_id=framework_session_id,
+                )
+                return client
+            return session.client
+
+    def close_framework_session(self, framework_session_id: str) -> int:
+        with self._lock:
+            keys = [
+                key
+                for key, session in self._clients.items()
+                if session.framework_session_id == framework_session_id
+            ]
+            for key in keys:
+                session = self._clients.pop(key)
+                _close_client(session.client)
+            return len(keys)
+
+    def close_all(self) -> int:
+        with self._lock:
+            sessions = list(self._clients.values())
+            self._clients.clear()
+        for session in sessions:
+            _close_client(session.client)
+        return len(sessions)
+
+    def _cleanup_expired_locked(self, now: datetime) -> None:
+        expired = [
+            key for key, session in self._clients.items() if session.expires_at <= now
+        ]
+        for key in expired:
+            session = self._clients.pop(key)
+            _close_client(session.client)
+
+
+def _close_client(client: Any) -> None:
+    close = getattr(client, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            return

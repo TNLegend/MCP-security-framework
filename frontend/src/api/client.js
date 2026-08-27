@@ -1,7 +1,22 @@
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api/v1";
+  import.meta.env?.VITE_API_BASE_URL || "http://127.0.0.1:8000/api/v1";
+const REQUEST_TIMEOUT_MS = 20_000;
+const ERROR_MESSAGES = Object.freeze({
+  upstream_oauth_dynamic_registration_unsupported:
+    "This MCP does not support automatic OAuth registration. Enter a provider-issued OAuth client ID and try again.",
+});
 
 let csrfToken = "";
+
+export class ApiError extends Error {
+  constructor(message, { status = 0, code = "request_failed", fieldErrors = [] } = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.fieldErrors = fieldErrors;
+  }
+}
 
 export function setCsrfToken(value) {
   csrfToken = value || "";
@@ -14,9 +29,14 @@ function csrfFromCookie() {
     ?.split("=")[1];
 }
 
+export function hasControlPlaneSession() {
+  return Boolean(csrfFromCookie());
+}
+
 async function request(path, options = {}) {
-  const headers = { ...(options.headers || {}) };
-  const method = options.method || "GET";
+  const { timeoutMs = REQUEST_TIMEOUT_MS, ...requestOptions } = options;
+  const headers = { ...(requestOptions.headers || {}) };
+  const method = requestOptions.method || "GET";
   const activeCsrfToken = csrfToken || csrfFromCookie();
   if (method !== "GET" && activeCsrfToken) {
     headers["x-csrf-token"] = decodeURIComponent(activeCsrfToken);
@@ -25,22 +45,42 @@ async function request(path, options = {}) {
     headers["Content-Type"] = "application/json";
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...options,
-    method,
-    headers,
-    credentials: "include",
-  });
+  let response;
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...requestOptions,
+      method,
+      headers,
+      credentials: "include",
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new ApiError("Request timed out. Please retry.", {
+        code: "request_timeout",
+        status: 0,
+      });
+    }
+    throw new ApiError("Network request failed.", {
+      code: "network_error",
+      status: 0,
+    });
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
 
   if (!response.ok) {
-    let detail = "";
+    let payload = null;
+    let text = "";
     try {
-      const payload = await response.json();
-      detail = payload?.detail ? `: ${payload.detail}` : "";
+      text = await response.text();
+      payload = text ? JSON.parse(text) : null;
     } catch {
-      detail = "";
+      payload = null;
     }
-    throw new Error(`Backend request failed: ${response.status}${detail}`);
+    throw apiErrorFromResponse(response.status, payload, text);
   }
 
   if (response.status === 204) {
@@ -50,8 +90,143 @@ async function request(path, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+export function apiErrorFromResponse(status, payload, text = "") {
+  const formatted = formatApiErrorDetail(payload?.detail ?? payload ?? text);
+  return new ApiError(`Backend request failed: ${status}${formatted.message ? `: ${formatted.message}` : ""}`, {
+    status,
+    code: formatted.code,
+    fieldErrors: formatted.fieldErrors,
+  });
+}
+
+export function formatApiErrorDetail(detail) {
+  if (Array.isArray(detail)) {
+    const fieldErrors = detail
+      .map((item) => {
+        if (!item || typeof item !== "object") {
+          return null;
+        }
+        return {
+          field: formatValidationPath(item.loc),
+          message:
+            safeScalarMessage(item.msg) ||
+            safeScalarMessage(item.type) ||
+            "Invalid value.",
+          type: typeof item.type === "string" ? item.type : undefined,
+        };
+      })
+      .filter(Boolean);
+    return {
+      code: "validation_error",
+      fieldErrors,
+      message: fieldErrors
+        .map((error) => `${fieldLabel(error.field)}: ${error.message}`)
+        .join(" "),
+    };
+  }
+  if (typeof detail === "string") {
+    const code = detail || "request_failed";
+    return {
+      code,
+      fieldErrors: [],
+      message: ERROR_MESSAGES[code] || safeMessage(detail),
+    };
+  }
+  if (detail && typeof detail === "object") {
+    const code =
+      safeScalarMessage(detail.code) ||
+      safeScalarMessage(detail.error) ||
+      safeScalarMessage(detail.detail) ||
+      "request_failed";
+    const message =
+      safeScalarMessage(detail.message) ||
+      safeScalarMessage(detail.error) ||
+      safeScalarMessage(detail.code) ||
+      safeScalarMessage(detail.detail) ||
+      "Request failed.";
+    return { code, fieldErrors: [], message };
+  }
+  return { code: "request_failed", fieldErrors: [], message: "Request failed." };
+}
+
+export function safeErrorMessage(err) {
+  if (err instanceof ApiError) {
+    return err.message;
+  }
+  if (err?.message) {
+    return safeMessage(err.message);
+  }
+  return "Request failed.";
+}
+
+export async function settleNamedRequests(requests) {
+  const entries = Object.entries(requests);
+  const settled = await Promise.allSettled(entries.map(([, run]) => run()));
+  const result = { errors: {} };
+  settled.forEach((entry, index) => {
+    const key = entries[index][0];
+    if (entry.status === "fulfilled") {
+      result[key] = entry.value;
+    } else {
+      result.errors[key] = safeErrorMessage(entry.reason);
+    }
+  });
+  return result;
+}
+
+function formatValidationPath(loc) {
+  if (!Array.isArray(loc)) {
+    return "request";
+  }
+  const parts = loc.filter((part) => part !== "body" && part !== "query" && part !== "path");
+  return parts.length > 0 ? parts.join(".") : "request";
+}
+
+function fieldLabel(field) {
+  return String(field || "request")
+    .split(".")
+    .map((part) => part.replace(/_/g, " "))
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function safeMessage(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .slice(0, 500)
+    .trim();
+}
+
+function safeScalarMessage(value) {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return "";
+  }
+  return safeMessage(value);
+}
+
 export async function fetchServers() {
   return request("/servers");
+}
+
+export async function archiveServer(serverId, reason) {
+  return request(`/servers/${serverId}/archive`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function trustServer(serverId, reason) {
+  return request(`/servers/${serverId}/trust`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function revokeServerTrust(serverId, reason) {
+  return request(`/servers/${serverId}/revoke-trust`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
 }
 
 export async function fetchTools() {
@@ -62,8 +237,16 @@ export async function fetchPolicies() {
   return request("/policies");
 }
 
-export async function fetchRuntimeLogs() {
-  return request("/runtime/logs");
+export async function fetchRuntimeLogs(filters = {}) {
+  const query = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && value !== "") {
+      query.set(key, String(value));
+    }
+  });
+  const queryString = query.toString();
+  const suffix = queryString ? `?${queryString}` : "";
+  return request(`/runtime/logs${suffix}`);
 }
 
 export async function fetchHealth() {
@@ -94,16 +277,86 @@ export async function logoutControlPlane() {
 }
 
 export async function fetchToolAnalysisBundle(toolId) {
-  const [status, analyses, findings, versions, baseline, diff] = await Promise.all([
-    request(`/tool-analysis/tools/${toolId}/status`),
-    request(`/tool-analysis/tools/${toolId}/analyses`),
-    request(`/tool-analysis/tools/${toolId}/findings`),
-    request(`/tool-analysis/tools/${toolId}/versions`),
-    request(`/tool-analysis/tools/${toolId}/baseline`),
-    request(`/tool-analysis/tools/${toolId}/diff`),
-  ]);
+  const bundle = await settleNamedRequests({
+    status: () => request(`/tool-analysis/tools/${toolId}/status`),
+    analyses: () => request(`/tool-analysis/tools/${toolId}/analyses`),
+    findings: () => request(`/tool-analysis/tools/${toolId}/findings`),
+    versions: () => request(`/tool-analysis/tools/${toolId}/versions`),
+    baseline: () => request(`/tool-analysis/tools/${toolId}/baseline`),
+    reviews: () => request(`/tool-analysis/tools/${toolId}/reviews`),
+    diff: () => request(`/tool-analysis/tools/${toolId}/diff`),
+  });
 
-  return { status, analyses, findings, versions, baseline, diff };
+  return {
+    status: bundle.status ?? null,
+    analyses: bundle.analyses ?? [],
+    findings: bundle.findings ?? [],
+    versions: bundle.versions ?? [],
+    baseline: bundle.baseline ?? null,
+    reviews: bundle.reviews ?? [],
+    diff: bundle.diff ?? null,
+    errors: bundle.errors,
+  };
+}
+
+export async function fetchSecurityPacks(draftRevisionId = null) {
+  return request(withDraftRevision("/control-plane/security-packs", draftRevisionId));
+}
+
+export async function fetchToolTemplateSuggestions(toolId, draftRevisionId = null) {
+  return request(withDraftRevision(
+    `/control-plane/security-packs/tools/${toolId}/suggestions`,
+    draftRevisionId,
+  ));
+}
+
+export async function fetchAIToolTemplateSuggestion(toolId, draftRevisionId = null) {
+  return request(withDraftRevision(
+    `/control-plane/security-packs/tools/${toolId}/ai-suggestion`,
+    draftRevisionId,
+  ), {
+    method: "POST",
+  });
+}
+
+export async function fetchAIToolSecurityPackDraft(toolId, draftRevisionId = null) {
+  return request(withDraftRevision(
+    `/control-plane/security-packs/tools/${toolId}/ai-pack-draft`,
+    draftRevisionId,
+  ), { method: "POST" });
+}
+
+export async function createToolSecurityPackDraft(toolId, payload) {
+  return request(`/control-plane/security-packs/tools/${toolId}/packs/draft`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createToolContractDraft(toolId, payload) {
+  return request(`/control-plane/security-packs/tools/${toolId}/contracts/draft`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function addDeclarativeSecurityPack(payload) {
+  return request("/control-plane/security-packs/declarative", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function reanalyzeToolContract(toolId) {
+  return request(`/control-plane/security-packs/tools/${toolId}/reanalyze`, {
+    method: "POST",
+  });
+}
+
+function withDraftRevision(path, draftRevisionId) {
+  return draftRevisionId
+    ? `${path}?draft_revision_id=${encodeURIComponent(draftRevisionId)}`
+    : path;
 }
 
 export async function fetchAllToolAnalyses() {
@@ -124,6 +377,20 @@ export async function blockTool(toolId, fingerprint, justification) {
   });
 }
 
+export function buildDiscoveryRequestBody(
+  endpoint,
+  protocolVersion = "2025-11-25",
+  authMode = "NONE",
+  credentialRef = null,
+) {
+  return {
+    endpoint,
+    protocol_version: protocolVersion,
+    auth_mode: authMode,
+    credential_ref: credentialRef || null,
+  };
+}
+
 export async function discoverHttpMcpServer(
   endpoint,
   protocolVersion = "2025-11-25",
@@ -132,12 +399,39 @@ export async function discoverHttpMcpServer(
 ) {
   return request("/inventory/discover-http", {
     method: "POST",
-    body: JSON.stringify({
-      endpoint,
-      protocol_version: protocolVersion,
-      auth_mode: authMode,
-      credential_ref: credentialRef || null,
-    }),
+    body: JSON.stringify(
+      buildDiscoveryRequestBody(endpoint, protocolVersion, authMode, credentialRef),
+    ),
+  });
+}
+
+export async function discoverRegisteredMcpServer(serverId) {
+  return request(`/inventory/servers/${serverId}/discover`, {
+    method: "POST",
+    timeoutMs: 180_000,
+  });
+}
+
+export async function registerOAuthMcpServer(payload) {
+  return request("/control-plane/upstream-oauth/servers", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchOAuthCallbackUri() {
+  return request("/control-plane/upstream-oauth/callback-uri");
+}
+
+export async function startOAuthConnection(serverId) {
+  return request(`/control-plane/upstream-oauth/servers/${serverId}/connect`, {
+    method: "POST",
+  });
+}
+
+export async function disconnectOAuthMcpServer(serverId) {
+  return request(`/control-plane/upstream-oauth/servers/${serverId}/disconnect`, {
+    method: "POST",
   });
 }
 
@@ -151,6 +445,13 @@ export async function fetchActiveConfigRevision() {
 
 export async function createDraftRevision(publishedId, changeSummary) {
   return request(`/control-plane/config/revisions/${publishedId}/draft`, {
+    method: "POST",
+    body: JSON.stringify({ change_summary: changeSummary }),
+  });
+}
+
+export async function createLatestConfigRevision(changeSummary) {
+  return request("/control-plane/config/revisions/latest", {
     method: "POST",
     body: JSON.stringify({ change_summary: changeSummary }),
   });
@@ -180,6 +481,13 @@ export async function publishConfigRevision(draftId, changeSummary) {
 export async function rollbackConfigRevision(revisionId, changeSummary) {
   return request(`/control-plane/config/revisions/${revisionId}/rollback`, {
     method: "POST",
+    body: JSON.stringify({ change_summary: changeSummary }),
+  });
+}
+
+export async function deleteConfigRevision(revisionId, changeSummary) {
+  return request(`/control-plane/config/revisions/${revisionId}`, {
+    method: "DELETE",
     body: JSON.stringify({ change_summary: changeSummary }),
   });
 }

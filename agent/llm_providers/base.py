@@ -20,6 +20,9 @@ class BaseLLMProvider:
     ) -> dict[str, Any]:
         raise NotImplementedError
 
+    def generate_json(self, prompt: str) -> dict[str, Any]:
+        raise NotImplementedError
+
 
 def load_project_env() -> None:
     load_project_environment()

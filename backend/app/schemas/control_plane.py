@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from app.services.subject_authorization import SubjectAuthorizationDocument
 from proxy.identity_binding import IdentityBindingDocument
-from proxy.resource_registry import ResourceScopeDocument
-from proxy.tool_security_profiles import ToolSecurityProfileDocument
+from proxy.security_packs import SecurityPackManifest
 from proxy.tool_security_v2 import (
     AdapterResolution,
     AuthorityResourceScope,
@@ -20,6 +19,7 @@ from proxy.tool_security_v2 import (
 ControlPlaneRole = Literal["ADMIN", "VIEWER"]
 ConfigRevisionStatus = Literal["DRAFT", "PUBLISHED", "ARCHIVED"]
 PolicySeverity = Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+SUPPORTED_POLICY_SETTING_RULES = {"tool_analysis_required"}
 
 
 class ControlPlaneUserPublic(BaseModel):
@@ -107,6 +107,16 @@ class PolicySettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="after")
+    def validate_supported_rules(self) -> "PolicySettings":
+        unsupported = set(self.rules) - SUPPORTED_POLICY_SETTING_RULES
+        if unsupported:
+            raise ValueError("policy_settings contains unsupported rule settings.")
+        tool_analysis = self.rules.get("tool_analysis_required")
+        if tool_analysis is not None and not tool_analysis.enabled:
+            raise ValueError("tool_analysis_required is mandatory and cannot be disabled.")
+        return self
+
 
 class AuthorityContext(BaseModel):
     separator: Literal["/", ".", ":"] = "/"
@@ -118,48 +128,42 @@ class AuthorityContext(BaseModel):
 
 
 class ControlPlaneConfigContent(BaseModel):
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[2] = 2
     identity_bindings: IdentityBindingDocument
     agent_authorizations: SubjectAuthorizationDocument
-    tool_security_profiles: ToolSecurityProfileDocument | None = None
-    resource_scopes: ResourceScopeDocument | None = None
     policy_settings: PolicySettings = Field(default_factory=PolicySettings)
-    supported_schema_profile: Literal["supported-json-schema-v1"] | None = None
-    capability_catalog_version: Literal["1"] | None = None
-    resource_type_registry_version: Literal["1"] | None = None
-    tool_security_contracts: tuple[ToolSecurityContract, ...] | None = None
-    authority_resource_scopes: tuple[AuthorityResourceScope, ...] | None = None
-    adapter_resolutions: tuple[AdapterResolution, ...] | None = None
-    tool_observation_approvals: tuple[ToolObservationApproval, ...] | None = None
-    authority_contexts: dict[str, AuthorityContext] | None = None
+    supported_schema_profile: Literal["supported-json-schema-v1"] = "supported-json-schema-v1"
+    capability_catalog_version: Literal["2"] = "2"
+    resource_type_registry_version: Literal["2"] = "2"
+    security_packs: tuple[SecurityPackManifest, ...] = ()
+    tool_security_contracts: tuple[ToolSecurityContract, ...] = ()
+    authority_resource_scopes: tuple[AuthorityResourceScope, ...] = ()
+    adapter_resolutions: tuple[AdapterResolution, ...] = ()
+    tool_observation_approvals: tuple[ToolObservationApproval, ...] = ()
+    authority_contexts: dict[str, AuthorityContext] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
 
-    @model_validator(mode="after")
-    def validate_schema_generation(self) -> "ControlPlaneConfigContent":
-        v2_fields: dict[str, Any] = {
-            "supported_schema_profile": self.supported_schema_profile,
-            "capability_catalog_version": self.capability_catalog_version,
-            "resource_type_registry_version": self.resource_type_registry_version,
-            "tool_security_contracts": self.tool_security_contracts,
-            "authority_resource_scopes": self.authority_resource_scopes,
-            "adapter_resolutions": self.adapter_resolutions,
-            "tool_observation_approvals": self.tool_observation_approvals,
-            "authority_contexts": self.authority_contexts,
-        }
-        if self.schema_version == 1:
-            if self.tool_security_profiles is None or self.resource_scopes is None:
-                raise ValueError("schema v1 requires legacy administrative documents.")
-            if any(value is not None for value in v2_fields.values()):
-                raise ValueError("schema v1 must not contain v2 security model fields.")
-            return self
 
-        if self.tool_security_profiles is not None or self.resource_scopes is not None:
-            raise ValueError("schema v2 must not use legacy runtime security documents.")
-        missing = [name for name, value in v2_fields.items() if value is None]
-        if missing:
-            raise ValueError(f"schema v2 is missing required fields: {','.join(missing)}")
-        return self
+def empty_latest_configuration() -> ControlPlaneConfigContent:
+    return ControlPlaneConfigContent(
+        identity_bindings=IdentityBindingDocument(
+            revision="identity-bindings-1",
+            bindings=[],
+        ),
+        agent_authorizations=SubjectAuthorizationDocument(
+            revision="subject-authorizations-1",
+            subjects={},
+        ),
+        policy_settings=PolicySettings(
+            rules={
+                "tool_analysis_required": PolicyRuleSettings(
+                    enabled=True,
+                    severity="HIGH",
+                )
+            }
+        ),
+    )
 
 
 class ConfigRevisionPatchRequest(BaseModel):

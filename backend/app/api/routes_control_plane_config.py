@@ -19,7 +19,9 @@ from app.services.control_plane_auth import (
 from app.services.control_plane_config import (
     ControlPlaneConfigError,
     active_revision,
+    create_latest_draft,
     create_draft_from_revision,
+    delete_inactive_revision,
     patch_draft_revision,
     publish_revision,
     rollback_to_revision,
@@ -81,6 +83,21 @@ def create_draft(
         return ConfigRevisionPublic.model_validate(revision)
     except ControlPlaneConfigError as exc:
         raise HTTPException(status_code=400, detail=exc.args[0])
+
+
+@router.post("/revisions/latest", response_model=ConfigRevisionPublic, status_code=201)
+def create_latest_config_draft(
+    payload: ConfigRevisionActionRequest,
+    current: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    revision = create_latest_draft(
+        db,
+        actor=current.user,
+        change_summary=payload.change_summary,
+    )
+    db.commit()
+    return ConfigRevisionPublic.model_validate(revision)
 
 
 @router.patch("/revisions/{draft_id}", response_model=ConfigRevisionPublic)
@@ -170,3 +187,23 @@ def rollback_config_revision(
         raise HTTPException(status_code=400, detail=exc.args[0])
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.delete("/revisions/{revision_id}", status_code=204)
+def delete_config_revision(
+    revision_id: str,
+    payload: ConfigRevisionActionRequest,
+    current: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        delete_inactive_revision(
+            db,
+            revision_id=revision_id,
+            actor=current.user,
+            change_summary=payload.change_summary,
+        )
+        db.commit()
+    except ControlPlaneConfigError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=exc.args[0])

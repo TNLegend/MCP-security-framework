@@ -16,6 +16,7 @@ from proxy.protocol_profiles import (
     ProtocolProfileError,
     ProtocolProfileRegistry,
 )
+from proxy.protocol_negotiation import MCP_CLIENT_USER_AGENT
 from proxy.protocol_revisions import ProtocolEra, TransportKind
 from common.canonical_json import canonical_json_bytes
 
@@ -73,9 +74,9 @@ class MCPHttpClient:
         self.allow_legacy_counter_offer = allow_legacy_counter_offer
         self._request_id = 0
         self._legacy_http_sse_transport: LegacyHTTPSSETransport | None = None
-        self._upstream_headers = (
-            {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
-        )
+        self._upstream_headers = {"User-Agent": MCP_CLIENT_USER_AGENT}
+        if bearer_token:
+            self._upstream_headers["Authorization"] = f"Bearer {bearer_token}"
         self._opener = build_opener(_NoRedirectHandler)
 
     def initialize(self) -> dict[str, Any]:

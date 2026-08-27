@@ -9,7 +9,6 @@ from app.models.control_plane import (
     ControlPlaneConfigRevision,
     ControlPlaneUser,
 )
-from app.models.mcp_tool import MCPTool
 from app.models.tool_analysis import (
     ToolAnalysis,
     ToolAnalysisFinding,
@@ -115,24 +114,15 @@ def approve_tool_observation(
         raise ValueError("tool_observation_analysis_results_incomplete")
     if contract.server_ref != observation.server_ref or contract.tool_name != observation.tool_name:
         raise ValueError("approval_contract_observation_mismatch")
-    analysis.analysis_status = "APPROVED"
-    analysis.review_status = "APPROVED"
-    observation.analysis_state = "APPROVED"
-    tool = db.get(MCPTool, observation.tool_id)
-    if tool is not None and tool.current_fingerprint == observation.tool_fingerprint:
-        tool.analysis_status = "APPROVED"
-        tool.review_status = "APPROVED"
-        tool.approved_fingerprint = observation.tool_fingerprint
-        tool.approved_fingerprint_match = True
-        tool.policy_status = "APPROVED"
-        tool.status = "APPROVED"
-    evidence_hash = sha256_canonical_json(evidence_bundle_for_observation(db, observation))
+    evidence_bundle = evidence_bundle_for_observation(db, observation)
+    evidence_hash = sha256_canonical_json(evidence_bundle)
     now = datetime.utcnow()
     record = ToolObservationReviewApproval(
         observation_id=observation.id,
         tool_fingerprint=observation.tool_fingerprint,
         contract_hash=contract.contract_hash,
         evidence_bundle_hash=evidence_hash,
+        evidence_bundle=evidence_bundle,
         admin_id=admin_id,
         revision_id=revision_id,
         active=True,

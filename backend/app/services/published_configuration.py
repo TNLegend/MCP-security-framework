@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
-from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -23,15 +21,7 @@ from app.services.revision_signing import (
     verify_revision_payload,
 )
 from proxy.identity_binding import IdentityBindingError, ResolvedIdentityBinding
-from proxy.resource_registry import (
-    ResourceRegistry,
-    ResourceRegistryError,
-    ResolvedFilesystemScope,
-)
-from proxy.tool_security_profiles import (
-    ResolvedToolSecurityProfile,
-    ToolSecurityProfileError,
-)
+from proxy.resource_adapters_v2 import AdapterRegistry
 from proxy.tool_security_v2 import (
     AdapterResolution,
     AuthorityResourceScope,
@@ -72,24 +62,20 @@ class PublishedConfigurationSnapshot:
         )
 
     def get_identity_binding(self, *, issuer: str, subject: str) -> ResolvedIdentityBinding:
+        binding_revision = _identity_binding_revision_hash(self.content)
         for binding in self.content.identity_bindings.bindings:
             if binding.issuer == issuer and binding.subject == subject:
                 return ResolvedIdentityBinding(
                     agent_id=binding.agent_id,
-                    revision=self.content_hash,
+                    revision=binding_revision,
                 )
         raise IdentityBindingError("agent_identity_binding_not_found")
 
-    def resolve(self, **kwargs: Any) -> ResolvedIdentityBinding | ResolvedToolSecurityProfile:
+    def resolve(self, **kwargs: Any) -> ResolvedIdentityBinding:
         if "issuer" in kwargs and "subject" in kwargs:
             return self.get_identity_binding(
                 issuer=kwargs["issuer"],
                 subject=kwargs["subject"],
-            )
-        if "server_ref" in kwargs and "tool_name" in kwargs:
-            return self.get_tool_security_profile(
-                server_ref=kwargs["server_ref"],
-                tool_name=kwargs["tool_name"],
             )
         raise TypeError("unsupported published configuration resolution")
 
@@ -124,60 +110,6 @@ class PublishedConfigurationSnapshot:
             ),
         )
 
-    def get_tool_security_profile(
-        self,
-        *,
-        server_ref: str,
-        tool_name: str,
-    ) -> ResolvedToolSecurityProfile:
-        if self.schema_version != 1 or self.content.tool_security_profiles is None:
-            raise ToolSecurityProfileError("legacy_tool_security_profile_unavailable")
-        for binding in self.content.tool_security_profiles.bindings:
-            if binding.server_ref == server_ref and binding.tool_name == tool_name:
-                return ResolvedToolSecurityProfile(
-                    revision=self.content_hash,
-                    server_ref=binding.server_ref,
-                    tool_name=binding.tool_name,
-                    operation=binding.operation,
-                    required_capability=binding.required_capability,
-                    resource=binding.resource,
-                )
-        raise ToolSecurityProfileError("unknown_tool_security_profile")
-
-    def get_resource_registry(self) -> ResourceRegistry:
-        if self.schema_version != 1 or self.content.resource_scopes is None:
-            raise ResourceRegistryError("legacy_resource_registry_unavailable")
-        resolved_scopes: dict[str, ResolvedFilesystemScope] = {}
-        for scope_id, scope in self.content.resource_scopes.filesystem_scopes.items():
-            raw_root = os.getenv(scope.root_env)
-            if not isinstance(raw_root, str) or not raw_root.strip():
-                raise ResourceRegistryError("resource_registry_unavailable")
-            root = Path(raw_root)
-            if not _is_absolute_path(raw_root, root):
-                raise ResourceRegistryError("resource_registry_unavailable")
-            try:
-                root_resolved = root.resolve(strict=True)
-            except OSError as exc:
-                raise ResourceRegistryError("resource_registry_unavailable") from exc
-            if not root_resolved.is_dir():
-                raise ResourceRegistryError("resource_registry_unavailable")
-            resolved_scopes[scope_id] = ResolvedFilesystemScope(
-                scope_id=scope_id,
-                root=root,
-                root_resolved=root_resolved,
-                allowed_operations=tuple(scope.allowed_operations),
-                sensitivity=scope.sensitivity,
-                symlink_policy=scope.symlink_policy,
-                denied_patterns=tuple(scope.denied_patterns),
-            )
-        return ResourceRegistry(
-            revision=self.content_hash,
-            filesystem_scopes=resolved_scopes,
-        )
-
-    def load(self) -> ResourceRegistry:
-        return self.get_resource_registry()
-
     def get_policy_settings(self) -> dict[str, Any]:
         return self.content.policy_settings.model_dump(mode="json")
 
@@ -187,8 +119,6 @@ class PublishedConfigurationSnapshot:
         server_ref: str,
         tool_name: str,
     ) -> ToolSecurityContract:
-        if self.schema_version != 2 or self.content.tool_security_contracts is None:
-            raise PublishedConfigurationError("tool_security_contract_unavailable")
         matches = [
             contract
             for contract in self.content.tool_security_contracts
@@ -199,13 +129,9 @@ class PublishedConfigurationSnapshot:
         return matches[0]
 
     def get_authority_resource_scopes(self) -> tuple[AuthorityResourceScope, ...]:
-        if self.schema_version != 2 or self.content.authority_resource_scopes is None:
-            raise PublishedConfigurationError("authority_resource_scopes_unavailable")
         return self.content.authority_resource_scopes
 
     def get_adapter_resolutions(self, *, effect_id: str) -> tuple[AdapterResolution, ...]:
-        if self.schema_version != 2 or self.content.adapter_resolutions is None:
-            raise PublishedConfigurationError("adapter_resolutions_unavailable")
         return tuple(
             resolution
             for resolution in self.content.adapter_resolutions
@@ -220,8 +146,6 @@ class PublishedConfigurationSnapshot:
         tool_fingerprint: str,
     ) -> ToolObservationApproval:
         approvals = self.content.tool_observation_approvals
-        if self.schema_version != 2 or approvals is None:
-            raise PublishedConfigurationError("tool_observation_approval_unavailable")
         matches = [
             approval
             for approval in approvals
@@ -235,7 +159,7 @@ class PublishedConfigurationSnapshot:
 
     def get_authority_context(self, authority: str) -> dict[str, Any]:
         contexts = self.content.authority_contexts
-        if self.schema_version != 2 or contexts is None or authority not in contexts:
+        if authority not in contexts:
             raise PublishedConfigurationError("authority_context_unavailable")
         return contexts[authority].model_dump(mode="json")
 
@@ -305,20 +229,6 @@ class PublishedConfigurationProvider:
     def get_agent_authorization(self, agent_id: str) -> ResolvedSubjectAuthorization:
         return self.load_active_snapshot().get_agent_authorization(agent_id)
 
-    def get_tool_security_profile(
-        self,
-        *,
-        server_ref: str,
-        tool_name: str,
-    ) -> ResolvedToolSecurityProfile:
-        return self.load_active_snapshot().get_tool_security_profile(
-            server_ref=server_ref,
-            tool_name=tool_name,
-        )
-
-    def get_resource_registry(self) -> ResourceRegistry:
-        return self.load_active_snapshot().get_resource_registry()
-
     def get_policy_settings(self) -> dict[str, Any]:
         return self.load_active_snapshot().get_policy_settings()
 
@@ -344,8 +254,7 @@ class PublishedConfigurationProvider:
             raise PublishedConfigurationError("config_invalid") from exc
         if revision.schema_version != content.schema_version:
             raise PublishedConfigurationError("config_schema_version_mismatch")
-        if revision.schema_version == 2:
-            self._verify_v2_revision(revision)
+        self._verify_revision(revision)
         return PublishedConfigurationSnapshot(
             revision_id=revision.id,
             revision_number=revision.revision_number,
@@ -354,7 +263,7 @@ class PublishedConfigurationProvider:
             content=content,
         )
 
-    def _verify_v2_revision(
+    def _verify_revision(
         self,
         revision: ControlPlaneConfigRevision,
         *,
@@ -406,8 +315,7 @@ class PublishedConfigurationProvider:
             raise PublishedConfigurationError("revision_chain_predecessor_invalid") from exc
         if predecessor_hash != predecessor.content_hash:
             raise PublishedConfigurationError("revision_chain_predecessor_hash_mismatch")
-        if predecessor.schema_version == 2:
-            self._verify_v2_revision(predecessor, seen=chain_seen)
+        self._verify_revision(predecessor, seen=chain_seen)
 
 
 class PublishedConfigurationSnapshotResolver:
@@ -430,36 +338,6 @@ class PublishedIdentityBindingResolver:
             raise IdentityBindingError("agent_identity_binding_unavailable") from exc
 
 
-class PublishedToolSecurityProfileResolver:
-    def resolve(
-        self,
-        *,
-        server_ref: str,
-        tool_name: str,
-    ) -> ResolvedToolSecurityProfile:
-        try:
-            with SessionLocal() as db:
-                return PublishedConfigurationProvider(db).get_tool_security_profile(
-                    server_ref=server_ref,
-                    tool_name=tool_name,
-                )
-        except ToolSecurityProfileError:
-            raise
-        except Exception as exc:
-            raise ToolSecurityProfileError("tool_security_profile_unavailable") from exc
-
-
-class PublishedResourceRegistryResolver:
-    def load(self) -> ResourceRegistry:
-        try:
-            with SessionLocal() as db:
-                return PublishedConfigurationProvider(db).get_resource_registry()
-        except ResourceRegistryError:
-            raise
-        except Exception as exc:
-            raise ResourceRegistryError("resource_registry_unavailable") from exc
-
-
 class PublishedSubjectAuthorizationResolver:
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -479,42 +357,37 @@ def _validate_cross_references(content: ControlPlaneConfigContent) -> None:
         if binding.agent_id not in known_agents:
             raise ValueError("identity binding references unknown agent.")
 
-    if content.schema_version == 2:
-        _validate_v2_cross_references(content)
-        return
-
-    if content.resource_scopes is None or content.tool_security_profiles is None:
-        raise ValueError("legacy administrative documents are missing.")
-    known_scopes = set(content.resource_scopes.filesystem_scopes)
-    known_capabilities = {
-        grant.capability
-        for profile in content.agent_authorizations.subjects.values()
-        for grant in profile.grants
-    }
-    for profile in content.agent_authorizations.subjects.values():
-        for grant in profile.grants:
-            for scope in grant.scopes:
-                if scope not in known_scopes:
-                    raise ValueError("authorization references unknown scope.")
-    for binding in content.tool_security_profiles.bindings:
-        if binding.required_capability not in known_capabilities:
-            raise ValueError("tool profile references unknown capability.")
-        resource = binding.resource
-        referenced_scopes = set(resource.allowed_scope_candidates)
-        if resource.relative_base_scope:
-            referenced_scopes.add(resource.relative_base_scope)
-        if not referenced_scopes <= known_scopes:
-            raise ValueError("tool profile references unknown resource scope.")
+    _validate_latest_cross_references(content)
 
 
-def _validate_v2_cross_references(content: ControlPlaneConfigContent) -> None:
-    contracts = content.tool_security_contracts or ()
-    scopes = content.authority_resource_scopes or ()
-    resolutions = content.adapter_resolutions or ()
-    approvals = content.tool_observation_approvals or ()
-    authority_contexts = content.authority_contexts or {}
-    catalog = CapabilityCatalog()
-    type_registry = ResourceTypeRegistry()
+def _identity_binding_revision_hash(content: ControlPlaneConfigContent) -> str:
+    return sha256_canonical_json(
+        content.identity_bindings.model_dump(mode="json")
+    )
+
+
+def _validate_latest_cross_references(content: ControlPlaneConfigContent) -> None:
+    contracts = content.tool_security_contracts
+    scopes = content.authority_resource_scopes
+    resolutions = content.adapter_resolutions
+    approvals = content.tool_observation_approvals
+    authority_contexts = content.authority_contexts
+    capability_catalog_version = content.capability_catalog_version
+    resource_type_registry_version = content.resource_type_registry_version
+    security_packs = content.security_packs
+    catalog = CapabilityCatalog(
+        version=capability_catalog_version,
+        security_packs=security_packs,
+    )
+    type_registry = ResourceTypeRegistry(
+        version=resource_type_registry_version,
+        security_packs=security_packs,
+    )
+    adapter_registry = AdapterRegistry(
+        capability_catalog_version=capability_catalog_version,
+        resource_type_registry_version=resource_type_registry_version,
+        security_packs=security_packs,
+    )
 
     contract_keys = [(contract.server_ref, contract.tool_name) for contract in contracts]
     if len(contract_keys) != len(set(contract_keys)):
@@ -565,23 +438,36 @@ def _validate_v2_cross_references(content: ControlPlaneConfigContent) -> None:
         for effect in contract.effects
         for binding in effect.resource_bindings
     }
+    known_effects.update(
+        (effect.effect_id, effect.fixed_resource.resource_type)
+        for contract in contracts
+        for effect in contract.effects
+        if effect.fixed_resource is not None
+    )
     if set(resolution_keys) != known_effects:
         raise ValueError("adapter resolutions do not exactly cover contract bindings.")
+    configured_resolution_by_key = {
+        (resolution.effect_id, resolution.resource_type): resolution
+        for resolution in resolutions
+    }
     for contract in contracts:
         for effect in contract.effects:
             catalog.get(effect.capability)
+            resource_types = [binding.resource_type for binding in effect.resource_bindings]
+            if effect.fixed_resource is not None:
+                resource_types.append(effect.fixed_resource.resource_type)
+            for resource_type in resource_types:
+                expected = adapter_registry.resolve(effect.capability, resource_type)
+                configured = configured_resolution_by_key[(effect.effect_id, resource_type)]
+                if (
+                    configured.adapter_id != expected.adapter_id
+                    or configured.adapter_api_version != expected.adapter_api_version
+                    or configured.implementation_version != expected.implementation_version
+                ):
+                    raise ValueError("adapter resolution does not match installed security pack.")
     contract_hashes = {contract.contract_hash for contract in contracts}
     if any(approval.contract_hash not in contract_hashes for approval in approvals):
         raise ValueError("approval references unknown contract hash.")
-
-
-def _is_absolute_path(raw_value: str, path: Path) -> bool:
-    return (
-        path.is_absolute()
-        or PureWindowsPath(raw_value).is_absolute()
-        or PurePosixPath(raw_value).is_absolute()
-    )
-
 
 def content_model_to_json(content: ControlPlaneConfigContent) -> dict[str, Any]:
     return _content_model_to_json(content)

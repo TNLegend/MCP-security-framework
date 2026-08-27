@@ -15,6 +15,9 @@ class MCPServerBase(BaseModel):
     server_type: str = "mcp"
     endpoint: str
     auth_mode: str = AUTH_MODE_NONE
+    oauth_status: str | None = None
+    oauth_connected_at: datetime | None = None
+    oauth_last_error: str | None = None
     status: str = "active"
     protocol_version: str | None = None
     server_info_name: str | None = None
@@ -69,3 +72,4 @@ class MCPServerRead(MCPServerBase):
 
 class MCPServerInternalRead(MCPServerRead):
     credential_ref: str | None = None
+    oauth_config: dict[str, Any] | None = None

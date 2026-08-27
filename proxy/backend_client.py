@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import sys
 from typing import Any
+from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -80,7 +81,33 @@ class BackendClient:
             None,
         )
 
-    def find_tool(self, server_id: int, tool_name: str) -> dict[str, Any] | None:
+    def find_tool(
+        self,
+        server_id: int,
+        tool_name: str,
+        upstream_protocol_profile_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if upstream_protocol_profile_id:
+            query = urlencode(
+                {
+                    "server_id": server_id,
+                    "tool_name": tool_name,
+                    "upstream_protocol_profile_id": upstream_protocol_profile_id,
+                }
+            )
+            data = self._request_json(
+                "GET",
+                f"/internal/inventory/tool-observation?{query}",
+                sign_as_service=True,
+            )
+            if data is None:
+                return None
+            if not isinstance(data, dict):
+                raise BackendClientError(
+                    "Backend internal inventory tool observation response is invalid."
+                )
+            return data
+
         tools = self.list_tools()
         return next(
             (

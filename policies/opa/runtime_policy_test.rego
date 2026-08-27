@@ -300,8 +300,8 @@ has_obligation(decision, obligation_type) if {
 
 test_fallback_normal if {
 	d := runtime.decision with input as runtime_input_full("lab_trusted", "list_files", 0, "medium", "documents/", 0.001)
-	d.rule_id == "log_normal_runtime_call"
-	d.decision == "LOG_ONLY"
+	d.rule_id == "allow_authorized_resource"
+	d.decision == "ALLOW"
 	d.effect == "ALLOW"
 	has_obligation(d, "LOG")
 	d.policy_revision == "opa-runtime-v2"
@@ -318,6 +318,12 @@ test_unknown_server_blocks if {
 
 test_blocked_server_blocks if {
 	d := runtime.decision with input as runtime_input_full("blocked", "list_files", 0, "medium", "documents/", 0.001)
+	d.rule_id == "block_unknown_server"
+	d.decision == "BLOCK"
+}
+
+test_unrecognized_server_trust_status_blocks if {
+	d := runtime.decision with input as runtime_input_full("auto_trusted", "list_files", 0, "medium", "documents/", 0.001)
 	d.rule_id == "block_unknown_server"
 	d.decision == "BLOCK"
 }
@@ -373,7 +379,7 @@ test_secrets_denied if {
 
 test_contract_read_allowed if {
 	d := runtime.decision with input as runtime_input("read_file", "contracts/contract1.txt")
-	d.rule_id == "allow_contracts_read"
+	d.rule_id == "allow_authorized_resource"
 	d.decision == "ALLOW"
 	d.effect == "ALLOW"
 	has_obligation(d, "LOG")
@@ -383,19 +389,19 @@ test_uppercase_contract_prefix_is_not_allowed_by_contract_rule if {
 	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.read", "scopes": ["fs.project_workspace"]}]})
 	input_value := object.union(runtime_input("read_file", "CONTRACTS/contract1.txt"), {"subject": subject})
 	d := runtime.decision with input as input_value
-	d.rule_id == "log_normal_runtime_call"
-	d.decision == "LOG_ONLY"
+	d.rule_id == "allow_authorized_resource"
+	d.decision == "ALLOW"
 }
 
 test_wrong_tool_in_contracts_falls_back if {
 	d := runtime.decision with input as runtime_input("list_files", "contracts/")
-	d.rule_id == "log_normal_runtime_call"
-	d.decision == "LOG_ONLY"
+	d.rule_id == "allow_authorized_resource"
+	d.decision == "ALLOW"
 }
 
 test_risk_below_threshold_falls_back if {
 	d := runtime.decision with input as runtime_input_full("lab_trusted", "list_files", 69.999, "medium", "documents/", 0.001)
-	d.rule_id == "log_normal_runtime_call"
+	d.rule_id == "allow_authorized_resource"
 }
 
 test_risk_at_threshold_warns if {
@@ -414,7 +420,7 @@ test_risk_above_threshold_warns if {
 
 test_medium_sensitivity_falls_back if {
 	d := runtime.decision with input as runtime_input_full("lab_trusted", "list_files", 0, "medium", "documents/", 0.001)
-	d.rule_id == "log_normal_runtime_call"
+	d.rule_id == "allow_authorized_resource"
 }
 
 test_high_sensitivity_defers if {
@@ -433,7 +439,7 @@ test_critical_sensitivity_defers if {
 
 test_size_equal_threshold_falls_back if {
 	d := runtime.decision with input as runtime_input_full("lab_trusted", "list_files", 0, "medium", "documents/", 10)
-	d.rule_id == "log_normal_runtime_call"
+	d.rule_id == "allow_authorized_resource"
 }
 
 test_size_above_threshold_limits if {
@@ -507,7 +513,7 @@ test_priority_high_risk_beats_contract if {
 
 test_priority_contract_only_allows if {
 	d := runtime.decision with input as runtime_input_full("lab_trusted", "read_file", 0, "medium", "contracts/contract1.txt", 0.001)
-	d.rule_id == "allow_contracts_read"
+	d.rule_id == "allow_authorized_resource"
 }
 
 test_priority_high_sensitivity_beats_high_risk if {
@@ -630,7 +636,7 @@ test_raw_env_canonical_contract_allowed if {
 	input_value := runtime_input("read_file", ".env")
 	request := object.union(input_value.request, {"canonical_resource": "contracts/contract1.txt", "resource_sensitivity": "internal"})
 	d := runtime.decision with input as object.union(input_value, {"request": request})
-	d.rule_id == "allow_contracts_read"
+	d.rule_id == "allow_authorized_resource"
 }
 
 test_arguments_valid_absent_denies_invalid_arguments if {
@@ -771,7 +777,7 @@ test_exact_contract_grant_allows if {
 	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.read", "scopes": ["fs.project_workspace"]}]})
 	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"subject": subject})
 	d := runtime.decision with input as input_value
-	d.rule_id == "allow_contracts_read"
+	d.rule_id == "allow_authorized_resource"
 }
 
 test_cross_product_scope_attack_denied if {
@@ -791,7 +797,7 @@ test_two_grants_selects_matching_grant if {
 	]})
 	input_value := object.union(runtime_input("list_files", "."), {"subject": subject})
 	d := runtime.decision with input as input_value
-	d.rule_id == "log_normal_runtime_call"
+	d.rule_id == "allow_authorized_resource"
 }
 
 test_empty_grants_denied if {
@@ -893,7 +899,7 @@ test_list_files_authorized_with_exact_grant if {
 	subject := object.union(resolved_subject, {"grants": [{"capability": "filesystem.list", "scopes": ["fs.project_workspace"]}]})
 	input_value := object.union(runtime_input("list_files", "."), {"subject": subject})
 	d := runtime.decision with input as input_value
-	d.rule_id == "log_normal_runtime_call"
+	d.rule_id == "allow_authorized_resource"
 }
 
 test_missing_analysis_blocks_runtime if {
@@ -932,6 +938,14 @@ test_review_required_blocks_runtime if {
 	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"tool": tool})
 	d := runtime.decision with input as input_value
 	d.rule_id == "deny_tool_review_required"
+}
+
+test_admin_allowed_semantic_tool_can_continue_to_runtime_rules if {
+	tool := object.union(approved_analysis_facts, {"analysis_status": "ADMIN_ALLOWED", "review_status": "ADMIN_ALLOWED", "semantic_flagged": true, "approved_fingerprint_match": true})
+	input_value := object.union(runtime_input("read_file", "contracts/contract1.txt"), {"tool": tool})
+	d := runtime.decision with input as input_value
+	d.decision == "ALLOW"
+	d.rule_id == "allow_authorized_resource"
 }
 
 test_deterministic_critical_finding_blocks_runtime if {

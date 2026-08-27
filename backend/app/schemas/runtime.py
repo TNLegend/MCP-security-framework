@@ -62,3 +62,19 @@ class RuntimeCallRead(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class RuntimeCallSummary(BaseModel):
+    total: int
+    allowed: int
+    blocked: int
+    executed: int
+    skipped: int
+    errors: int
+
+
+class RuntimeCallPage(BaseModel):
+    items: list[RuntimeCallRead]
+    next_cursor: str | None = None
+    has_more: bool = False
+    summary: RuntimeCallSummary

@@ -172,7 +172,7 @@ test_v2_semantic_flag_without_approval_blocks if {
 }
 
 test_v2_semantic_flag_after_exact_admin_approval_can_allow if {
-	tool := object.union(base_v2_input.tool, {"semantic_flagged": true, "analysis_status": "APPROVED", "review_status": "APPROVED", "approved_fingerprint_match": true})
+	tool := object.union(base_v2_input.tool, {"semantic_flagged": true, "analysis_status": "ADMIN_ALLOWED", "review_status": "ADMIN_ALLOWED", "approved_fingerprint_match": true})
 	result := decision with input as object.union(base_v2_input, {"tool": tool})
 	result.decision == "ALLOW"
 }
@@ -286,6 +286,22 @@ test_v2_scope_prefix_bypass_blocks if {
 	result.decision == "BLOCK"
 }
 
+test_v2_sensitive_filesystem_reference_blocks_even_inside_scope if {
+	reference := {"authority": "files-a", "resource_type": "filesystem_path", "canonical_value": "/data/secrets/config.json", "ancestors": ["/", "/data", "/data/secrets", "/data/secrets/config.json"]}
+	binding := {"path": ["path"], "status": "resolved", "resource_type": "filesystem_path", "occurrence_count": 1, "truncated": false, "references": [reference]}
+	fact_effect := object.union(base_v2_input.request.normalized_facts.effects[0], {"capability_id": "filesystem.read", "bindings": [binding]})
+	facts := object.union(base_v2_input.request.normalized_facts, {"effects": [fact_effect]})
+	contract_effect := {"effect_id": "read", "capability": "filesystem.read", "resource_bindings": [{"path": ["path"], "resource_type": "filesystem_path"}], "max_resource_cardinality": 1, "declared_reference_precision": "EXPLICIT"}
+	contract := object.union(base_v2_input.request.tool_security_contract, {"effects": [contract_effect]})
+	scope := {"scope_id": "files.data", "authority": "files-a", "resource_type": "filesystem_path", "canonical_value": "/data", "match_mode": "SUBTREE", "broad_scope_acknowledged": false}
+	catalog := [{"id": "filesystem.read", "domain": "filesystem", "verb": "read", "destructive": false, "requires_resource": true, "allowed_resource_types": ["filesystem_path"], "lifecycle": "ACTIVE"}]
+	request := object.union(base_v2_input.request, {"tool_security_contract": contract, "normalized_facts": facts, "authority_resource_scopes": [scope], "capability_catalog": catalog})
+	subject := object.union(base_v2_input.subject, {"grants": [{"capability": "filesystem.read", "scopes": ["files.data"]}]})
+	result := decision with input as object.union(base_v2_input, {"request": request, "subject": subject})
+	result.decision == "BLOCK"
+	result.rule_id == "deny_sensitive_resource"
+}
+
 test_v2_resource_less_effect_explicitly_allowed if {
 	contract_effect := {"effect_id": "ping", "capability": "system.ping", "resource_bindings": [], "max_resource_cardinality": null, "declared_reference_precision": "EXPLICIT"}
 	contract := object.union(base_v2_input.request.tool_security_contract, {"effects": [contract_effect]})
@@ -294,6 +310,21 @@ test_v2_resource_less_effect_explicitly_allowed if {
 	catalog := [{"id": "system.ping", "domain": "system", "verb": "ping", "destructive": false, "requires_resource": false, "allowed_resource_types": [], "lifecycle": "ACTIVE"}]
 	request := object.union(base_v2_input.request, {"tool_security_contract": contract, "normalized_facts": facts, "capability_catalog": catalog})
 	subject := object.union(base_v2_input.subject, {"grants": [{"capability": "system.ping", "scopes": []}]})
+	result := decision with input as object.union(base_v2_input, {"request": request, "subject": subject})
+	result.decision == "ALLOW"
+}
+
+test_v2_fixed_resource_effect_is_authorized_by_scope if {
+	reference := {"authority": "files-a", "resource_type": "filesystem_path", "canonical_value": "fs.project_workspace", "ancestors": ["fs.project_workspace"]}
+	binding := {"path": [], "status": "resolved", "resource_type": "filesystem_path", "occurrence_count": 1, "truncated": false, "references": [reference]}
+	fact_effect := object.union(base_v2_input.request.normalized_facts.effects[0], {"effect_id": "list", "capability_id": "filesystem.list", "bindings": [binding]})
+	facts := object.union(base_v2_input.request.normalized_facts, {"effects": [fact_effect]})
+	contract_effect := {"effect_id": "list", "capability": "filesystem.list", "resource_bindings": [], "fixed_resource": {"resource_type": "filesystem_path", "canonical_value": "fs.project_workspace"}, "max_resource_cardinality": 1, "declared_reference_precision": "EXPLICIT"}
+	contract := object.union(base_v2_input.request.tool_security_contract, {"effects": [contract_effect]})
+	scope := {"scope_id": "files.workspace", "authority": "files-a", "resource_type": "filesystem_path", "canonical_value": "fs.project_workspace", "match_mode": "SELF", "broad_scope_acknowledged": false}
+	catalog := [{"id": "filesystem.list", "domain": "filesystem", "verb": "list", "destructive": false, "requires_resource": true, "allowed_resource_types": ["filesystem_path"], "lifecycle": "ACTIVE"}]
+	request := object.union(base_v2_input.request, {"tool_security_contract": contract, "normalized_facts": facts, "authority_resource_scopes": [scope], "capability_catalog": catalog})
+	subject := object.union(base_v2_input.subject, {"grants": [{"capability": "filesystem.list", "scopes": ["files.workspace"]}]})
 	result := decision with input as object.union(base_v2_input, {"request": request, "subject": subject})
 	result.decision == "ALLOW"
 }

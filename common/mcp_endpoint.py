@@ -3,12 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ipaddress
 import socket
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import SplitResult, parse_qsl, urlsplit
 
 
 ALLOWED_MCP_SCHEMES = frozenset({"http", "https"})
 LOCAL_LAB_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+LOCAL_LAB_TRUST_HOST = "127.0.0.1"
+LOCAL_LAB_PORT = 9000
+LOCAL_LAB_PATH = "/mcp"
 BLOCKED_METADATA_HOSTS = frozenset(
     {
         "instance-data.ec2.internal",
@@ -50,6 +53,15 @@ class ParsedMCPEndpoint:
 
 
 AddressResolver = Callable[..., Iterable[tuple]]
+
+
+def server_ref_for_server(server: dict[str, Any]) -> str:
+    explicit = server.get("server_ref")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit
+    transport = str(server.get("transport") or "streamable_http")
+    endpoint = str(server.get("endpoint") or "")
+    return f"{transport}:{endpoint}"
 
 
 def parse_mcp_endpoint(endpoint: str) -> ParsedMCPEndpoint:
@@ -134,7 +146,13 @@ def is_exact_local_lab_endpoint(endpoint: str) -> bool:
         parsed = parse_mcp_endpoint(endpoint)
     except MCPEndpointValidationError:
         return False
-    return parsed.parsed.scheme.lower() == "http" and parsed.hostname in LOCAL_LAB_HOSTS
+    return (
+        parsed.parsed.scheme.lower() == "http"
+        and parsed.hostname == LOCAL_LAB_TRUST_HOST
+        and parsed.port == LOCAL_LAB_PORT
+        and parsed.parsed.path == LOCAL_LAB_PATH
+        and not parsed.parsed.query
+    )
 
 
 def _ip_address(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:

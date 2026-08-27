@@ -291,21 +291,12 @@ class SignedServiceRequestRouteTests(unittest.TestCase):
     def test_discovery_signature_allows_import_without_shared_token(self) -> None:
         payload = self.discovery_payload()
 
-        class FakeProfile:
-            revision = "pg-revision"
-            server_ref = "streamable_http:http://127.0.0.1:9000/mcp"
-            tool_name = "read_file"
-            operation = "read"
-            required_capability = "filesystem.read"
-
-            class resource:
-                @staticmethod
-                def model_dump(mode="json"):
-                    return {"adapter": "filesystem", "argument_name": "path"}
-
         class FakeSnapshot:
-            def get_tool_security_profile(self, **kwargs):
-                return FakeProfile()
+            content_hash = "c" * 64
+
+            @staticmethod
+            def get_tool_security_contract(**_kwargs):
+                raise RuntimeError("tool_security_contract_missing")
 
         class FakeAnalysis:
             analysis_status = "REVIEW_REQUIRED"

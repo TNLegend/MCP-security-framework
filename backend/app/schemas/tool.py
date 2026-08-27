@@ -15,6 +15,11 @@ class MCPToolCreate(BaseModel):
     annotations: dict[str, Any] | None = None
     execution: dict[str, Any] | None = None
     raw_tool_definition: dict[str, Any] | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class MCPToolRead(MCPToolCreate):
     risk_score: int = 0
     sensitivity: str = "low"
     description_risk_score: int = 0
@@ -33,10 +38,7 @@ class MCPToolCreate(BaseModel):
     review_status: str = "REVIEW_REQUIRED"
     analyzer_revision: str | None = None
     status: str = "active"
-
-
-class MCPToolRead(MCPToolCreate):
     id: int
     created_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="forbid")

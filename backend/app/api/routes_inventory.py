@@ -8,6 +8,7 @@ from common.mcp_endpoint import is_exact_local_lab_endpoint
 from app.db.database import get_db
 from app.models.mcp_server import MCPServer
 from app.models.mcp_tool import MCPTool
+from app.models.tool_analysis import ToolProtocolObservation
 from app.schemas.inventory import DiscoveryImportPayload, DiscoveryRequest
 from app.services.control_plane_audit import record_control_plane_audit
 from app.services.control_plane_auth import AuthenticatedControlPlaneUser, require_admin
@@ -18,11 +19,12 @@ from app.services.signed_service_request import (
     VerifiedServiceRequest,
     require_internal_service_permission,
 )
-from app.services.tool_analysis import ToolAnalysisService
+from app.services.server_security_metadata import refresh_server_security_status
+from app.services.tool_analysis import STATUS_STALE, ToolAnalysisService
 from proxy.protocol_profiles import LEGACY_PROFILE_ID
 
 try:
-    from proxy.tool_security_profiles import server_ref_for_server
+    from common.mcp_endpoint import server_ref_for_server
 except Exception:  # pragma: no cover - import fallback for unusual launch paths
     server_ref_for_server = None
 
@@ -80,6 +82,45 @@ def discover_http_inventory(
     return result
 
 
+@router.post("/servers/{server_id}/discover")
+def discover_registered_http_inventory(
+    server_id: int,
+    current: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    server = db.get(MCPServer, server_id)
+    if server is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="mcp_server_not_found")
+    try:
+        discovery = discover_http_mcp_server(
+            mcp_endpoint=server.endpoint,
+            protocol_version=server.protocol_version or "2025-11-25",
+            auth_mode=server.auth_mode,
+            credential_ref=server.credential_ref,
+            oauth_config=server.oauth_config,
+        )
+    except MCPDiscoveryError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=exc.args[0]) from exc
+
+    import_payload = DiscoveryImportPayload.model_validate(discovery["payload"])
+    result = import_discovery_payload(import_payload, db)
+    record_control_plane_audit(
+        db,
+        actor=current.user,
+        action="MCP_DISCOVERY_IMPORTED",
+        target_type="mcp_server",
+        target_id=str(result["server_id"]),
+        reason="Admin requested governed MCP rediscovery.",
+        after_json={
+            "endpoint": server.endpoint,
+            "tool_count": result["total_tools_imported"],
+            "auth_mode": server.auth_mode,
+        },
+    )
+    db.commit()
+    return result
+
+
 def import_discovery_payload(
     payload: DiscoveryImportPayload,
     db: Session,
@@ -95,13 +136,22 @@ def import_discovery_payload(
             detail="published_configuration_unavailable",
         ) from exc
 
-    tools_created = 0
-    tools_updated = 0
-    tools_quarantined = 0
-    tools_approved_current = 0
+    created_tool_names: set[str] = set()
+    updated_tool_names: set[str] = set()
+    current_analysis_statuses: dict[str, str] = {}
     analysis_service = ToolAnalysisService()
+    seen_tool_names: set[str] = set()
+    seen_profile_pairs: set[tuple[str, str]] = set()
+    server_ref = _server_ref(server)
 
     for tool_payload in payload.tools:
+        profile_id = (
+            tool_payload.upstream_protocol_profile_id
+            or server.preferred_upstream_profile
+            or LEGACY_PROFILE_ID
+        )
+        seen_tool_names.add(tool_payload.name)
+        seen_profile_pairs.add((tool_payload.name, profile_id))
         existing_tool = db.scalar(
             select(MCPTool).where(
                 MCPTool.server_id == server.id,
@@ -111,13 +161,12 @@ def import_discovery_payload(
         if existing_tool is None:
             existing_tool = MCPTool(server_id=server.id, name=tool_payload.name)
             db.add(existing_tool)
-            tools_created += 1
+            created_tool_names.add(tool_payload.name)
         else:
-            tools_updated += 1
+            updated_tool_names.add(tool_payload.name)
 
         apply_tool_metadata(existing_tool, tool_payload.model_dump(), now)
         db.flush()
-        server_ref = _server_ref(server)
         profile_snapshot = _tool_profile_snapshot(
             config_snapshot,
             server_ref,
@@ -128,27 +177,34 @@ def import_discovery_payload(
             tool=existing_tool,
             server_ref=server_ref,
             profile_snapshot=profile_snapshot,
-            upstream_protocol_profile_id=(
-                tool_payload.upstream_protocol_profile_id
-                or server.preferred_upstream_profile
-                or LEGACY_PROFILE_ID
-            ),
+            upstream_protocol_profile_id=profile_id,
         )
-        if analysis.analysis_status == "APPROVED":
-            tools_approved_current += 1
-        else:
-            tools_quarantined += 1
+        current_analysis_statuses[existing_tool.name] = analysis.analysis_status
 
+    mark_absent_discovery_observations_stale(
+        db,
+        server=server,
+        seen_tool_names=seen_tool_names,
+        seen_profile_pairs=seen_profile_pairs,
+    )
+    refresh_server_security_status(db, server.id, scanned_at=datetime.utcnow())
+    db.flush()
     db.refresh(server)
 
     return {
         "server_id": server.id,
         "server_status": "created" if getattr(server, "_was_created", False) else "updated",
-        "tools_created": tools_created,
-        "tools_updated": tools_updated,
-        "total_tools_imported": len(payload.tools),
-        "tools_quarantined": tools_quarantined,
-        "tools_approved_current": tools_approved_current,
+        "tools_created": len(created_tool_names),
+        "tools_updated": len(updated_tool_names - created_tool_names),
+        "total_tools_imported": len(seen_tool_names),
+        "tools_quarantined": sum(
+            status not in {"APPROVED", "ADMIN_ALLOWED"}
+            for status in current_analysis_statuses.values()
+        ),
+        "tools_approved_current": sum(
+            status in {"APPROVED", "ADMIN_ALLOWED"}
+            for status in current_analysis_statuses.values()
+        ),
     }
 
 
@@ -212,7 +268,9 @@ def upsert_server(
 
     if is_local_lab_endpoint(server_payload.endpoint):
         server.trust_status = "lab_trusted"
-    else:
+    elif was_created or server.trust_status == "archived":
+        # New remote MCPs and reactivated archived remotes must start untrusted.
+        # Preserve an explicit administrator trust decision across normal rediscovery.
         server.trust_status = "unknown"
     server.security_status = "pending_analysis"
 
@@ -239,6 +297,40 @@ def apply_tool_metadata(tool: MCPTool, tool_payload: dict, now: datetime) -> Non
     tool.is_sensitive = enrichment["is_sensitive"]
 
 
+def mark_absent_discovery_observations_stale(
+    db: Session,
+    *,
+    server: MCPServer,
+    seen_tool_names: set[str],
+    seen_profile_pairs: set[tuple[str, str]],
+) -> None:
+    profile_ids = set(server.supported_protocol_profiles or [])
+    if not profile_ids:
+        profile_ids.add(server.preferred_upstream_profile or LEGACY_PROFILE_ID)
+    observations = db.scalars(
+        select(ToolProtocolObservation)
+        .join(MCPTool, MCPTool.id == ToolProtocolObservation.tool_id)
+        .where(
+            MCPTool.server_id == server.id,
+            ToolProtocolObservation.upstream_protocol_profile_id.in_(profile_ids),
+        )
+    ).all()
+    for observation in observations:
+        pair = (observation.tool_name, observation.upstream_protocol_profile_id)
+        if pair not in seen_profile_pairs:
+            observation.analysis_state = STATUS_STALE
+
+    tools = db.scalars(select(MCPTool).where(MCPTool.server_id == server.id)).all()
+    for tool in tools:
+        if tool.name in seen_tool_names:
+            continue
+        tool.analysis_status = STATUS_STALE
+        tool.review_status = STATUS_STALE
+        tool.policy_status = STATUS_STALE
+        tool.status = STATUS_STALE
+        tool.approved_fingerprint_match = False
+
+
 def _server_ref(server: MCPServer) -> str:
     payload = {
         "transport": server.transport,
@@ -250,34 +342,18 @@ def _server_ref(server: MCPServer) -> str:
 
 
 def _tool_profile_snapshot(config_snapshot, server_ref: str, tool_name: str) -> dict | None:
-    if getattr(config_snapshot, "schema_version", 1) == 2:
-        try:
-            contract = config_snapshot.get_tool_security_contract(
-                server_ref=server_ref,
-                tool_name=tool_name,
-            )
-        except Exception:
-            return None
-        return {
-            "revision": config_snapshot.content_hash,
-            "schema_version": 2,
-            "contract_hash": contract.contract_hash,
-            "contract": contract.model_dump(mode="json"),
-        }
     try:
-        profile = config_snapshot.get_tool_security_profile(
+        contract = config_snapshot.get_tool_security_contract(
             server_ref=server_ref,
             tool_name=tool_name,
         )
     except Exception:
         return None
     return {
-        "revision": profile.revision,
-        "server_ref": profile.server_ref,
-        "tool_name": profile.tool_name,
-        "operation": profile.operation,
-        "required_capability": profile.required_capability,
-        "resource": profile.resource.model_dump(mode="json"),
+        "revision": config_snapshot.content_hash,
+        "schema_version": 2,
+        "contract_hash": contract.contract_hash,
+        "contract": contract.model_dump(mode="json"),
     }
 
 
@@ -286,9 +362,10 @@ def is_local_lab_endpoint(endpoint: str) -> bool:
 
 
 def security_enrichment_for_tool(tool_name: str) -> dict:
+    _ = tool_name
     return {
         "sensitivity": "unknown",
-        "risk_score": 50,
+        "risk_score": 0,
         "policy_status": "pending_review",
-        "is_sensitive": True,
+        "is_sensitive": False,
     }

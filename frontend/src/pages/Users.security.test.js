@@ -12,6 +12,19 @@ test("password reset never uses a visible browser prompt", () => {
   assert.match(source, /setResetForm\(\{ password: "", confirmation: "", reason: "" \}\)/);
 });
 
+test("password reset clears attempted secret after backend failure", () => {
+  const submitBody =
+    source.match(/async function submitPasswordReset[\s\S]*?async function submitReasonAction/)?.[0] ||
+    "";
+  assert.match(submitBody, /catch \(err\)/);
+  assert.match(submitBody, /setResetForm\(\(current\) => \(\{ \.\.\.current, password: "", confirmation: "" \}\)\)/);
+});
+
+test("administrative reasons use the modal instead of window.prompt", () => {
+  assert.doesNotMatch(source, /window\.prompt/);
+  assert.match(source, /actionDialog/);
+});
+
 test("role escalation requires explicit confirmation", () => {
   assert.match(source, /role === "ADMIN"/);
   assert.match(source, /window\.confirm/);

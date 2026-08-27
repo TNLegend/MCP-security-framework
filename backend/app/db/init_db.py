@@ -1,13 +1,17 @@
 import app.models  # noqa: F401
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 
 from app.db.database import Base, engine
 
 PHASE2_INVENTORY_COLUMNS = {
     "mcp_servers": [
         "ADD COLUMN IF NOT EXISTS protocol_version VARCHAR(50)",
-        "ADD COLUMN IF NOT EXISTS auth_mode VARCHAR(20) DEFAULT 'NONE' NOT NULL",
+        "ADD COLUMN IF NOT EXISTS auth_mode VARCHAR(32) DEFAULT 'NONE' NOT NULL",
         "ADD COLUMN IF NOT EXISTS credential_ref VARCHAR(128)",
+        "ADD COLUMN IF NOT EXISTS oauth_config JSON",
+        "ADD COLUMN IF NOT EXISTS oauth_status VARCHAR(50)",
+        "ADD COLUMN IF NOT EXISTS oauth_connected_at TIMESTAMP",
+        "ADD COLUMN IF NOT EXISTS oauth_last_error VARCHAR(128)",
         "ADD COLUMN IF NOT EXISTS server_info_name VARCHAR(255)",
         "ADD COLUMN IF NOT EXISTS server_info_title VARCHAR(255)",
         "ADD COLUMN IF NOT EXISTS server_info_version VARCHAR(100)",
@@ -88,6 +92,9 @@ PHASE2_INVENTORY_COLUMNS = {
         "ADD COLUMN IF NOT EXISTS signature_algorithm VARCHAR(32)",
         "ADD COLUMN IF NOT EXISTS signature_version VARCHAR(16)",
     ],
+    "control_plane_state": [
+        "ADD COLUMN IF NOT EXISTS last_revision_number INTEGER DEFAULT 0 NOT NULL",
+    ],
     "tool_protocol_observations": [
         "ADD COLUMN IF NOT EXISTS protocol_era VARCHAR(50) DEFAULT 'legacy' NOT NULL",
         "ADD COLUMN IF NOT EXISTS protocol_version VARCHAR(50) DEFAULT '2025-11-25' NOT NULL",
@@ -98,6 +105,10 @@ PHASE2_INVENTORY_COLUMNS = {
     ],
     "tool_approved_baselines": [
         "ADD COLUMN IF NOT EXISTS analysis_context_hash VARCHAR(64)",
+        "ADD COLUMN IF NOT EXISTS approval_source VARCHAR(32) DEFAULT 'ADMIN' NOT NULL",
+    ],
+    "tool_observation_review_approvals": [
+        "ADD COLUMN IF NOT EXISTS evidence_bundle JSON",
     ],
 }
 
@@ -130,13 +141,105 @@ TRUSTED_SESSION_INDEXES = [
 
 def ensure_phase2_inventory_columns() -> None:
     with engine.begin() as connection:
+        existing_tables = set(inspect(connection).get_table_names())
         for table_name, column_definitions in PHASE2_INVENTORY_COLUMNS.items():
+            if table_name not in existing_tables:
+                continue
             for column_definition in column_definitions:
                 connection.execute(text(f"ALTER TABLE {table_name} {column_definition}"))
+        _migrate_legacy_tool_approval_statuses(connection)
+        _deactivate_orphaned_observation_reviews(connection)
+        _backfill_control_plane_revision_high_water(connection)
         for statement in IDENTITY_REPLAY_INDEXES:
             connection.execute(text(statement))
         for statement in TRUSTED_SESSION_INDEXES:
             connection.execute(text(statement))
+
+
+def _deactivate_orphaned_observation_reviews(connection) -> None:
+    inspector = inspect(connection)
+    if "tool_observation_review_approvals" not in inspector.get_table_names():
+        return
+    columns = {
+        column["name"]
+        for column in inspector.get_columns("tool_observation_review_approvals")
+    }
+    if not {"revision_id", "active"} <= columns:
+        return
+    connection.execute(
+        text(
+            "UPDATE tool_observation_review_approvals SET active = FALSE "
+            "WHERE active = TRUE AND NOT EXISTS ("
+            "SELECT 1 FROM control_plane_config_revisions revision "
+            "WHERE revision.id = tool_observation_review_approvals.revision_id)"
+        )
+    )
+
+
+def _backfill_control_plane_revision_high_water(connection) -> None:
+    inspector = inspect(connection)
+    tables = set(inspector.get_table_names())
+    if not {"control_plane_state", "control_plane_config_revisions"} <= tables:
+        return
+    state_columns = {
+        column["name"] for column in inspector.get_columns("control_plane_state")
+    }
+    if "last_revision_number" not in state_columns:
+        return
+    connection.execute(
+        text(
+            "UPDATE control_plane_state "
+            "SET last_revision_number = CASE "
+            "WHEN last_revision_number < COALESCE(("
+            "SELECT MAX(revision_number) FROM control_plane_config_revisions"
+            "), 0) "
+            "THEN COALESCE(("
+            "SELECT MAX(revision_number) FROM control_plane_config_revisions"
+            "), 0) "
+            "ELSE last_revision_number END "
+            "WHERE id = 1"
+        )
+    )
+
+
+def _migrate_legacy_tool_approval_statuses(connection) -> None:
+    inspector = inspect(connection)
+    analysis_columns = {
+        column["name"] for column in inspector.get_columns("tool_analyses")
+    }
+    if {"analysis_status", "review_status", "fingerprint", "tool_id"} <= analysis_columns:
+        connection.execute(
+            text(
+                "UPDATE tool_analyses SET analysis_status = 'ADMIN_ALLOWED', "
+                "review_status = 'ADMIN_ALLOWED' "
+                "WHERE analysis_status = 'APPROVED' AND review_status = 'APPROVED' "
+                "AND EXISTS (SELECT 1 FROM tool_approved_baselines baseline "
+                "WHERE baseline.tool_id = tool_analyses.tool_id "
+                "AND baseline.fingerprint = tool_analyses.fingerprint "
+                "AND baseline.approval_source = 'ADMIN')"
+            )
+        )
+
+    tool_columns = {column["name"] for column in inspector.get_columns("mcp_tools")}
+    if {
+        "analysis_status",
+        "review_status",
+        "policy_status",
+        "status",
+        "current_fingerprint",
+    } <= tool_columns:
+        connection.execute(
+            text(
+                "UPDATE mcp_tools SET analysis_status = 'ADMIN_ALLOWED', "
+                "review_status = 'ADMIN_ALLOWED', policy_status = 'ADMIN_ALLOWED', "
+                "status = 'ADMIN_ALLOWED' "
+                "WHERE analysis_status = 'APPROVED' AND review_status = 'APPROVED' "
+                "AND EXISTS (SELECT 1 FROM tool_approved_baselines baseline "
+                "WHERE baseline.tool_id = mcp_tools.id "
+                "AND baseline.fingerprint = mcp_tools.current_fingerprint "
+                "AND baseline.approval_source = 'ADMIN')"
+            )
+        )
 
 
 def init_db() -> None:

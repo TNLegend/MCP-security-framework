@@ -21,7 +21,9 @@ function Dashboard({
   onNavigate,
 }) {
   const approvedTools = tools.filter(
-    (tool) => tool.analysis_status === "APPROVED" && tool.approved_fingerprint_match,
+    (tool) =>
+      ["APPROVED", "ADMIN_ALLOWED"].includes(tool.analysis_status) &&
+      tool.approved_fingerprint_match,
   );
   const reviewTools = tools.filter((tool) =>
     ["PENDING_ANALYSIS", "QUARANTINED", "REVIEW_REQUIRED", "ANALYSIS_FAILED"].includes(
@@ -153,7 +155,7 @@ function Badge({ value }) {
 
 function badgeClass(value) {
   const normalized = String(value || "").toLowerCase();
-  if (["ok", "healthy", "published", "approved"].includes(normalized)) {
+  if (["ok", "healthy", "published", "approved", "admin_allowed"].includes(normalized)) {
     return "badge-success";
   }
   if (["unavailable", "blocked", "error"].includes(normalized)) {

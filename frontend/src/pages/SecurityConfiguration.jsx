@@ -1,25 +1,39 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   createDraftRevision,
+  createLatestConfigRevision,
+  deleteConfigRevision,
   patchConfigRevision,
   publishConfigRevision,
   rollbackConfigRevision,
   validateConfigRevision,
 } from "../api/client";
+import {
+  LIMITS,
+  activateRowOnKeyboard,
+  clearFieldError,
+  parseJsonContent,
+  validateChangeSummary,
+} from "../utils/validation";
+import ConfigurationEditor from "../components/ConfigurationEditor";
+import SecurityPackManager from "../components/SecurityPackManager";
 
 function SecurityConfiguration({
   activeRevision,
   isAdmin = false,
   loading = false,
   onRefresh,
-  policies = [],
   revisions = [],
 }) {
   const [selectedRevisionId, setSelectedRevisionId] = useState(null);
   const [contentText, setContentText] = useState("");
+  const [loadedContentText, setLoadedContentText] = useState("");
+  const [contentObject, setContentObject] = useState(null);
   const [summary, setSummary] = useState("Control Center update");
+  const [fieldErrors, setFieldErrors] = useState({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const selectedRevision = useMemo(
     () =>
       revisions.find((revision) => revision.id === selectedRevisionId) ||
@@ -31,36 +45,95 @@ function SecurityConfiguration({
 
   useEffect(() => {
     if (selectedRevision) {
-      setContentText(JSON.stringify(selectedRevision.content, null, 2));
+      const text = JSON.stringify(selectedRevision.content, null, 2);
+      setContentText(text);
+      setLoadedContentText(text);
+      setContentObject(selectedRevision.content);
+      setFieldErrors({});
     }
   }, [selectedRevision]);
 
   async function runAction(action) {
-    if (!selectedRevision) {
+    if (busy || (!selectedRevision && action !== "latest")) {
+      return;
+    }
+    const summaryError = validateChangeSummary(summary);
+    const nextErrors = {};
+    if (summaryError) {
+      nextErrors.summary = summaryError;
+    }
+    const hasUnsavedChanges = contentText !== loadedContentText;
+    if (["validate", "publish"].includes(action) && hasUnsavedChanges) {
+      nextErrors.content = "Save draft changes before validating or publishing.";
+    }
+    let parsedContent = null;
+    if (action === "save") {
+      const parsed = parseJsonContent(contentText);
+      if (parsed.error) {
+        nextErrors.content = parsed.error;
+      } else {
+        parsedContent = parsed.value;
+      }
+    }
+    setFieldErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
       return;
     }
     setError("");
     setMessage("");
+    setBusy(true);
     try {
-      if (action === "draft") {
-        await createDraftRevision(selectedRevision.id, summary);
+      let updatedRevision = null;
+      if (action === "latest") {
+        updatedRevision = await createLatestConfigRevision(summary);
+      } else if (action === "draft") {
+        updatedRevision = await createDraftRevision(selectedRevision.id, summary);
       } else if (action === "save") {
-        await patchConfigRevision(selectedRevision.id, JSON.parse(contentText), summary);
+        updatedRevision = await patchConfigRevision(selectedRevision.id, parsedContent, summary);
       } else if (action === "validate") {
         await validateConfigRevision(selectedRevision.id, summary);
       } else if (action === "publish") {
-        await publishConfigRevision(selectedRevision.id, summary);
+        updatedRevision = await publishConfigRevision(selectedRevision.id, summary);
       } else if (action === "rollback") {
         if (!window.confirm("Rollback creates a new signed revision from this content.")) {
           return;
         }
-        await rollbackConfigRevision(selectedRevision.id, summary);
+        updatedRevision = await rollbackConfigRevision(selectedRevision.id, summary);
+      } else if (action === "delete") {
+        if (!window.confirm("Delete this inactive configuration revision? This cannot be undone.")) {
+          return;
+        }
+        await deleteConfigRevision(selectedRevision.id, summary);
+        setSelectedRevisionId(null);
+      }
+      if (updatedRevision?.id) {
+        setSelectedRevisionId(updatedRevision.id);
       }
       setMessage("Configuration operation completed.");
       await onRefresh?.();
     } catch (err) {
       setError(err.message || "Configuration operation failed");
+    } finally {
+      setBusy(false);
     }
+  }
+
+  function updateContent(value) {
+    setContentText(value);
+    const parsed = parseJsonContent(value);
+    if (!parsed.error) setContentObject(parsed.value);
+    setFieldErrors((current) => clearFieldError(current, "content"));
+  }
+
+  function updateStructuredContent(value) {
+    setContentObject(value);
+    setContentText(JSON.stringify(value, null, 2));
+    setFieldErrors((current) => clearFieldError(current, "content"));
+  }
+
+  function updateSummary(value) {
+    setSummary(value);
+    setFieldErrors((current) => clearFieldError(current, "summary"));
   }
 
   if (loading) {
@@ -87,11 +160,11 @@ function SecurityConfiguration({
         <Summary label="Active revision" value={activeRevision?.revision_number ?? "-"} />
         <Summary label="Schema version" value={activeRevision?.schema_version ?? "-"} />
         <Summary label="Policy settings" value={Object.keys(activeRevision?.content?.policy_settings?.rules || {}).length} />
-        <Summary label="Legacy policy rows" value={policies.length} />
+        <Summary label="Security controls" value={Object.keys(activeRevision?.content?.policy_settings?.rules || {}).length} />
       </div>
 
-      <div className="split-layout">
-        <div className="table-shell">
+      <div className="configuration-layout">
+        <div className="table-shell configuration-versions-table">
           <table>
             <thead>
               <tr>
@@ -108,6 +181,9 @@ function SecurityConfiguration({
                   className={selectedRevision?.id === revision.id ? "selected-row" : ""}
                   key={revision.id}
                   onClick={() => setSelectedRevisionId(revision.id)}
+                  onKeyDown={(event) =>
+                    activateRowOnKeyboard(event, () => setSelectedRevisionId(revision.id))
+                  }
                   role="button"
                   tabIndex="0"
                 >
@@ -116,7 +192,11 @@ function SecurityConfiguration({
                     <Badge value={revision.status} />
                   </td>
                   <td>{revision.schema_version}</td>
-                  <td>{shorten(revision.content_hash)}</td>
+                  <td>
+                    <span className="table-ellipsis" title={revision.content_hash}>
+                      {shorten(revision.content_hash)}
+                    </span>
+                  </td>
                   <td>{formatDate(revision.published_at)}</td>
                 </tr>
               ))}
@@ -146,54 +226,112 @@ function SecurityConfiguration({
                   <dd>{selectedRevision.signature_key_id || "-"}</dd>
                 </div>
               </dl>
-              <label className="textarea-label">
-                Revision content
-                <textarea
-                  readOnly={!isAdmin || selectedRevision.status !== "DRAFT"}
-                  onChange={(event) => setContentText(event.target.value)}
-                  value={contentText}
-                />
-              </label>
+              <ConfigurationEditor
+                content={contentObject}
+                contentText={contentText}
+                error={fieldErrors.content}
+                onChange={updateStructuredContent}
+                onRawChange={updateContent}
+                readOnly={!isAdmin || selectedRevision.status !== "DRAFT"}
+              />
+              {isAdmin && (
+                <SecurityPackManager revision={selectedRevision} onComplete={onRefresh} />
+              )}
+              {contentText !== loadedContentText && (
+                <div className="warning-banner">Unsaved changes</div>
+              )}
               {isAdmin && (
                 <div className="action-panel">
                   <label>
                     Change summary
                     <input
-                      onChange={(event) => setSummary(event.target.value)}
+                      aria-describedby="change-summary-error"
+                      aria-invalid={Boolean(fieldErrors.summary)}
+                      maxLength={LIMITS.changeSummaryMax}
+                      minLength={LIMITS.changeSummaryMin}
+                      onChange={(event) => updateSummary(event.target.value)}
                       value={summary}
                     />
+                    <FieldError id="change-summary-error" message={fieldErrors.summary} />
                   </label>
                   <div className="button-row">
-                    <button onClick={() => runAction("draft")} type="button">
+                    <button
+                      disabled={busy}
+                      onClick={() => runAction("latest")}
+                      type="button"
+                    >
+                      New Latest Config
+                    </button>
+                    <button
+                      disabled={busy || selectedRevision.status !== "PUBLISHED"}
+                      onClick={() => runAction("draft")}
+                      title={
+                        selectedRevision.status !== "PUBLISHED"
+                          ? "Create Draft requires a PUBLISHED parent revision."
+                          : undefined
+                      }
+                      type="button"
+                    >
                       Create Draft
                     </button>
                     <button
-                      disabled={selectedRevision.status !== "DRAFT"}
+                      disabled={busy || selectedRevision.status !== "DRAFT"}
                       onClick={() => runAction("save")}
                       type="button"
                     >
-                      Save Draft
+                      {busy ? "Working..." : "Save Draft"}
                     </button>
                     <button
-                      disabled={selectedRevision.status !== "DRAFT"}
+                      disabled={
+                        busy ||
+                        selectedRevision.status !== "DRAFT" ||
+                        contentText !== loadedContentText
+                      }
                       onClick={() => runAction("validate")}
+                      title={
+                        contentText !== loadedContentText
+                          ? "Save draft changes before validating."
+                          : undefined
+                      }
                       type="button"
                     >
                       Validate
                     </button>
                     <button
-                      disabled={selectedRevision.status !== "DRAFT"}
+                      disabled={
+                        busy ||
+                        selectedRevision.status !== "DRAFT" ||
+                        contentText !== loadedContentText
+                      }
                       onClick={() => runAction("publish")}
+                      title={
+                        contentText !== loadedContentText
+                          ? "Save draft changes before publishing."
+                          : undefined
+                      }
                       type="button"
                     >
                       Publish
                     </button>
                     <button
-                      disabled={selectedRevision.status !== "ARCHIVED"}
+                      disabled={busy || selectedRevision.status !== "ARCHIVED"}
                       onClick={() => runAction("rollback")}
                       type="button"
                     >
                       Rollback
+                    </button>
+                    <button
+                      className="danger-action"
+                      disabled={busy || selectedRevision.status !== "DRAFT"}
+                      onClick={() => runAction("delete")}
+                      title={
+                        selectedRevision.status !== "DRAFT"
+                          ? "Only draft configurations can be deleted."
+                          : undefined
+                      }
+                      type="button"
+                    >
+                      Delete
                     </button>
                   </div>
                 </div>
@@ -215,6 +353,14 @@ function Summary({ label, value }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function FieldError({ id, message }) {
+  return message ? (
+    <span className="field-error" id={id}>
+      {message}
+    </span>
+  ) : null;
 }
 
 function Badge({ value }) {

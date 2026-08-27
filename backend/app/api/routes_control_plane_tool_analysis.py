@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.routes_tool_analysis import _analysis_payload, _finding_payload
 from app.db.database import get_db
+from app.models.mcp_tool import MCPTool
 from app.models.tool_analysis import ToolAnalysis, ToolAnalysisFinding
 from app.schemas.control_plane import ToolReviewRequest
 from app.services.control_plane_audit import record_control_plane_audit
@@ -14,6 +15,7 @@ from app.services.control_plane_auth import (
     require_admin,
     require_authenticated_user,
 )
+from app.services.server_security_metadata import refresh_server_security_status
 from app.services.tool_analysis import ToolReviewService
 
 router = APIRouter(
@@ -67,10 +69,13 @@ def approve_tool(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    tool = db.get(MCPTool, tool_id)
+    if tool is not None:
+        refresh_server_security_status(db, tool.server_id)
     record_control_plane_audit(
         db,
         actor=current.user,
-        action="TOOL_APPROVED",
+        action="TOOL_ADMIN_ALLOWED",
         target_type="mcp_tool",
         target_id=str(tool_id),
         reason=payload.justification,
@@ -100,6 +105,9 @@ def block_tool(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    tool = db.get(MCPTool, tool_id)
+    if tool is not None:
+        refresh_server_security_status(db, tool.server_id)
     record_control_plane_audit(
         db,
         actor=current.user,

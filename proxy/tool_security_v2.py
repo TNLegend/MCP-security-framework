@@ -6,16 +6,18 @@ import math
 import re
 import unicodedata
 from typing import Any, Iterable, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from common.canonical_json import sha256_canonical_json
+from proxy.security_packs import SecurityPackManifest, SecurityPackRegistry
 
 
 SUPPORTED_SCHEMA_PROFILE_ID = "supported-json-schema-v1"
 TOOL_SECURITY_CONTRACT_VERSION = "2"
-CAPABILITY_CATALOG_VERSION = "1"
-RESOURCE_TYPE_REGISTRY_VERSION = "1"
+CAPABILITY_CATALOG_VERSION = "2"
+RESOURCE_TYPE_REGISTRY_VERSION = "2"
 FACTS_SCHEMA_VERSION = "1"
 MAX_SCHEMA_DEPTH = 8
 MAX_SCHEMA_PROPERTIES = 256
@@ -25,6 +27,28 @@ MAX_BINDING_DEPTH = 16
 MAX_RESOURCE_CARDINALITY = 1_000
 PATH_TOKEN_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$")
 IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
+ACTION_SELECTOR_NAMES = {
+    "action",
+    "command",
+    "intent",
+    "method",
+    "mode",
+    "op",
+    "operation",
+    "verb",
+}
+ACTION_SELECTOR_VALUES = {
+    "create",
+    "delete",
+    "execute",
+    "list",
+    "modify",
+    "read",
+    "run",
+    "send",
+    "update",
+    "write",
+}
 EMAIL_PATTERN = re.compile(
     r"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
@@ -74,7 +98,7 @@ PRECISION_RANK = {
 
 class ResourceBinding(BaseModel):
     path: tuple[str, ...]
-    resource_type: Literal["filesystem_path", "hierarchical_name", "email_address"]
+    resource_type: str = Field(min_length=1, max_length=128)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -84,11 +108,26 @@ class ResourceBinding(BaseModel):
         validate_binding_tokens(value)
         return value
 
+    @field_validator("resource_type")
+    @classmethod
+    def validate_resource_type(cls, value: str) -> str:
+        if not IDENTIFIER_PATTERN.fullmatch(value):
+            raise ValueError("invalid resource type identifier")
+        return value
+
+
+class FixedResourceReference(BaseModel):
+    resource_type: str = Field(min_length=1, max_length=128)
+    canonical_value: str = Field(min_length=1, max_length=4096)
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
 
 class ToolEffect(BaseModel):
     effect_id: str = Field(min_length=1, max_length=128)
     capability: str = Field(min_length=1, max_length=128)
     resource_bindings: tuple[ResourceBinding, ...] = ()
+    fixed_resource: FixedResourceReference | None = None
     max_resource_cardinality: int | None = Field(
         default=None,
         ge=1,
@@ -150,7 +189,7 @@ class ToolSecurityContract(BaseModel):
 class AuthorityResourceScope(BaseModel):
     scope_id: str = Field(min_length=1, max_length=128)
     authority: str = Field(min_length=1, max_length=255)
-    resource_type: Literal["filesystem_path", "hierarchical_name", "email_address"]
+    resource_type: str = Field(min_length=1, max_length=128)
     canonical_value: str = Field(min_length=1, max_length=4096)
     match_mode: ScopeMatchMode
     broad_scope_acknowledged: StrictBool = False
@@ -194,6 +233,15 @@ class ClaimedResourceReference(BaseModel):
     resource_type: str = Field(min_length=1, max_length=64)
     canonical_value: str = Field(min_length=1, max_length=4096)
     ancestors: tuple[str, ...] = ()
+    resource_sensitivity: Literal[
+        "unknown",
+        "public",
+        "internal",
+        "private",
+        "confidential",
+        "secret",
+    ] = "unknown"
+    resource_flags: tuple[str, ...] = ()
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -241,14 +289,45 @@ class CapabilityDefinition:
     destructive: bool
     requires_resource: bool
     allowed_resource_types: tuple[str, ...]
+    external_effect: bool = False
     lifecycle: str = "ACTIVE"
 
 
 class CapabilityCatalog:
     version = CAPABILITY_CATALOG_VERSION
 
-    def __init__(self) -> None:
-        definitions = (
+    def __init__(
+        self,
+        *,
+        version: str = CAPABILITY_CATALOG_VERSION,
+        security_packs: Iterable[SecurityPackManifest] = (),
+    ) -> None:
+        self.version = version
+        if version == "1":
+            definitions = self._v1_definitions()
+        elif version == CAPABILITY_CATALOG_VERSION:
+            registry = SecurityPackRegistry(security_packs)
+            definitions = tuple(
+                CapabilityDefinition(
+                    id=value.id,
+                    domain=value.domain,
+                    verb=value.verb,
+                    destructive=value.destructive,
+                    requires_resource=value.requires_resource,
+                    allowed_resource_types=value.allowed_resource_types,
+                    external_effect=value.external_effect,
+                    lifecycle=value.lifecycle,
+                )
+                for pack in registry.packs()
+                for value in pack.capabilities
+            )
+        else:
+            raise SecurityModelError("unsupported_capability_catalog_version")
+        self._definitions = {definition.id: definition for definition in definitions}
+
+    @staticmethod
+    def _v1_definitions() -> tuple[CapabilityDefinition, ...]:
+        return (
             CapabilityDefinition(
                 id="filesystem.read",
                 domain="filesystem",
@@ -282,7 +361,6 @@ class CapabilityCatalog:
                 allowed_resource_types=(),
             ),
         )
-        self._definitions = {definition.id: definition for definition in definitions}
 
     def get(self, capability_id: str) -> CapabilityDefinition:
         definition = self._definitions.get(capability_id)
@@ -300,6 +378,7 @@ class CapabilityCatalog:
                 "domain": definition.domain,
                 "verb": definition.verb,
                 "destructive": definition.destructive,
+                "external_effect": definition.external_effect,
                 "requires_resource": definition.requires_resource,
                 "allowed_resource_types": list(definition.allowed_resource_types),
                 "lifecycle": definition.lifecycle,
@@ -317,21 +396,56 @@ class ResourceTypeDefinition:
     requires_specialized_interpretation: bool
     case_semantics: str
     unicode_policy: str
+    canonicalizer: str
+    adapter_id: str
 
 
 class ResourceTypeRegistry:
     version = RESOURCE_TYPE_REGISTRY_VERSION
 
-    def __init__(self) -> None:
-        self._definitions = {
+    def __init__(
+        self,
+        *,
+        version: str = RESOURCE_TYPE_REGISTRY_VERSION,
+        security_packs: Iterable[SecurityPackManifest] = (),
+    ) -> None:
+        self.version = version
+        if version == "1":
+            self._definitions = self._v1_definitions()
+        elif version == RESOURCE_TYPE_REGISTRY_VERSION:
+            registry = SecurityPackRegistry(security_packs)
+            self._definitions = {
+                value.id: ResourceTypeDefinition(
+                    resource_type_id=value.id,
+                    resource_type_version=value.version,
+                    hierarchy_support=value.hierarchy_support,
+                    allowed_matching_modes=tuple(value.allowed_matching_modes),
+                    requires_specialized_interpretation=value.requires_specialized_interpretation,
+                    case_semantics=value.case_semantics,
+                    unicode_policy=value.unicode_policy,
+                    canonicalizer=value.canonicalizer,
+                    adapter_id=value.adapter_id,
+                )
+                for pack in registry.packs()
+                for value in pack.resource_types
+            }
+        else:
+            raise SecurityModelError("unsupported_resource_type_registry_version")
+
+    @staticmethod
+    def _v1_definitions() -> dict[str, ResourceTypeDefinition]:
+        return {
             "filesystem_path": ResourceTypeDefinition(
-                "filesystem_path", "1", True, ("SELF", "SUBTREE"), True, "authority-defined", "NFC-strict"
+                "filesystem_path", "1", True, ("SELF", "SUBTREE"), True,
+                "authority-defined", "NFC-strict", "filesystem_path", "filesystem"
             ),
             "hierarchical_name": ResourceTypeDefinition(
-                "hierarchical_name", "1", True, ("SELF", "SUBTREE"), False, "authority-defined", "NFC-strict"
+                "hierarchical_name", "1", True, ("SELF", "SUBTREE"), False,
+                "authority-defined", "NFC-strict", "hierarchical_name", "generic-declarative"
             ),
             "email_address": ResourceTypeDefinition(
-                "email_address", "1", False, ("SELF",), False, "local-preserved-domain-lower", "ASCII-MVP"
+                "email_address", "1", False, ("SELF",), False,
+                "local-preserved-domain-lower", "ASCII-MVP", "email_address", "generic-declarative"
             ),
         }
 
@@ -351,12 +465,15 @@ class ResourceTypeRegistry:
         if not isinstance(value, str):
             raise SecurityModelError("resource_value_not_string")
         normalized = _strict_nfc(value)
-        if resource_type_id == "filesystem_path":
+        definition = self.get(resource_type_id)
+        if definition.canonicalizer == "filesystem_path":
             return _canonical_filesystem_path(normalized, authority_config or {})
-        if resource_type_id == "hierarchical_name":
+        if definition.canonicalizer == "hierarchical_name":
             return _canonical_hierarchical_name(normalized, authority_config or {})
-        if resource_type_id == "email_address":
+        if definition.canonicalizer == "email_address":
             return _canonical_email(normalized)
+        if definition.canonicalizer == "url":
+            return _canonical_url(normalized)
         raise SecurityModelError("unknown_resource_type")
 
 
@@ -367,8 +484,24 @@ class SupportedSchemaProfileV1:
     def validate(cls, schema: Any) -> tuple[tuple[str, ...], ...]:
         if not isinstance(schema, dict):
             raise SecurityModelError("schema_not_object")
+        definitions = schema.get("$defs", {})
+        if not isinstance(definitions, dict) or any(
+            not isinstance(name, str)
+            or not PATH_TOKEN_PATTERN.fullmatch(name)
+            or not isinstance(value, dict)
+            for name, value in definitions.items()
+        ):
+            raise SecurityModelError("schema_definitions_invalid")
         counter = [0]
-        paths = cls._visit(schema, (), 0, counter, root=True)
+        paths = cls._visit(
+            schema,
+            (),
+            0,
+            counter,
+            definitions=definitions,
+            resolving_refs=(),
+            root=True,
+        )
         return tuple(sorted(set(paths)))
 
     @classmethod
@@ -379,6 +512,8 @@ class SupportedSchemaProfileV1:
         depth: int,
         counter: list[int],
         *,
+        definitions: dict[str, dict[str, Any]],
+        resolving_refs: tuple[str, ...],
         root: bool = False,
     ) -> list[tuple[str, ...]]:
         if depth > MAX_SCHEMA_DEPTH:
@@ -389,12 +524,9 @@ class SupportedSchemaProfileV1:
         if "x-mcp-header" in node:
             raise SecurityModelError("schema_x_mcp_header_unsupported")
         forbidden = {
-            "$ref",
             "$dynamicRef",
             "patternProperties",
             "unevaluatedProperties",
-            "oneOf",
-            "anyOf",
             "allOf",
             "if",
             "then",
@@ -404,11 +536,64 @@ class SupportedSchemaProfileV1:
         }
         if forbidden.intersection(node):
             raise SecurityModelError("schema_construct_unsupported")
+        if "$ref" in node:
+            allowed_ref_keys = {"$ref", "title", "description", "default", "examples"}
+            if set(node) - allowed_ref_keys:
+                raise SecurityModelError("schema_ref_siblings_unsupported")
+            reference = node.get("$ref")
+            prefix = "#/$defs/"
+            if not isinstance(reference, str) or not reference.startswith(prefix):
+                raise SecurityModelError("schema_ref_external_unsupported")
+            name = reference[len(prefix):]
+            if not PATH_TOKEN_PATTERN.fullmatch(name) or name not in definitions:
+                raise SecurityModelError("schema_ref_unknown")
+            if reference in resolving_refs:
+                raise SecurityModelError("schema_ref_cycle")
+            return cls._visit(
+                definitions[name],
+                path,
+                depth + 1,
+                counter,
+                definitions=definitions,
+                resolving_refs=(*resolving_refs, reference),
+                root=root,
+            )
+        union_key = "oneOf" if "oneOf" in node else "anyOf" if "anyOf" in node else None
+        if union_key:
+            allowed_union_keys = {union_key, "title", "description", "default", "examples"}
+            variants = node.get(union_key)
+            if set(node) - allowed_union_keys or not isinstance(variants, list) or not 2 <= len(variants) <= 8:
+                raise SecurityModelError("schema_union_unsupported")
+            variant_paths = []
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    raise SecurityModelError("schema_union_unsupported")
+                variant_paths.append(
+                    cls._visit(
+                        variant,
+                        path,
+                        depth + 1,
+                        counter,
+                        definitions=definitions,
+                        resolving_refs=resolving_refs,
+                        root=root,
+                    )
+                )
+            normalized = [set(paths) for paths in variant_paths]
+            if any(paths != normalized[0] for paths in normalized[1:]):
+                raise SecurityModelError("schema_union_paths_ambiguous")
+            return variant_paths[0]
         node_type = node.get("type")
+        if isinstance(node_type, list):
+            non_null = [value for value in node_type if value != "null"]
+            if len(node_type) != 2 or len(non_null) != 1 or "null" not in node_type:
+                raise SecurityModelError("schema_type_union_unsupported")
+            node_type = non_null[0]
         if root and node_type != "object":
             raise SecurityModelError("schema_root_must_be_object")
         if node_type not in {"object", "array", "string", "boolean", "integer", "number"}:
             raise SecurityModelError("schema_type_unsupported")
+        _reject_unsupported_action_selector(path, node)
 
         if node_type == "object":
             if node.get("additionalProperties") is not False:
@@ -425,7 +610,16 @@ class SupportedSchemaProfileV1:
                     raise SecurityModelError("schema_property_name_unsupported")
                 if not isinstance(child, dict):
                     raise SecurityModelError("schema_property_not_object")
-                result.extend(cls._visit(child, path + (name,), depth + 1, counter))
+                result.extend(
+                    cls._visit(
+                        child,
+                        path + (name,),
+                        depth + 1,
+                        counter,
+                        definitions=definitions,
+                        resolving_refs=resolving_refs,
+                    )
+                )
             return result
 
         if node_type == "array":
@@ -439,13 +633,23 @@ class SupportedSchemaProfileV1:
                 or max_items > MAX_ARRAY_ITEMS
             ):
                 raise SecurityModelError("schema_array_unbounded_or_invalid")
-            return cls._visit(items, path + ("*",), depth + 1, counter)
+            return cls._visit(
+                items,
+                path + ("*",),
+                depth + 1,
+                counter,
+                definitions=definitions,
+                resolving_refs=resolving_refs,
+            )
 
         cls._validate_scalar_constraints(node, node_type)
         return [path]
 
     @staticmethod
-    def _validate_scalar_constraints(node: dict[str, Any], node_type: str) -> None:
+    def _validate_scalar_constraints(
+        node: dict[str, Any],
+        node_type: str,
+    ) -> None:
         enum = node.get("enum")
         if enum is not None and (not isinstance(enum, list) or not enum):
             raise SecurityModelError("schema_enum_invalid")
@@ -465,6 +669,21 @@ class SupportedSchemaProfileV1:
                 raise SecurityModelError("schema_number_bounds_required")
             if not _safe_number(minimum) or not _safe_number(maximum) or minimum > maximum:
                 raise SecurityModelError("schema_number_bounds_invalid")
+
+
+def _reject_unsupported_action_selector(
+    path: tuple[str, ...],
+    node: dict[str, Any],
+) -> None:
+    if not path:
+        return
+    selector_name = path[-1].lower()
+    if selector_name not in ACTION_SELECTOR_NAMES | ACTION_SELECTOR_VALUES:
+        return
+    enum = node.get("enum")
+    if isinstance(enum, list) and len(enum) == 1:
+        return
+    raise SecurityModelError("conditional_selector_schema_unsupported")
 
 
 def validate_contract_for_schema(
@@ -499,10 +718,15 @@ def validate_contract_for_schema(
     resolutions: list[AdapterResolution] = []
     for effect in contract.effects:
         capability = catalog.get(effect.capability)
-        if capability.requires_resource and not effect.resource_bindings:
+        resource_source_count = len(effect.resource_bindings) + (
+            1 if effect.fixed_resource is not None else 0
+        )
+        if capability.requires_resource and resource_source_count == 0:
             raise SecurityModelError("required_resource_binding_missing")
-        if not capability.requires_resource and effect.resource_bindings:
+        if not capability.requires_resource and resource_source_count:
             raise SecurityModelError("resource_binding_not_allowed")
+        if effect.resource_bindings and effect.fixed_resource is not None:
+            raise SecurityModelError("resource_source_ambiguous")
         for binding in effect.resource_bindings:
             type_registry.get(binding.resource_type)
             if binding.resource_type not in capability.allowed_resource_types:
@@ -512,6 +736,23 @@ def validate_contract_for_schema(
                 AdapterResolution(
                     effect_id=effect.effect_id,
                     resource_type=binding.resource_type,
+                    adapter_id=manifest.adapter_id,
+                    adapter_api_version=manifest.adapter_api_version,
+                    implementation_version=manifest.implementation_version,
+                )
+            )
+        if effect.fixed_resource is not None:
+            type_registry.get(effect.fixed_resource.resource_type)
+            if effect.fixed_resource.resource_type not in capability.allowed_resource_types:
+                raise SecurityModelError("capability_resource_type_incompatible")
+            manifest = adapter_resolver.resolve(
+                effect.capability,
+                effect.fixed_resource.resource_type,
+            )
+            resolutions.append(
+                AdapterResolution(
+                    effect_id=effect.effect_id,
+                    resource_type=effect.fixed_resource.resource_type,
                     adapter_id=manifest.adapter_id,
                     adapter_api_version=manifest.adapter_api_version,
                     implementation_version=manifest.implementation_version,
@@ -645,6 +886,27 @@ def _canonical_email(value: str) -> tuple[str, tuple[str, ...]]:
         raise SecurityModelError("email_address_unsupported")
     local_part, domain = value.rsplit("@", 1)
     return f"{local_part}@{domain.lower()}", ()
+
+
+def _canonical_url(value: str) -> tuple[str, tuple[str, ...]]:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise SecurityModelError("resource_url_invalid") from exc
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    if scheme not in {"http", "https"} or not host:
+        raise SecurityModelError("resource_url_invalid")
+    if parsed.username or parsed.password or parsed.fragment:
+        raise SecurityModelError("resource_url_authority_invalid")
+    if any(character.isspace() or ord(character) < 32 for character in value):
+        raise SecurityModelError("resource_url_invalid_character")
+    default_port = 80 if scheme == "http" else 443
+    authority = host if port in {None, default_port} else f"{host}:{port}"
+    path = parsed.path or "/"
+    canonical = urlunsplit((scheme, authority, path, parsed.query, ""))
+    return canonical, (f"{scheme}://{authority}",)
 
 
 def _safe_number(value: Any) -> bool:

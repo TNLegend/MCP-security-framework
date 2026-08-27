@@ -1,6 +1,7 @@
 from pathlib import Path
 import sys
 from typing import Any
+from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
@@ -47,23 +48,18 @@ from proxy.runtime_logger import (
     send_runtime_log,
     summarize_tool_result,
 )
-from proxy.resource_registry import (
-    ResourceRegistryError,
-    ResourceRegistryResolver,
-)
-from proxy.resource_adapters import revalidate_resource
-from proxy.tool_security_profiles import (
-    ToolSecurityProfileError,
-    ToolSecurityProfileResolver,
-    server_ref_for_server,
-)
 from proxy.tool_request_preparation import (
     PreparedToolRequest,
-    prepare_tool_request,
     prepare_tool_request_v2,
 )
+from proxy.tool_result_guard import ToolResultGuard, is_external_effect, is_read_effect
 from common.canonical_json import sha256_canonical_json
-from common.mcp_endpoint import MCPEndpointValidationError, validate_mcp_endpoint
+from common.mcp_endpoint import (
+    MCPEndpointValidationError,
+    server_ref_for_server,
+    validate_mcp_endpoint,
+)
+from common.trust_status import is_trusted_server_status
 from common.upstream_auth import (
     UpstreamAuthError,
     resolve_upstream_bearer_token,
@@ -74,6 +70,7 @@ from proxy.trusted_sessions import (
     ProxyTrustedSession,
     TrustedSessionError,
     TrustedSessionManager,
+    direct_bearer_session,
 )
 
 try:
@@ -172,10 +169,9 @@ class MCPProxy:
         identity_binding_resolver: IdentityBindingResolver | None = None,
         assertion_signer: InternalIdentityAssertionSigner | None = None,
         trusted_session_manager: TrustedSessionManager | None = None,
-        tool_profile_resolver: ToolSecurityProfileResolver | None = None,
-        resource_registry_resolver: ResourceRegistryResolver | None = None,
         config_snapshot_resolver: PublishedConfigurationSnapshotResolver | None = None,
         legacy_upstream_session_pool: LegacyUpstreamSessionPool | None = None,
+        tool_result_guard: ToolResultGuard | None = None,
     ) -> None:
         self.backend_client = backend_client or BackendClient()
         self.mcp_client_class = mcp_client_class
@@ -185,19 +181,14 @@ class MCPProxy:
         self.trusted_session_manager = (
             trusted_session_manager or TrustedSessionManager()
         )
-        self.tool_profile_resolver = tool_profile_resolver
-        self.resource_registry_resolver = resource_registry_resolver
         self.config_snapshot_resolver = (
             config_snapshot_resolver or PublishedConfigurationSnapshotResolver()
         )
         self.legacy_upstream_session_pool = (
             legacy_upstream_session_pool or LegacyUpstreamSessionPool()
         )
-        self._requires_config_snapshot = (
-            identity_binding_resolver is None
-            or tool_profile_resolver is None
-            or resource_registry_resolver is None
-        )
+        self.tool_result_guard = tool_result_guard or ToolResultGuard()
+        self._requires_config_snapshot = True
 
     def handle_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
         claimed_agent_id = tool_call.get("agent_id")
@@ -213,29 +204,21 @@ class MCPProxy:
             }
         }
 
-        config_snapshot = None
-        if self._requires_config_snapshot:
-            try:
-                config_snapshot = self._load_config_snapshot()
-            except PublishedConfigurationError as exc:
-                return self._trusted_identity_error_response(
-                    safe_input_tool_call,
-                    exc.code,
-                )
-            except Exception:
-                return self._trusted_identity_error_response(
-                    safe_input_tool_call,
-                    "published_config_unavailable",
-                )
+        try:
+            config_snapshot = self._load_config_snapshot()
+        except PublishedConfigurationError as exc:
+            return self._trusted_identity_error_response(
+                safe_input_tool_call,
+                exc.code,
+            )
+        except Exception:
+            return self._trusted_identity_error_response(
+                safe_input_tool_call,
+                "published_config_unavailable",
+            )
 
         identity_binding_resolver = self.identity_binding_resolver or config_snapshot
-        tool_profile_resolver = self.tool_profile_resolver or config_snapshot
-        resource_registry_resolver = self.resource_registry_resolver or config_snapshot
-        if (
-            identity_binding_resolver is None
-            or tool_profile_resolver is None
-            or resource_registry_resolver is None
-        ):
+        if identity_binding_resolver is None:
             return self._trusted_identity_error_response(
                 safe_input_tool_call,
                 "published_config_unavailable",
@@ -286,6 +269,12 @@ class MCPProxy:
             "control_plane_content_hash": (
                 config_snapshot.content_hash if config_snapshot is not None else "unknown"
             ),
+            "policy_settings": (
+                config_snapshot.get_policy_settings()
+                if config_snapshot is not None
+                and callable(getattr(config_snapshot, "get_policy_settings", None))
+                else {"rules": {}}
+            ),
         }
 
         raw_arguments = tool_call.get("arguments", {})
@@ -300,15 +289,27 @@ class MCPProxy:
 
         try:
             server = self._resolve_server(tool_call)
-            tool = self._resolve_tool(server, tool_call)
         except BackendClientError as exc:
             return self._inventory_error_response(tool_call, str(exc))
+        if protocol_verdict_expired(server):
+            return self._inventory_error_response(
+                tool_call,
+                "Registered MCP protocol verdict is expired; rediscovery is required.",
+            )
 
         upstream_protocol_profile_id = (
             server.get("preferred_upstream_profile")
             or server.get("preferred_protocol_profile")
             or LEGACY_PROFILE_ID
         )
+        try:
+            tool = self._resolve_tool(
+                server,
+                tool_call,
+                str(upstream_protocol_profile_id),
+            )
+        except BackendClientError as exc:
+            return self._inventory_error_response(tool_call, str(exc))
         tool_call = {
             **tool_call,
             "client_protocol_profile_id": (
@@ -339,74 +340,67 @@ class MCPProxy:
         }
 
         server_ref = server_ref_for_server(server)
-        if config_snapshot is not None and getattr(config_snapshot, "schema_version", 1) == 2:
-            emergency_code, deny_id = self._emergency_deny_status(
-                tool_call,
-                server_ref=server_ref,
-                tool_name=str(tool.get("name") or tool_call.get("tool_name") or ""),
+        emergency_code, deny_id = self._emergency_deny_status(
+            tool_call,
+            server_ref=server_ref,
+            tool_name=str(tool.get("name") or tool_call.get("tool_name") or ""),
+        )
+        if emergency_code is not None:
+            return self._emergency_deny_response(
+                tool_call=tool_call,
+                server_id=server.get("id"),
+                error_code=emergency_code,
+                deny_id=deny_id,
             )
-            if emergency_code is not None:
-                return self._emergency_deny_response(
-                    tool_call=tool_call,
-                    server_id=server.get("id"),
-                    error_code=emergency_code,
-                    deny_id=deny_id,
-                )
         try:
-            if config_snapshot is not None and getattr(config_snapshot, "schema_version", 1) == 2:
-                resolved_tool_name = str(
-                    tool.get("name") or tool_call.get("tool_name") or ""
-                )
-                contract = config_snapshot.get_tool_security_contract(
-                    server_ref=server_ref,
-                    tool_name=resolved_tool_name,
-                )
-                current_fingerprint = tool.get("current_fingerprint")
-                if not isinstance(current_fingerprint, str) or not current_fingerprint:
-                    raise PublishedConfigurationError("tool_observation_fingerprint_missing")
-                approval = config_snapshot.get_tool_observation_approval(
-                    server_ref=server_ref,
-                    upstream_protocol_profile_id=str(upstream_protocol_profile_id),
-                    tool_fingerprint=current_fingerprint,
-                )
-                if approval.contract_hash != contract.contract_hash:
-                    raise PublishedConfigurationError("approval_contract_hash_mismatch")
-                adapter_resolutions = tuple(
-                    resolution
-                    for effect in contract.effects
-                    for resolution in config_snapshot.get_adapter_resolutions(
-                        effect_id=effect.effect_id
-                    )
-                )
-                authority_scopes = config_snapshot.get_authority_resource_scopes()
-                authority_context = config_snapshot.get_authority_context(server_ref)
-                prepared_request = prepare_tool_request_v2(
-                    raw_arguments=raw_arguments,
-                    input_schema=tool.get("input_schema"),
-                    contract=contract,
-                    adapter_resolutions=adapter_resolutions,
-                    approval=approval,
-                    authority_scopes=authority_scopes,
-                    authority_context=authority_context,
-                    client_protocol_profile_id=str(
-                        tool_call.get("client_protocol_profile_id") or LEGACY_PROFILE_ID
-                    ),
-                    upstream_protocol_profile_id=str(upstream_protocol_profile_id),
-                )
-            else:
-                tool_profile = tool_profile_resolver.resolve(
-                    server_ref=server_ref,
-                    tool_name=str(tool.get("name") or tool_call.get("tool_name") or ""),
-                )
-                resource_registry = resource_registry_resolver.load()
-                prepared_request = prepare_tool_request(
-                    tool_name=str(tool.get("name") or tool_call.get("tool_name") or ""),
-                    raw_arguments=raw_arguments,
-                    input_schema=tool.get("input_schema"),
-                    tool_profile=tool_profile,
-                    resource_registry=resource_registry,
-                )
-        except (ToolSecurityProfileError, ResourceRegistryError, PublishedConfigurationError) as exc:
+            resolved_tool_name = str(tool.get("name") or tool_call.get("tool_name") or "")
+            contract = config_snapshot.get_tool_security_contract(
+                server_ref=server_ref,
+                tool_name=resolved_tool_name,
+            )
+            current_fingerprint = tool.get("current_fingerprint")
+            if not isinstance(current_fingerprint, str) or not current_fingerprint:
+                raise PublishedConfigurationError("tool_observation_fingerprint_missing")
+            approval = config_snapshot.get_tool_observation_approval(
+                server_ref=server_ref,
+                upstream_protocol_profile_id=str(upstream_protocol_profile_id),
+                tool_fingerprint=current_fingerprint,
+            )
+            if approval.contract_hash != contract.contract_hash:
+                raise PublishedConfigurationError("approval_contract_hash_mismatch")
+            if tool.get("analysis_status") in {
+                "ANALYSIS_FAILED", "BLOCKED", "PENDING_ANALYSIS", "QUARANTINED", "STALE",
+            }:
+                raise PublishedConfigurationError("approved_observation_not_current")
+            tool = {
+                **tool,
+                "analysis_status": "APPROVED",
+                "review_status": "APPROVED",
+                "approved_fingerprint": current_fingerprint,
+                "approved_fingerprint_match": True,
+            }
+            adapter_resolutions = tuple(
+                resolution
+                for effect in contract.effects
+                for resolution in config_snapshot.get_adapter_resolutions(effect_id=effect.effect_id)
+            )
+            prepared_request = prepare_tool_request_v2(
+                raw_arguments=raw_arguments,
+                input_schema=tool.get("input_schema"),
+                contract=contract,
+                adapter_resolutions=adapter_resolutions,
+                approval=approval,
+                authority_scopes=config_snapshot.get_authority_resource_scopes(),
+                authority_context=config_snapshot.get_authority_context(server_ref),
+                client_protocol_profile_id=str(
+                    tool_call.get("client_protocol_profile_id") or LEGACY_PROFILE_ID
+                ),
+                upstream_protocol_profile_id=str(upstream_protocol_profile_id),
+                capability_catalog_version=config_snapshot.content.capability_catalog_version,
+                resource_type_registry_version=config_snapshot.content.resource_type_registry_version,
+                security_packs=config_snapshot.content.security_packs,
+            )
+        except PublishedConfigurationError as exc:
             return self._profile_error_response(
                 tool_call,
                 server.get("id"),
@@ -453,6 +447,31 @@ class MCPProxy:
             )
 
         prepared_tool_call = self._prepared_tool_call(tool_call, prepared_request)
+        if not prepared_request.arguments_valid:
+            decision = _fail_closed_proxy_decision(
+                rule_id="invalid_tool_arguments_guard",
+                reason="Tool arguments are invalid or could not be safely prepared.",
+                severity="high",
+                evidence={
+                    "arguments_valid": False,
+                    "validation_error_codes": list(
+                        prepared_request.validation_error_codes
+                    ),
+                },
+                policy_revision="proxy-safety-guard-v1",
+            )
+            decision_data = decision.model_dump(mode="json")
+            return self._skip_response(
+                tool_call=prepared_tool_call,
+                server_id=server["id"],
+                decision=decision_data,
+                status="blocked",
+                execution_status="blocked",
+                message="Tool call skipped because tool arguments are invalid.",
+                error_summary="invalid_tool_arguments",
+                skip_reason="invalid_tool_arguments",
+            )
+
         context = self._build_policy_context(
             prepared_tool_call,
             server,
@@ -513,18 +532,11 @@ class MCPProxy:
                 skip_reason="policy_error",
             )
 
-        require_v2_binding = prepared_request.security_model_version == "2"
         decision, validation_error = _validate_policy_decision(
             raw_decision,
-            expected_revision_id=(
-                tool_call.get("control_plane_revision_id") if require_v2_binding else None
-            ),
-            expected_content_hash=(
-                tool_call.get("control_plane_content_hash") if require_v2_binding else None
-            ),
-            expected_arguments_hash=(
-                prepared_request.canonical_arguments_hash if require_v2_binding else None
-            ),
+            expected_revision_id=tool_call.get("control_plane_revision_id"),
+            expected_content_hash=tool_call.get("control_plane_content_hash"),
+            expected_arguments_hash=prepared_request.canonical_arguments_hash,
         )
         if validation_error is not None:
             decision = _fail_closed_proxy_decision(
@@ -541,31 +553,6 @@ class MCPProxy:
                 message=f"Tool call skipped because policy decision is invalid: {validation_error}.",
                 error_summary=validation_error,
                 skip_reason=validation_error,
-            )
-
-        if not prepared_request.arguments_valid and decision.effect != PolicyEffect.DENY:
-            decision = _fail_closed_proxy_decision(
-                rule_id="invalid_tool_arguments_guard",
-                reason="Tool arguments are invalid or could not be safely prepared.",
-                severity="high",
-                evidence={
-                    "arguments_valid": False,
-                    "validation_error_codes": list(
-                        prepared_request.validation_error_codes
-                    ),
-                },
-                policy_revision="proxy-safety-guard-v1",
-            )
-            policy_decision_data = decision.model_dump(mode="json")
-            return self._skip_response(
-                tool_call=prepared_tool_call,
-                server_id=server["id"],
-                decision=policy_decision_data,
-                status="blocked",
-                execution_status="blocked",
-                message="Tool call skipped because tool arguments are invalid.",
-                error_summary="invalid_tool_arguments",
-                skip_reason="invalid_tool_arguments",
             )
 
         unsafe_resource_reason = self._unsafe_resource_guard_reason(prepared_request)
@@ -673,7 +660,7 @@ class MCPProxy:
             subject=external_identity.subject,
         )
         self._verify_claimed_agent_id(claimed_agent_id, identity_binding.agent_id)
-        return self.trusted_session_manager.create_for_identity(
+        return direct_bearer_session(
             external_identity=external_identity,
             identity_binding=identity_binding,
         )
@@ -724,6 +711,11 @@ class MCPProxy:
                 server.get("auth_mode"),
                 server.get("credential_ref"),
             )
+            if server.get("auth_mode") == "OAUTH" and not isinstance(
+                server.get("oauth_config"),
+                dict,
+            ):
+                raise UpstreamAuthError("upstream_oauth_configuration_invalid")
         except (MCPEndpointValidationError, UpstreamAuthError) as exc:
             raise BackendClientError(
                 f"Resolved MCP server configuration is invalid: {exc}"
@@ -735,12 +727,17 @@ class MCPProxy:
         self,
         server: dict[str, Any],
         tool_call: dict[str, Any],
+        upstream_protocol_profile_id: str | None = None,
     ) -> dict[str, Any]:
         tool_name = tool_call.get("tool_name")
         if not tool_name:
             raise BackendClientError("Tool call is missing tool_name.")
 
-        tool = self.backend_client.find_tool(server["id"], str(tool_name))
+        tool = self.backend_client.find_tool(
+            server["id"],
+            str(tool_name),
+            upstream_protocol_profile_id,
+        )
         if tool is None:
             raise BackendClientError(
                 f"Tool '{tool_name}' was not found for server id {server['id']}."
@@ -776,7 +773,7 @@ class MCPProxy:
                 "endpoint": server.get("endpoint"),
                 "server_ref": server_ref_for_server(server),
                 "known": True,
-                "trusted": trust_status not in {"unknown", "blocked"},
+                "trusted": is_trusted_server_status(trust_status),
                 "trust_status": trust_status,
                 "security_status": server.get("security_status"),
             },
@@ -881,6 +878,7 @@ class MCPProxy:
                     "legacy_streamable_http",
                 ),
             },
+            "policy_settings": tool_call.get("policy_settings") or {"rules": {}},
         }
 
     def _status_for_skipped_policy_decision(self, decision: PolicyDecision) -> str:
@@ -904,10 +902,7 @@ class MCPProxy:
         decision_hash = decision.get("canonical_arguments_hash")
         if (
             execution_hash != prepared_request.canonical_arguments_hash
-            or (
-                prepared_request.security_model_version == "2"
-                and decision_hash != execution_hash
-            )
+            or decision_hash != execution_hash
         ):
             fail_closed = _fail_closed_proxy_decision(
                 rule_id="canonical_arguments_changed_before_execution",
@@ -926,18 +921,19 @@ class MCPProxy:
                 skip_reason="canonical_arguments_changed_before_execution",
             )
 
-        if prepared_request.security_model_version == "2":
-            is_still_valid, revalidation_error = True, None
-        else:
-            is_still_valid, revalidation_error = revalidate_resource(
-                prepared_request.resource_resolution
+        session_reference = str(tool_call.get("session_reference") or "")
+        if (
+            is_external_effect(prepared_request)
+            and self.tool_result_guard.matches_prior_result(
+                session_reference,
+                tool_call.get("arguments") or {},
             )
-        if not is_still_valid:
+        ):
             fail_closed = _fail_closed_proxy_decision(
-                rule_id="resource_changed_before_execution",
-                reason="Resource changed before execution.",
-                evidence={"resource_error_code": revalidation_error},
-                policy_revision="proxy-resource-guard-v1",
+                rule_id="cross_call_data_exfiltration_guard",
+                reason="Outgoing arguments contain data returned by a prior read operation.",
+                severity="critical",
+                policy_revision="proxy-result-guard-v1",
             ).model_dump(mode="json")
             return self._skip_response(
                 tool_call=tool_call,
@@ -945,27 +941,27 @@ class MCPProxy:
                 decision=fail_closed,
                 status="blocked",
                 execution_status="blocked",
-                message="Tool call skipped because resource changed before execution.",
-                error_summary=revalidation_error or "resource_changed_before_execution",
-                skip_reason=revalidation_error or "resource_changed_before_execution",
+                message="Tool call skipped by the cross-call data guard.",
+                error_summary="cross_call_data_exfiltration_guard",
+                skip_reason="cross_call_data_exfiltration_guard",
             )
 
-        if prepared_request.security_model_version == "2":
-            emergency_code, deny_id = self._emergency_deny_status(
-                tool_call,
-                server_ref=server_ref_for_server(server),
-                tool_name=str(tool_call.get("tool_name") or ""),
+        emergency_code, deny_id = self._emergency_deny_status(
+            tool_call,
+            server_ref=server_ref_for_server(server),
+            tool_name=str(tool_call.get("tool_name") or ""),
+        )
+        if emergency_code is not None:
+            return self._emergency_deny_response(
+                tool_call=tool_call,
+                server_id=server.get("id"),
+                error_code=emergency_code,
+                deny_id=deny_id,
             )
-            if emergency_code is not None:
-                return self._emergency_deny_response(
-                    tool_call=tool_call,
-                    server_id=server.get("id"),
-                    error_code=emergency_code,
-                    deny_id=deny_id,
-                )
 
         upstream_profile_id = (
-            server.get("preferred_upstream_profile")
+            tool_call.get("upstream_protocol_profile_id")
+            or server.get("preferred_upstream_profile")
             or server.get("preferred_protocol_profile")
             or LEGACY_PROFILE_ID
         )
@@ -994,6 +990,7 @@ class MCPProxy:
             bearer_token = resolve_upstream_bearer_token(
                 server.get("auth_mode"),
                 server.get("credential_ref"),
+                oauth_config=server.get("oauth_config"),
             )
         except UpstreamAuthError as exc:
             return self._execution_error_response(
@@ -1047,6 +1044,50 @@ class MCPProxy:
                 str(tool_call.get("tool_name")),
                 tool_call.get("arguments") or {},
             )
+            inspection = self.tool_result_guard.inspect(tool_result)
+            if inspection.blocked:
+                guarded_decision = _fail_closed_proxy_decision(
+                    rule_id="unsafe_tool_result_blocked",
+                    reason="Tool result contains unsafe content and was withheld.",
+                    severity="critical",
+                    evidence={"finding_codes": list(inspection.finding_codes)},
+                    policy_revision="proxy-result-guard-v1",
+                ).model_dump(mode="json")
+                guarded_result = {
+                    "isError": True,
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Tool result withheld by the security framework.",
+                        }
+                    ],
+                }
+                log_payload = build_runtime_log(
+                    tool_call,
+                    guarded_decision,
+                    server_id=server["id"],
+                    executed=True,
+                    execution_status="result_blocked",
+                    tool_result=guarded_result,
+                    status="blocked",
+                )
+                runtime_log = self._send_runtime_log(log_payload)
+                return self._response(
+                    status="blocked",
+                    decision=guarded_decision,
+                    executed=True,
+                    mcp_called=mcp_called,
+                    execution_status="result_blocked",
+                    tool_result=guarded_result,
+                    runtime_log=runtime_log,
+                    message="Tool result withheld by the security framework.",
+                    skip_reason="unsafe_tool_result_blocked",
+                )
+            if is_read_effect(prepared_request):
+                self.tool_result_guard.remember_read_result(
+                    session_reference,
+                    tool_result,
+                )
             execution_status = (
                 "tool_error" if bool(tool_result.get("isError", False)) else "success"
             )
@@ -1233,6 +1274,11 @@ class MCPProxy:
             "result_summary": summarize_tool_result(tool_result),
             "runtime_log_created": runtime_log.get("created", False),
             "runtime_log_id": runtime_log.get("id"),
+            "runtime_log_error": (
+                "runtime_log_persistence_failed"
+                if runtime_log.get("created", False) is False
+                else None
+            ),
             "runtime_log": runtime_log.get("payload"),
             "message": message,
             "skip_reason": skip_reason,
@@ -1281,9 +1327,20 @@ class MCPProxy:
         server_id: int | None,
         error_code: str,
     ) -> dict[str, Any]:
+        reason = {
+            "approved_observation_not_current": (
+                "The current tool analysis is not eligible for the published observation approval."
+            ),
+            "tool_observation_fingerprint_missing": (
+                "The current tool observation fingerprint is unavailable."
+            ),
+            "approval_contract_hash_mismatch": (
+                "The published observation approval does not match the active tool contract."
+            ),
+        }.get(error_code, "Trusted runtime metadata could not be resolved.")
         decision = _fail_closed_proxy_decision(
             rule_id=error_code,
-            reason="Tool security profile or resource registry could not be resolved.",
+            reason=reason,
         )
         decision_data = decision.model_dump(mode="json")
         return self._skip_response(
@@ -1360,12 +1417,6 @@ class MCPProxy:
             return None
         if prepared_request.resource_resolution_status != "resolved":
             return prepared_request.resource_resolution_status
-        if prepared_request.security_model_version == "2":
-            return None
-        if not prepared_request.operation_allowed_on_scope:
-            return "operation_not_allowed_on_scope"
-        if prepared_request.resource_sensitivity == "secret":
-            return "deny_sensitive_resource"
         return None
 
     def _trusted_identity_error_response(
@@ -1421,3 +1472,21 @@ def _trusted_identity_fail_closed_proxy_decision(error_code: str) -> PolicyDecis
         evidence={"identity_error_code": error_code},
         policy_revision="trusted-identity-fail-closed-v1",
     )
+
+
+def protocol_verdict_expired(server: dict[str, Any]) -> bool:
+    value = server.get("protocol_verdict_expires_at")
+    if value in (None, ""):
+        return False
+    try:
+        if isinstance(value, datetime):
+            expires_at = value
+        elif isinstance(value, str):
+            expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        else:
+            return True
+    except ValueError:
+        return True
+    if expires_at.tzinfo is None:
+        return datetime.utcnow() >= expires_at
+    return datetime.now(timezone.utc) >= expires_at.astimezone(timezone.utc)

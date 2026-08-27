@@ -9,18 +9,8 @@ from jsonschema.exceptions import SchemaError
 
 from common.canonical_json import canonical_json_bytes, sha256_canonical_json
 
-from proxy.lab_tool_compat import (
-    is_lab_directory_listing_tool,
-    is_lab_file_read_tool,
-    lab_tool_descriptor,
-)
-from proxy.resource_adapters import (
-    ResourceResolution,
-    resolve_resource,
-)
-from proxy.resource_registry import ResourceRegistry
-from proxy.tool_security_profiles import ResolvedToolSecurityProfile
 from proxy.resource_adapters_v2 import AdapterRegistry, resolve_effect_facts
+from proxy.security_packs import SecurityPackManifest
 from proxy.tool_security_v2 import (
     AdapterResolution,
     AuthorityResourceScope,
@@ -31,6 +21,7 @@ from proxy.tool_security_v2 import (
     CapabilityCatalog,
     NormalizedEffectFacts,
     ReferencePrecision,
+    ResourceTypeRegistry,
     validate_contract_for_schema,
 )
 
@@ -39,24 +30,10 @@ MAX_SCHEMA_BYTES = 262_144
 MAX_ARGUMENTS_BYTES = 262_144
 MAX_VALIDATION_ERRORS = 20
 MAX_ERROR_CODE_LENGTH = 128
-MAX_PATH_LENGTH = 4096
-MAX_PATH_SEGMENTS = 256
 MAX_SCHEMA_DEPTH = 64
 MAX_SCHEMA_NODES = 10_000
 
 SAFE_CODE_PATTERN = re.compile(r"[^a-zA-Z0-9_\-.$:]")
-WINDOWS_DRIVE_PATTERN = re.compile(r"^[a-zA-Z]:[\\/]")
-SENSITIVE_PATH_PATTERNS = (
-    ".env",
-    ".aws/credentials",
-    "/etc/passwd",
-    "id_rsa",
-    "secrets",
-)
-SENSITIVE_PATH_PATTERNS_LOWER = tuple(
-    pattern.lower()
-    for pattern in SENSITIVE_PATH_PATTERNS
-)
 SUPPORTED_JSON_SCHEMA_VALIDATORS = {
     "https://json-schema.org/draft/2020-12/schema": Draft202012Validator,
     "https://json-schema.org/draft/2020-12/schema#": Draft202012Validator,
@@ -86,196 +63,13 @@ class PreparedToolRequest:
     tool_profile_revision: str
     operation_allowed_on_scope: bool
     execution_arguments: dict[str, Any]
-    resource_resolution: ResourceResolution | None = None
-    security_model_version: str = "1"
+    security_model_version: str = "2"
     normalized_facts: dict[str, Any] | None = None
     contract_hash: str | None = None
     tool_observation_approval: dict[str, Any] | None = None
     authority_resource_scopes: tuple[dict[str, Any], ...] = ()
     security_contract: dict[str, Any] | None = None
     capability_catalog: tuple[dict[str, Any], ...] = ()
-
-
-def prepare_tool_request(
-    *,
-    tool_name: str,
-    raw_arguments: Any,
-    input_schema: Any,
-    tool_profile: ResolvedToolSecurityProfile | None = None,
-    resource_registry: ResourceRegistry | None = None,
-) -> PreparedToolRequest:
-    arguments = {} if raw_arguments is None else raw_arguments
-    base_operation, base_resource_type = _resource_kind_for_tool(
-        tool_name,
-        tool_profile,
-    )
-    required_capability = _required_capability_for_tool(tool_name, tool_profile)
-
-    if not isinstance(arguments, dict):
-        return _invalid_result(
-            ("arguments_not_object",),
-            operation=base_operation,
-            resource_type=base_resource_type,
-            required_capability=required_capability,
-            tool_profile=tool_profile,
-            resource_registry=resource_registry,
-        )
-
-    try:
-        canonical_arguments_json = _canonical_json(arguments)
-    except (TypeError, ValueError, RecursionError):
-        return _invalid_result(
-            ("arguments_not_json_serializable",),
-            operation=base_operation,
-            resource_type=base_resource_type,
-            required_capability=required_capability,
-            tool_profile=tool_profile,
-            resource_registry=resource_registry,
-        )
-
-    if len(canonical_arguments_json.encode("utf-8")) > MAX_ARGUMENTS_BYTES:
-        return _invalid_result(
-            ("arguments_too_large",),
-            operation=base_operation,
-            resource_type=base_resource_type,
-            required_capability=required_capability,
-            tool_profile=tool_profile,
-            resource_registry=resource_registry,
-        )
-    canonical_arguments_hash = sha256_canonical_json(arguments)
-
-    schema_errors, canonical_schema_json = _validate_input_schema(input_schema)
-    if schema_errors:
-        return _invalid_result(
-            schema_errors,
-            operation=base_operation,
-            resource_type=base_resource_type,
-            required_capability=required_capability,
-            tool_profile=tool_profile,
-            resource_registry=resource_registry,
-        )
-
-    validator = _compile_validator(canonical_schema_json)
-    validation_codes = _validation_error_codes(validator.iter_errors(arguments))
-    if validation_codes:
-        return _invalid_result(
-            validation_codes,
-            operation=base_operation,
-            resource_type=base_resource_type,
-            required_capability=required_capability,
-            tool_profile=tool_profile,
-            resource_registry=resource_registry,
-        )
-
-    if tool_profile is not None and resource_registry is not None:
-        resolution = resolve_resource(
-            profile=tool_profile,
-            arguments=dict(arguments),
-            registry=resource_registry,
-        )
-        return PreparedToolRequest(
-            arguments=dict(arguments) if resolution.resource_resolution_status == "resolved" else {},
-            canonical_arguments_hash=sha256_canonical_json(
-                resolution.execution_arguments
-            ),
-            arguments_valid=True,
-            validation_error_codes=(),
-            operation=resolution.operation,
-            required_capability=resolution.required_capability,
-            resource_adapter=resolution.resource_adapter,
-            resource_type=resolution.resource_type,
-            resource_scope=resolution.resource_scope,
-            canonical_resource=resolution.canonical_resource,
-            resource_sensitivity=resolution.resource_sensitivity,
-            resource_resolution_status=resolution.resource_resolution_status,
-            resource_flags=resolution.resource_flags,
-            resource_registry_revision=resolution.resource_registry_revision,
-            tool_profile_revision=resolution.tool_profile_revision,
-            operation_allowed_on_scope=resolution.operation_allowed_on_scope,
-            execution_arguments=resolution.execution_arguments,
-            resource_resolution=resolution,
-        )
-
-    if is_lab_directory_listing_tool(tool_name):
-        return PreparedToolRequest(
-            arguments={},
-            canonical_arguments_hash=EMPTY_ARGUMENTS_HASH,
-            arguments_valid=True,
-            validation_error_codes=(),
-            operation="list",
-            required_capability=required_capability,
-            resource_adapter="filesystem",
-            resource_type="directory",
-            resource_scope="lab_root",
-            canonical_resource=".",
-            resource_sensitivity="internal",
-            resource_resolution_status="resolved",
-            resource_flags=(),
-            resource_registry_revision="lab-default",
-            tool_profile_revision="lab-default",
-            operation_allowed_on_scope=True,
-            execution_arguments={},
-        )
-
-    if is_lab_file_read_tool(tool_name):
-        canonical_resource, path_errors = _normalize_lab_relative_path(
-            arguments.get("path")
-        )
-        if path_errors:
-            return _invalid_result(
-                path_errors,
-                operation="read",
-                resource_type="file",
-                required_capability=required_capability,
-                tool_profile=tool_profile,
-                resource_registry=resource_registry,
-            )
-
-        normalized_arguments = dict(arguments)
-        normalized_arguments["path"] = canonical_resource
-        return PreparedToolRequest(
-            arguments=normalized_arguments,
-            canonical_arguments_hash=sha256_canonical_json(normalized_arguments),
-            arguments_valid=True,
-            validation_error_codes=(),
-            operation="read",
-            required_capability=required_capability,
-            resource_adapter="filesystem",
-            resource_type="file",
-            resource_scope=_resource_scope_for_path(canonical_resource),
-            canonical_resource=canonical_resource,
-            resource_sensitivity=(
-                "secret"
-                if _resource_scope_for_path(canonical_resource) == "sensitive"
-                else "internal"
-            ),
-            resource_resolution_status="resolved",
-            resource_flags=(),
-            resource_registry_revision="lab-default",
-            tool_profile_revision="lab-default",
-            operation_allowed_on_scope=True,
-            execution_arguments=normalized_arguments,
-        )
-
-    return PreparedToolRequest(
-        arguments=dict(arguments),
-        canonical_arguments_hash=canonical_arguments_hash,
-        arguments_valid=True,
-        validation_error_codes=(),
-        operation="unknown",
-        required_capability=required_capability,
-        resource_adapter="unknown",
-        resource_type="unknown",
-        resource_scope="unknown",
-        canonical_resource=None,
-        resource_sensitivity="unknown",
-        resource_resolution_status="unresolved",
-        resource_flags=(),
-        resource_registry_revision="unknown",
-        tool_profile_revision="unknown",
-        operation_allowed_on_scope=False,
-        execution_arguments=dict(arguments),
-    )
 
 
 def prepare_tool_request_v2(
@@ -289,6 +83,9 @@ def prepare_tool_request_v2(
     authority_context: dict[str, Any],
     client_protocol_profile_id: str,
     upstream_protocol_profile_id: str,
+    capability_catalog_version: str = "2",
+    resource_type_registry_version: str = "2",
+    security_packs: tuple[SecurityPackManifest, ...] = (),
 ) -> PreparedToolRequest:
     arguments = {} if raw_arguments is None else raw_arguments
     if not isinstance(arguments, dict):
@@ -302,8 +99,27 @@ def prepare_tool_request_v2(
     if not isinstance(input_schema, dict):
         return _invalid_v2(("input_schema_not_object",), contract)
 
+    capability_catalog = CapabilityCatalog(
+        version=capability_catalog_version,
+        security_packs=security_packs,
+    )
+    resource_type_registry = ResourceTypeRegistry(
+        version=resource_type_registry_version,
+        security_packs=security_packs,
+    )
+    registry = AdapterRegistry(
+        capability_catalog_version=capability_catalog_version,
+        resource_type_registry_version=resource_type_registry_version,
+        security_packs=security_packs,
+    )
     try:
-        derived_resolutions = validate_contract_for_schema(contract, input_schema)
+        derived_resolutions = validate_contract_for_schema(
+            contract,
+            input_schema,
+            capability_catalog=capability_catalog,
+            resource_type_registry=resource_type_registry,
+            adapter_resolver=registry,
+        )
     except (SecurityModelError, ValueError):
         return _invalid_v2(("contract_or_schema_invalid",), contract)
     if sorted(
@@ -325,14 +141,13 @@ def prepare_tool_request_v2(
     if validation_codes:
         return _invalid_v2(validation_codes, contract)
 
-    registry = AdapterRegistry()
     effect_facts = []
     errors: list[str] = []
     for effect in contract.effects:
         effect_resolutions = tuple(
             value for value in adapter_resolutions if value.effect_id == effect.effect_id
         )
-        capability = CapabilityCatalog().get(effect.capability)
+        capability = capability_catalog.get(effect.capability)
         if not capability.requires_resource and not effect.resource_bindings:
             effect_facts.append(
                 NormalizedEffectFacts(
@@ -397,6 +212,7 @@ def prepare_tool_request_v2(
         if first_facts and first_facts.bindings and first_facts.bindings[0].references
         else None
     )
+    request_flags, request_sensitivity = _v2_request_sensitivity(effect_facts)
     return PreparedToolRequest(
         arguments=dict(arguments) if not errors else {},
         canonical_arguments_hash=canonical_hash if not errors else EMPTY_ARGUMENTS_HASH,
@@ -407,10 +223,14 @@ def prepare_tool_request_v2(
         resource_adapter=first_facts.adapter_id if first_facts else "unknown",
         resource_type=first_binding.resource_type if first_binding else "none",
         resource_scope="v2_authority_scopes",
-        canonical_resource=first_reference.canonical_value if first_reference else None,
-        resource_sensitivity="governed",
+        canonical_resource=(
+            first_reference.canonical_value
+            if first_reference is not None and not errors
+            else None
+        ),
+        resource_sensitivity=request_sensitivity,
         resource_resolution_status="resolved" if not errors else "invalid",
-        resource_flags=(),
+        resource_flags=request_flags,
         resource_registry_revision="v2",
         tool_profile_revision=contract.contract_hash,
         operation_allowed_on_scope=False,
@@ -423,8 +243,22 @@ def prepare_tool_request_v2(
             scope.model_dump(mode="json") for scope in authority_scopes
         ),
         security_contract=contract.model_dump(mode="json"),
-        capability_catalog=tuple(CapabilityCatalog().as_policy_data()),
+        capability_catalog=tuple(capability_catalog.as_policy_data()),
     )
+
+
+def _v2_request_sensitivity(
+    effect_facts: list[NormalizedEffectFacts],
+) -> tuple[tuple[str, ...], str]:
+    flags: set[str] = set()
+    sensitivity = "governed"
+    for effect in effect_facts:
+        for binding in effect.bindings:
+            for reference in binding.references:
+                flags.update(reference.resource_flags)
+                if reference.resource_sensitivity == "secret":
+                    sensitivity = "secret"
+    return tuple(sorted(flags)), sensitivity
 
 
 def _invalid_v2(
@@ -457,70 +291,6 @@ def _invalid_v2(
     )
 
 
-def _resource_kind_for_tool(
-    tool_name: str,
-    tool_profile: ResolvedToolSecurityProfile | None = None,
-) -> tuple[str, str]:
-    if tool_profile is not None:
-        return tool_profile.operation, f"{tool_profile.resource.adapter}.{tool_profile.resource.expected_type}"
-    descriptor = lab_tool_descriptor(tool_name)
-    if descriptor is not None:
-        return descriptor.operation, descriptor.resource_type
-    return "unknown", "unknown"
-
-
-def _required_capability_for_tool(
-    tool_name: str,
-    tool_profile: ResolvedToolSecurityProfile | None = None,
-) -> str:
-    if tool_profile is not None:
-        return tool_profile.required_capability
-    descriptor = lab_tool_descriptor(tool_name)
-    if descriptor is not None:
-        return descriptor.required_capability
-    return "unclassified"
-
-
-def _invalid_result(
-    error_codes: tuple[str, ...] | list[str],
-    *,
-    operation: str,
-    resource_type: str,
-    required_capability: str,
-    tool_profile: ResolvedToolSecurityProfile | None = None,
-    resource_registry: ResourceRegistry | None = None,
-) -> PreparedToolRequest:
-    return PreparedToolRequest(
-        arguments={},
-        canonical_arguments_hash=EMPTY_ARGUMENTS_HASH,
-        arguments_valid=False,
-        validation_error_codes=_sanitize_error_codes(error_codes),
-        operation=operation,
-        required_capability=required_capability,
-        resource_adapter=(
-            tool_profile.resource.adapter if tool_profile is not None else "unknown"
-        ),
-        resource_type=resource_type,
-        resource_scope="invalid",
-        canonical_resource=None,
-        resource_sensitivity="unknown",
-        resource_resolution_status="invalid_arguments",
-        resource_flags=(),
-        resource_registry_revision=(
-            resource_registry.revision if resource_registry is not None else "unknown"
-        ),
-        tool_profile_revision=(
-            tool_profile.revision if tool_profile is not None else "unknown"
-        ),
-        operation_allowed_on_scope=False,
-        execution_arguments={},
-    )
-
-
-def _canonical_json(value: Any) -> str:
-    return canonical_json_bytes(value).decode("utf-8")
-
-
 EMPTY_ARGUMENTS_HASH = sha256_canonical_json({})
 
 
@@ -532,7 +302,7 @@ def _validate_input_schema(input_schema: Any) -> tuple[tuple[str, ...], str]:
         return ("input_schema_not_object",), ""
 
     try:
-        canonical_schema_json = _canonical_json(input_schema)
+        canonical_schema_json = canonical_json_bytes(input_schema).decode("utf-8")
     except (TypeError, ValueError, RecursionError):
         return ("input_schema_not_json_serializable",), ""
 
@@ -691,81 +461,3 @@ def _sanitize_error_codes(codes: tuple[str, ...] | list[str]) -> tuple[str, ...]
 
 def _sanitize_code_part(value: str) -> str:
     return SAFE_CODE_PATTERN.sub("_", value)[:MAX_ERROR_CODE_LENGTH] or "$"
-
-
-def _normalize_lab_relative_path(
-    raw_path: Any,
-) -> tuple[str | None, tuple[str, ...]]:
-    if not isinstance(raw_path, str):
-        return None, ("invalid_type:path",)
-
-    if raw_path == "":
-        return None, ("path_empty",)
-
-    if raw_path.strip() == "":
-        return None, ("path_empty",)
-
-    if raw_path != raw_path.strip():
-        return None, ("path_surrounding_whitespace",)
-
-    if "\x00" in raw_path:
-        return None, ("path_null_byte",)
-
-    if any(ord(character) < 32 for character in raw_path):
-        return None, ("path_control_character",)
-
-    if len(raw_path) > MAX_PATH_LENGTH:
-        return None, ("path_too_long",)
-
-    if WINDOWS_DRIVE_PATTERN.match(raw_path):
-        return None, ("path_windows_drive",)
-
-    if raw_path.startswith("\\\\") or raw_path.startswith("//"):
-        return None, ("path_unc",)
-
-    normalized = raw_path.replace("\\", "/")
-
-    if normalized.startswith("/"):
-        return None, ("path_absolute",)
-
-    segments = []
-    raw_segments = normalized.split("/")
-    if len(raw_segments) > MAX_PATH_SEGMENTS:
-        return None, ("path_too_many_segments",)
-
-    for segment in raw_segments:
-        if segment in {"", "."}:
-            continue
-        if ":" in segment:
-            return None, ("path_forbidden_character",)
-        if segment == "..":
-            if not segments:
-                return None, ("path_traversal_outside_root",)
-            segments.pop()
-            continue
-        segments.append(segment)
-
-    if len(segments) > MAX_PATH_SEGMENTS:
-        return None, ("path_too_many_segments",)
-
-    if not segments:
-        return None, ("path_empty_after_normalization",)
-
-    return "/".join(segments), ()
-
-
-def _resource_scope_for_path(canonical_resource: str | None) -> str:
-    if not canonical_resource:
-        return "invalid"
-
-    comparison_resource = canonical_resource.lower()
-    if any(
-        pattern in comparison_resource
-        for pattern in SENSITIVE_PATH_PATTERNS_LOWER
-    ):
-        return "sensitive"
-
-    if canonical_resource == "contracts" or canonical_resource.startswith("contracts/"):
-        return "contracts"
-
-    return "lab_root"

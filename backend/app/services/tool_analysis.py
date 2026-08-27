@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from hashlib import sha256
 import math
@@ -24,10 +24,17 @@ from app.models.tool_analysis import (
     ToolObservedVersion,
     ToolProtocolObservation,
 )
+from app.services.tool_semantic_facts import (
+    ToolSemanticFacts,
+    extract_tool_semantic_facts,
+    iter_schema_fields,
+    strip_documentation_examples,
+)
 from proxy.protocol_profiles import LEGACY_PROFILE_ID, ProtocolProfileError, ProtocolProfileRegistry
+from proxy.security_packs import SecurityPackRegistry
 
 
-ANALYZER_REVISION = "tool-description-analyzer-v1"
+ANALYZER_REVISION = "tool-description-analyzer-v7"
 SEMANTIC_MODEL_NAME = "MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli"
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
 SEMANTIC_MODEL_VERSION = "local-cache"
@@ -36,13 +43,20 @@ SEMANTIC_REVIEW_THRESHOLD = 0.74
 MIN_REVIEW_JUSTIFICATION_LENGTH = 8
 INVALID_ANALYSIS_CONTEXT_PREFIX = "invalid:"
 
+FINDING_DECISION_BLOCK = "block"
+FINDING_DECISION_REVIEW = "review"
+FINDING_DECISION_INFO = "info"
+
 STATUS_PENDING_ANALYSIS = "PENDING_ANALYSIS"
 STATUS_QUARANTINED = "QUARANTINED"
 STATUS_REVIEW_REQUIRED = "REVIEW_REQUIRED"
 STATUS_APPROVED = "APPROVED"
+STATUS_ADMIN_ALLOWED = "ADMIN_ALLOWED"
 STATUS_BLOCKED = "BLOCKED"
 STATUS_ANALYSIS_FAILED = "ANALYSIS_FAILED"
 STATUS_STALE = "STALE"
+APPROVAL_SOURCE_FRAMEWORK = "FRAMEWORK"
+APPROVAL_SOURCE_ADMIN = "ADMIN"
 
 DRIFT_NONE = "NONE"
 DRIFT_BENIGN = "BENIGN"
@@ -61,7 +75,105 @@ SEMANTIC_CATEGORIES = [
     "command_execution",
     "unauthorized_data_access",
     "user_deception",
+    "privilege_escalation",
+    "cross_tenant_access",
+    "unexpected_destructive_operation",
+    "public_sharing",
+    "bulk_messaging",
+    "server_side_request_forgery",
+    "shell_injection",
+    "unauthorized_financial_transaction",
 ]
+
+SEMANTIC_CATEGORY_LABELS = {
+    "normal_tool_description": "a normal and transparent tool description",
+    "prompt_injection": "instructions that override or manipulate platform instructions",
+    "security_bypass": "instructions to bypass safeguards, policy, or authorization",
+    "secret_collection": "collection of passwords, tokens, credentials, or secrets",
+    "data_exfiltration": "sending or uploading data to an external destination",
+    "hidden_additional_action": "a concealed additional action beyond the stated purpose",
+    "command_execution": "execution of shell commands, scripts, or operating system processes",
+    "unauthorized_data_access": "access to data without permission or outside the authorized scope",
+    "user_deception": "misleading the user or concealing the tool's real behavior",
+    "privilege_escalation": "changing privileges or identity authority beyond the declared purpose",
+    "cross_tenant_access": "accessing another tenant, account, project, or organization without authorization",
+    "unexpected_destructive_operation": "deleting or irreversibly modifying data beyond the declared purpose",
+    "public_sharing": "making private data or resources publicly accessible",
+    "bulk_messaging": "sending messages to many recipients or performing unsolicited outreach",
+    "server_side_request_forgery": "requesting internal, local, metadata, or restricted network destinations",
+    "shell_injection": "allowing untrusted input to alter a command, shell, or executable invocation",
+    "unauthorized_financial_transaction": "an unauthorized payment, transfer, purchase, or refund",
+}
+
+SEMANTIC_CORROBORATION_PATTERNS = {
+    "prompt_injection": (
+        r"\b(ignore|override|disregard|forget).{0,50}\b(instructions?|rules?|policy|safeguards?)\b",
+        r"\b(system|developer|platform)\s+(prompt|instructions?)\b",
+        r"\b(ignore[rz]?|contourne[rz]?|oublie[rz]?).{0,50}\b(instructions?|règles?|politique|sécurité)\b",
+        r"\b(prefer|follow).{0,40}\b(tool|embedded).{0,20}\b(directions?|guidance).{0,40}\b(safeguards?|policy|platform)\b",
+        r"\b(safeguards?|policy|platform).{0,60}\bprefer.{0,30}\btool\s+(directions?|guidance|instructions?)\b",
+    ),
+    "security_bypass": (
+        r"\b(bypass|disable|evade|circumvent).{0,50}\b(security|policy|authorization|safeguards?|restrictions?)\b",
+        r"\b(prefer|follow|obey).{0,50}\b(tool|embedded|provided)\s+instructions?.{0,50}\b(over|instead of)\b.{0,50}\b(platform|security|policy|safeguards?)\b",
+    ),
+    "secret_collection": (
+        r"\b(collect|capture|retrieve|request|extract|steal).{0,50}\b(passwords?|tokens?|credentials?|secrets?|api[_ -]?keys?)\b",
+        r"\b(collecte[rz]?|capture[rz]?|récup[ée]re[rz]?|demande[rz]?|extraire|vole[rz]?).{0,50}\b(mots? de passe|jetons?|identifiants?|secrets?|clés? api)\b",
+    ),
+    "data_exfiltration": (
+        r"\b(exfiltrate|upload|transmit|forward|send).{0,60}\b(data|files?|contents?|records?|secrets?)\b",
+        r"\b(data|files?|contents?|records?|secrets?).{0,60}\b(external|remote|collector|webhook|upload|transmit|forward|send)\b",
+        r"\b(upload|transmit|forward|send).{0,80}\b(to|toward)\s+https?://",
+    ),
+    "hidden_additional_action": (
+        r"\b(secretly|silently|covertly|without (?:telling|notifying)|hidden additional action)\b",
+        r"\b(in addition|also).{0,40}\b(delete|execute|upload|send|modify|collect)\b",
+    ),
+    "command_execution": (
+        r"\b(execute|run|launch|invoke).{0,40}\b(commands?|shell|scripts?|process(?:es)?)\b",
+        r"\b(shell|command|script)\s+execution\b",
+    ),
+    "unauthorized_data_access": (
+        r"\b(without (?:permission|authorization)|unauthori[sz]ed|outside.{0,20}(?:scope|permissions?))\b",
+    ),
+    "user_deception": (
+        r"\b(deceive|mislead|impersonate|pretend|conceal|hide).{0,50}\b(user|behavior|action|purpose|identity)\b",
+    ),
+    "privilege_escalation": (
+        r"\b(grant|elevate|escalate|assign).{0,50}\b(admin|owner|privilege|role|permission)\b",
+        r"\b(accorder|élever|attribuer).{0,50}\b(admin|propriétaire|privilège|rôle|permission)\b",
+    ),
+    "cross_tenant_access": (
+        r"\b(other|another|cross)[ -]?(tenant|account|organization|project)\b",
+        r"\b(autre|inter)[ -]?(tenant|compte|organisation|projet)\b",
+    ),
+    "unexpected_destructive_operation": (
+        r"\b(permanently|irreversibly|without confirmation).{0,50}\b(delete|remove|erase|overwrite)\b",
+        r"\b(définitivement|irréversiblement|sans confirmation).{0,50}\b(supprimer|effacer|écraser)\b",
+    ),
+    "public_sharing": (
+        r"\b(make|publish|share).{0,40}\b(public|anyone|anonymous)\b",
+        r"\b(rendre|publier|partager).{0,40}\b(public|tout le monde|anonyme)\b",
+    ),
+    "bulk_messaging": (
+        r"\b(bulk|mass|all contacts|every recipient|unsolicited)\b",
+        r"\b(en masse|tous les contacts|chaque destinataire|non sollicit[ée])\b",
+    ),
+    "server_side_request_forgery": (
+        r"\b(localhost|loopback|link-local|metadata service|169\.254\.169\.254)\b",
+    ),
+    "shell_injection": (
+        r"\b(untrusted|user supplied|arbitrary).{0,40}\b(shell|command|script)\b",
+        r"\b(shell|command|script).{0,60}\b(untrusted|user supplied|arbitrary)\b",
+        r"\b(non fiable|fourni par l'utilisateur|arbitraire).{0,40}\b(shell|commande|script)\b",
+    ),
+    "unauthorized_financial_transaction": (
+        r"\b(unauthori[sz]ed|without\s+(approval|consent)).{0,60}\b(payment|transfer|purchase|refund)\b",
+        r"\b(payment|transfer|purchase|refund).{0,60}\b(without.{0,20}(approval|consent)|unauthori[sz]ed)\b",
+        r"\b(paiement|virement|achat|remboursement).{0,60}\b(sans\s+(autorisation|consentement)|non\s+autoris[ée])\b",
+    ),
+}
 
 CRITICAL_DETERMINISTIC_CODES = {
     "credential_request",
@@ -89,25 +201,11 @@ SENSITIVE_PARAMETER_NAMES = {
     "overwrite",
 }
 
-CAPABILITY_KEYWORDS = {
-    "filesystem.read": ("read", "open", "download", "view", "list", "inspect"),
-    "filesystem.list": ("list", "enumerate", "directory", "folder"),
-    "filesystem.write": ("write", "create", "save", "modify", "update"),
-    "filesystem.delete": ("delete", "remove", "erase", "overwrite"),
-    "network.send": ("send", "upload", "callback", "webhook", "http", "url"),
-    "secret.access": ("secret", "credential", "token", "api key", "env", ".env"),
-    "process.execute": ("command", "shell", "script", "execute", "run process"),
-    "database.select": ("select", "query", "read database"),
-    "database.modify": ("insert", "update", "modify database"),
-    "database.delete": ("drop", "delete database", "truncate"),
-}
-
 INVISIBLE_RE = re.compile(
     "[\u200b\u200c\u200d\u2060\ufeff\u00ad]",
 )
 BIDI_RE = re.compile("[\u202a-\u202e\u2066-\u2069]")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-URL_RE = re.compile(r"https?://[^\s)>\"]+", re.IGNORECASE)
 BASE64_RE = re.compile(r"\b[A-Za-z0-9+/]{32,}={0,2}\b")
 
 
@@ -167,13 +265,18 @@ class LocalZeroShotSemanticModel:
 
     def classify(self, text: str, categories: list[str]) -> SemanticResult:
         classifier = self._load_classifier()
-        result = classifier(text, categories, multi_label=True)
+        labels_by_category = {
+            category: SEMANTIC_CATEGORY_LABELS.get(category, category.replace("_", " "))
+            for category in categories
+        }
+        categories_by_label = {label: category for category, label in labels_by_category.items()}
+        result = classifier(text, list(categories_by_label), multi_label=True)
         labels = result.get("labels", [])
         scores = result.get("scores", [])
         score_map = {
-            str(label): float(score)
+            categories_by_label[str(label)]: float(score)
             for label, score in zip(labels, scores)
-            if str(label) in categories
+            if str(label) in categories_by_label
         }
         for category in categories:
             score_map.setdefault(category, 0.0)
@@ -284,7 +387,8 @@ def tool_fingerprint_payload(
     input_schema: dict[str, Any] | None,
     output_schema: dict[str, Any] | None,
     annotations: dict[str, Any] | None,
-    profile: dict[str, Any] | None,
+    execution: dict[str, Any] | None = None,
+    profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Profile and registry identity are deliberately separate approval artifacts.
     _ = server_ref, profile
@@ -294,6 +398,7 @@ def tool_fingerprint_payload(
         "input_schema": input_schema or {},
         "output_schema": output_schema or {},
         "annotations": annotations or {},
+        "execution": execution or {},
     }
 
 
@@ -305,25 +410,15 @@ def analysis_context_payload(profile_snapshot: dict[str, Any] | None) -> dict[st
     if profile_snapshot is None:
         return {"schema_version": 0, "profile": None}
 
-    if profile_snapshot.get("schema_version") == 2:
-        contract_hash = profile_snapshot.get("contract_hash")
-        if isinstance(contract_hash, str) and SHA256_HEX_RE.fullmatch(contract_hash):
-            return {
-                "schema_version": 2,
-                "contract_hash": contract_hash,
-            }
+    contract_hash = profile_snapshot.get("contract_hash")
+    if isinstance(contract_hash, str) and SHA256_HEX_RE.fullmatch(contract_hash):
         return {
             "schema_version": 2,
-            "invalid_context": "missing_or_invalid_contract_hash",
+            "contract_hash": contract_hash,
         }
-
     return {
-        "schema_version": 1,
-        "server_ref": profile_snapshot.get("server_ref"),
-        "tool_name": profile_snapshot.get("tool_name"),
-        "operation": profile_snapshot.get("operation"),
-        "required_capability": profile_snapshot.get("required_capability"),
-        "resource": profile_snapshot.get("resource") or {},
+        "schema_version": 2,
+        "invalid_context": "missing_or_invalid_contract_hash",
     }
 
 
@@ -347,14 +442,18 @@ def analyze_tool_version(
     semantic_model: SemanticModel | None = None,
     embedding_model: EmbeddingModel | None = None,
 ) -> dict[str, Any]:
-    findings = deterministic_findings(tool_snapshot, profile_snapshot)
-    active_semantic_model = semantic_model or LocalZeroShotSemanticModel()
-    active_embedding_model = embedding_model or LocalEmbeddingModel()
-    semantic_result = active_semantic_model.classify(
-        _semantic_text(tool_snapshot),
-        SEMANTIC_CATEGORIES,
+    semantic_facts = extract_tool_semantic_facts(tool_snapshot)
+    findings = deterministic_findings(
+        tool_snapshot,
+        profile_snapshot,
+        semantic_facts=semantic_facts,
     )
-    consistency = consistency_result(tool_snapshot, profile_snapshot)
+    active_embedding_model = embedding_model or LocalEmbeddingModel()
+    consistency = consistency_result(
+        tool_snapshot,
+        profile_snapshot,
+        semantic_facts=semantic_facts,
+    )
     drift = drift_result(
         baseline_snapshot,
         tool_snapshot,
@@ -362,22 +461,69 @@ def analyze_tool_version(
     )
     findings.extend(consistency["findings"])
     findings.extend(_drift_findings(drift))
+    findings = _deduplicate_findings(findings)
 
-    deterministic_critical = any(
-        finding.severity == "critical" or finding.code in CRITICAL_DETERMINISTIC_CODES
+    deterministic_blocking = any(
+        _finding_decision(finding) == FINDING_DECISION_BLOCK
         for finding in findings
+    )
+    deterministic_review = any(
+        _finding_decision(finding) == FINDING_DECISION_REVIEW
+        for finding in findings
+    )
+    deterministic_critical = deterministic_blocking
+    categories = _semantic_categories(profile_snapshot)
+    if deterministic_blocking:
+        model_semantic_result = SemanticResult(
+            scores={category: 0.0 for category in categories},
+            best_category="not_run_deterministic",
+            confidence=0.0,
+            model_name="not_run_deterministic",
+            model_version=ANALYZER_REVISION,
+            flagged=False,
+        )
+        semantic_result = model_semantic_result
+    else:
+        active_semantic_model = semantic_model or LocalZeroShotSemanticModel()
+        semantic_text = _semantic_text(tool_snapshot)
+        model_semantic_result = active_semantic_model.classify(semantic_text, categories)
+        semantic_result = _corroborate_semantic_result(
+            model_semantic_result,
+            semantic_text,
+            semantic_facts,
+        )
+    unresolved_unknown_reasons = _unresolved_semantic_unknown_reasons(
+        semantic_facts.unknown_reasons,
+        profile_snapshot,
     )
     risk_score = _risk_score(findings, semantic_result, drift)
     risk_level = _risk_level(risk_score)
-    if deterministic_critical:
+    if deterministic_blocking:
         status = STATUS_BLOCKED
         review_status = STATUS_BLOCKED
-    elif semantic_result.flagged:
+    elif semantic_result.flagged or deterministic_review:
         status = STATUS_REVIEW_REQUIRED
+        review_status = STATUS_REVIEW_REQUIRED
+    elif profile_snapshot is None or unresolved_unknown_reasons:
+        status = STATUS_QUARANTINED
         review_status = STATUS_REVIEW_REQUIRED
     else:
-        status = STATUS_REVIEW_REQUIRED
-        review_status = STATUS_REVIEW_REQUIRED
+        status = STATUS_APPROVED
+        review_status = STATUS_APPROVED
+
+    model_risk_scores = {
+        category: score
+        for category, score in model_semantic_result.scores.items()
+        if category != "normal_tool_description"
+    }
+    highest_model_risk = max(model_risk_scores.values(), default=0.0)
+    semantic_abstained = (
+        not semantic_result.flagged
+        and (
+            bool(unresolved_unknown_reasons)
+            or highest_model_risk >= SEMANTIC_REVIEW_THRESHOLD
+        )
+    )
 
     return {
         "analysis_status": status,
@@ -393,6 +539,13 @@ def analyze_tool_version(
             "best_category": semantic_result.best_category,
             "confidence": semantic_result.confidence,
             "threshold": SEMANTIC_REVIEW_THRESHOLD,
+            "model_best_category": model_semantic_result.best_category,
+            "model_flagged": highest_model_risk >= SEMANTIC_REVIEW_THRESHOLD,
+            "corroborated": semantic_result.flagged,
+            "flagged": semantic_result.flagged,
+            "abstained": semantic_abstained,
+            "facts": semantic_facts.to_dict(),
+            "unresolved_unknown_reasons": list(unresolved_unknown_reasons),
         },
         "consistency_result": consistency,
         "drift_result": {
@@ -421,31 +574,93 @@ def analyze_tool_version(
 def deterministic_findings(
     tool_snapshot: dict[str, Any],
     profile_snapshot: dict[str, Any] | None,
+    *,
+    semantic_facts: ToolSemanticFacts | None = None,
 ) -> list[AnalysisFinding]:
     findings: list[AnalysisFinding] = []
+    facts = semantic_facts or extract_tool_semantic_facts(tool_snapshot)
+    profile_capabilities = capabilities_from_profile(profile_snapshot or {})
     text_sources = {
         "description": tool_snapshot.get("description") or "",
-        "annotation": _safe_json(tool_snapshot.get("annotations") or {}),
+        "annotation": _annotation_text(tool_snapshot.get("annotations") or {}),
+        "execution": _annotation_text(tool_snapshot.get("execution") or {}),
     }
     for source, text in text_sources.items():
         findings.extend(_text_findings(source, text))
 
     schema = tool_snapshot.get("input_schema") or {}
     output_schema = tool_snapshot.get("output_schema") or {}
-    findings.extend(_schema_findings(schema, "schema"))
-    findings.extend(_schema_findings(output_schema, "schema"))
+    findings.extend(
+        _schema_findings(
+            schema,
+            "input_schema",
+            profile_capabilities,
+            facts,
+        )
+    )
+    findings.extend(
+        _schema_findings(
+            output_schema,
+            "output_schema",
+            profile_capabilities,
+            facts,
+        )
+    )
+    findings.extend(_contextual_security_review_findings(tool_snapshot, facts))
 
-    profile_text = _safe_json(profile_snapshot or {})
-    if "secret" in profile_text.lower():
+    return _deduplicate_findings(findings)
+
+
+def _contextual_security_review_findings(
+    tool_snapshot: dict[str, Any],
+    facts: ToolSemanticFacts,
+) -> list[AnalysisFinding]:
+    """Review explicit high-risk behavior even when the semantic model under-scores it.
+
+    These checks are intentionally vendor-agnostic and require two independent signals:
+    explicit abuse language in the operational semantic text plus corroborating structured
+    facts extracted from the tool metadata/schema. They never BLOCK by themselves.
+    """
+    text = _semantic_text(tool_snapshot)
+    checks = {
+        "cross_tenant_access": (
+            "contextual_cross_tenant_access",
+            "Cross-tenant or cross-account access is explicitly described.",
+            "Confirm tenant/account boundaries and require an explicit authorized scope.",
+        ),
+        "unauthorized_financial_transaction": (
+            "contextual_unauthorized_financial_transaction",
+            "A financial transaction without approval or consent is explicitly described.",
+            "Require explicit user authorization and transaction constraints.",
+        ),
+        "server_side_request_forgery": (
+            "contextual_server_side_request_forgery",
+            "Access to a local, link-local, or metadata-service destination is explicitly described.",
+            "Restrict destinations and block local, metadata, and other protected network ranges.",
+        ),
+        "shell_injection": (
+            "contextual_shell_injection",
+            "Untrusted or arbitrary input is explicitly described as influencing shell/script execution.",
+            "Use fixed executable/argument templates and reject untrusted command construction.",
+        ),
+    }
+    findings: list[AnalysisFinding] = []
+    for category, (code, evidence, recommendation) in checks.items():
+        patterns = SEMANTIC_CORROBORATION_PATTERNS.get(category, ())
+        if not any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns):
+            continue
+        if not _semantic_fact_support(category, facts, text):
+            continue
         findings.append(
             _finding(
-                "profile_secret_capability",
-                "capability",
-                "profile",
-                "medium",
-                80,
-                "profile mentions secret access",
-                "Confirm that secret access is explicitly intended.",
+                code,
+                category,
+                "structured_context",
+                "high",
+                90,
+                evidence,
+                recommendation,
+                decision=FINDING_DECISION_REVIEW,
             )
         )
     return findings
@@ -454,77 +669,114 @@ def deterministic_findings(
 def consistency_result(
     tool_snapshot: dict[str, Any],
     profile_snapshot: dict[str, Any] | None,
+    *,
+    semantic_facts: ToolSemanticFacts | None = None,
 ) -> dict[str, Any]:
-    description_caps = capabilities_from_text(
-        f"{tool_snapshot.get('name', '')} {tool_snapshot.get('description') or ''}"
-    )
+    facts = semantic_facts or extract_tool_semantic_facts(tool_snapshot)
+    description_caps = capabilities_from_text(tool_snapshot.get("description") or "")
     schema_caps = capabilities_from_schema(tool_snapshot.get("input_schema") or {})
-    annotation_caps = capabilities_from_text(_safe_json(tool_snapshot.get("annotations") or {}))
+    annotation_caps = capabilities_from_text(_annotation_text(tool_snapshot.get("annotations") or {}))
+    execution_caps = capabilities_from_execution(tool_snapshot.get("execution") or {})
     profile_caps = capabilities_from_profile(profile_snapshot or {})
     findings: list[AnalysisFinding] = []
 
-    technical_caps = schema_caps | annotation_caps
-    extra_schema_caps = technical_caps - profile_caps
-    extra_description_caps = description_caps - profile_caps
+    if profile_snapshot is None:
+        return {
+            "status": "unconfigured",
+            "description_capabilities": sorted(description_caps),
+            "schema_capabilities": sorted(schema_caps),
+            "annotation_capabilities": sorted(annotation_caps),
+            "execution_capabilities": sorted(execution_caps),
+            "profile_capabilities": [],
+            "semantic_facts": facts.to_dict(),
+            "findings": findings,
+        }
+
+    technical_caps = schema_caps | annotation_caps | execution_caps
+    extra_schema_caps = {
+        capability
+        for capability in technical_caps
+        if not _capability_covered_by_contract(capability, profile_caps)
+    }
+    extra_description_caps = set()
+    if _description_capability_inference_reliable(facts):
+        extra_description_caps = {
+            capability
+            for capability in description_caps
+            if not _capability_covered_by_contract(capability, profile_caps)
+        }
 
     if extra_schema_caps:
-        code = _capability_mismatch_code(extra_schema_caps)
-        findings.append(
-            _finding(
-                code,
-                "consistency",
-                "schema",
-                "critical" if code in CRITICAL_DETERMINISTIC_CODES else "high",
-                88,
-                f"schema capabilities exceed profile: {', '.join(sorted(extra_schema_caps))}",
-                "Narrow the schema or update the official Tool Security Profile.",
+        for capability in sorted(extra_schema_caps):
+            code = _capability_mismatch_code({capability})
+            findings.append(
+                _finding(
+                    code,
+                    "consistency",
+                    "schema",
+                    "critical" if code in CRITICAL_DETERMINISTIC_CODES else "high",
+                    88,
+                    f"schema capability exceeds profile: {capability}",
+                    "Narrow the schema or update the official Tool Security Profile.",
+                    decision=FINDING_DECISION_BLOCK,
+                )
             )
-        )
     if extra_description_caps:
-        findings.append(
-            _finding(
-                "schema_profile_mismatch",
-                "consistency",
-                "description",
-                "medium",
-                78,
-                f"description capabilities exceed profile: {', '.join(sorted(extra_description_caps))}",
-                "Review whether the profile authorizes the described behavior.",
+        for capability in sorted(extra_description_caps):
+            findings.append(
+                _finding(
+                    _capability_mismatch_code({capability}),
+                    "consistency",
+                    "description",
+                    "medium",
+                    78,
+                    f"description capability exceeds profile: {capability}",
+                    "Review whether the profile authorizes the described behavior.",
+                    decision=FINDING_DECISION_REVIEW,
+                )
             )
-        )
-    if "filesystem.delete" in technical_caps and "read" in (tool_snapshot.get("description") or "").lower():
-        findings.append(
-            _finding(
-                "unexpected_destructive_operation",
-                "consistency",
-                "schema",
-                "critical",
-                92,
-                "delete-like parameter appears in read-only description",
-                "Remove destructive parameters from read-only tools.",
-            )
-        )
-    if "network.send" in technical_caps and profile_caps <= {"filesystem.read", "filesystem.list"}:
-        findings.append(
-            _finding(
-                "unexpected_network_capability",
-                "consistency",
-                "schema",
-                "high",
-                90,
-                "network destination appears for local filesystem profile",
-                "Separate network sending into an explicitly profiled tool.",
-            )
-        )
     status = "consistent" if not findings else "mismatch"
     return {
         "status": status,
         "description_capabilities": sorted(description_caps),
         "schema_capabilities": sorted(schema_caps),
         "annotation_capabilities": sorted(annotation_caps),
+        "execution_capabilities": sorted(execution_caps),
         "profile_capabilities": sorted(profile_caps),
+        "semantic_facts": facts.to_dict(),
         "findings": findings,
     }
+
+
+def _capability_covered_by_contract(
+    observed: str,
+    declared: set[str],
+) -> bool:
+    if observed in declared:
+        return True
+    aliases = {
+        "secret.access": {"secret.read"},
+        "secret.read": {"secret.access"},
+        "database.select": {"database.read"},
+        "database.read": {"database.select"},
+        "database.modify": {"database.write"},
+        "database.write": {"database.modify"},
+        "network.send": {"message.send"},
+        "message.send": {"network.send"},
+    }
+    if declared.intersection(aliases.get(observed, set())):
+        return True
+    if observed == "filesystem.delete":
+        return any(capability.endswith(".delete") for capability in declared)
+    return False
+
+
+def _description_capability_inference_reliable(
+    facts: ToolSemanticFacts,
+) -> bool:
+    resources = facts.values("resources", sources={"description"})
+    actions = facts.values("actions", sources={"description"})
+    return bool(actions) and len(resources) == 1 and len(actions) <= 2
 
 
 def drift_result(
@@ -534,6 +786,20 @@ def drift_result(
 ) -> DriftResult:
     if baseline_snapshot is None:
         return DriftResult(status=DRIFT_NONE, changes=[], similarity=None)
+
+    unchanged_security_definition = all(
+        (baseline_snapshot.get(field) or default) == (current_snapshot.get(field) or default)
+        for field, default in (
+            ("name", ""),
+            ("description", ""),
+            ("input_schema", {}),
+            ("output_schema", {}),
+            ("annotations", {}),
+            ("execution", {}),
+        )
+    )
+    if unchanged_security_definition:
+        return DriftResult(status=DRIFT_NONE, changes=[], similarity=1.0)
 
     changes: list[dict[str, Any]] = []
     previous_schema = baseline_snapshot.get("input_schema") or {}
@@ -574,8 +840,8 @@ class ToolAnalysisService:
         semantic_model: SemanticModel | None = None,
         embedding_model: EmbeddingModel | None = None,
     ) -> None:
-        self.semantic_model = semantic_model
-        self.embedding_model = embedding_model
+        self.semantic_model = semantic_model or LocalZeroShotSemanticModel()
+        self.embedding_model = embedding_model or LocalEmbeddingModel()
 
     def observe_and_analyze(
         self,
@@ -595,6 +861,7 @@ class ToolAnalysisService:
             input_schema=tool.input_schema,
             output_schema=tool.output_schema,
             annotations=tool.annotations,
+            execution=tool.execution,
             profile=profile_snapshot,
         )
         fingerprint = compute_tool_fingerprint(fingerprint_payload)
@@ -605,6 +872,13 @@ class ToolAnalysisService:
             and baseline.fingerprint == fingerprint
             and reusable_analysis_context_hash(baseline.analysis_context_hash)
             and baseline.analysis_context_hash == analysis_context_hash
+            and baseline.analyzer_revision == ANALYZER_REVISION
+            and approved_protocol_observation_exists(
+                db,
+                tool_id=tool.id,
+                upstream_protocol_profile_id=upstream_protocol_profile_id,
+                fingerprint=fingerprint,
+            )
         )
 
         version = db.scalar(
@@ -635,9 +909,10 @@ class ToolAnalysisService:
         tool.current_fingerprint = fingerprint
         tool.approved_fingerprint = baseline.fingerprint if baseline else None
         tool.approved_fingerprint_match = approved_match
-        tool.analysis_status = STATUS_APPROVED if approved_match else STATUS_QUARANTINED
-        tool.review_status = STATUS_APPROVED if approved_match else STATUS_REVIEW_REQUIRED
-        tool.status = STATUS_APPROVED if approved_match else STATUS_QUARANTINED
+        approved_status = _approval_status_for_baseline(baseline) if baseline else None
+        tool.analysis_status = approved_status if approved_match else STATUS_QUARANTINED
+        tool.review_status = approved_status if approved_match else STATUS_REVIEW_REQUIRED
+        tool.status = approved_status if approved_match else STATUS_QUARANTINED
         tool.last_analyzed_at = now
 
         if approved_match:
@@ -660,6 +935,42 @@ class ToolAnalysisService:
                 now=now,
             )
             return analysis
+
+        reusable_analysis = None
+        if baseline is None:
+            reusable_analysis = db.scalar(
+                select(ToolAnalysis)
+                .where(
+                    ToolAnalysis.version_id == version.id,
+                    ToolAnalysis.analysis_context_hash == analysis_context_hash,
+                    ToolAnalysis.analyzer_revision == ANALYZER_REVISION,
+                    ToolAnalysis.analysis_status != STATUS_ANALYSIS_FAILED,
+                )
+                .order_by(ToolAnalysis.id.desc())
+            )
+        if reusable_analysis is not None:
+            apply_analysis_to_tool(
+                tool,
+                reusable_analysis,
+                baseline,
+                protocol_approved_match=approved_protocol_observation_exists(
+                    db,
+                    tool_id=tool.id,
+                    upstream_protocol_profile_id=upstream_protocol_profile_id,
+                    fingerprint=fingerprint,
+                ),
+            )
+            self._record_protocol_observation(
+                db,
+                tool=tool,
+                server_ref=server_ref,
+                upstream_protocol_profile_id=upstream_protocol_profile_id,
+                canonical_tool_definition=fingerprint_payload,
+                fingerprint=fingerprint,
+                analysis=reusable_analysis,
+                now=now,
+            )
+            return reusable_analysis
 
         baseline_snapshot = None
         if baseline is not None:
@@ -704,6 +1015,10 @@ class ToolAnalysisService:
                 ],
             }
 
+        if profile_snapshot is None and result["analysis_status"] == STATUS_APPROVED:
+            result["analysis_status"] = STATUS_QUARANTINED
+            result["review_status"] = STATUS_REVIEW_REQUIRED
+
         analysis = ToolAnalysis(
             tool_id=tool.id,
             version_id=version.id,
@@ -744,7 +1059,28 @@ class ToolAnalysisService:
                 )
             )
 
-        apply_analysis_to_tool(tool, analysis, baseline)
+        if result["analysis_status"] == STATUS_APPROVED:
+            baseline = _upsert_framework_baseline(
+                db=db,
+                tool_id=tool.id,
+                version=version,
+                analysis=analysis,
+            )
+
+        apply_analysis_to_tool(
+            tool,
+            analysis,
+            baseline,
+            protocol_approved_match=(
+                result["analysis_status"] == STATUS_APPROVED
+                or approved_protocol_observation_exists(
+                    db,
+                    tool_id=tool.id,
+                    upstream_protocol_profile_id=upstream_protocol_profile_id,
+                    fingerprint=fingerprint,
+                )
+            ),
+        )
         self._record_protocol_observation(
             db,
             tool=tool,
@@ -817,30 +1153,34 @@ class ToolAnalysisService:
         analysis_context_hash: str,
         now: datetime,
     ) -> ToolAnalysis:
+        source_analysis = db.get(ToolAnalysis, baseline.analysis_id)
+        if source_analysis is None or source_analysis.completed_at is None:
+            raise ValueError("approved_baseline_evidence_missing")
+
         analysis = ToolAnalysis(
             tool_id=tool.id,
             version_id=version.id,
             fingerprint=version.fingerprint,
             analysis_context_hash=analysis_context_hash,
-            analysis_status=STATUS_APPROVED,
-            risk_score=tool.risk_score,
-            risk_level=tool.risk_level,
-            semantic_flagged="false",
-            deterministic_critical_finding="false",
-            consistency_status=tool.consistency_status,
-            drift_status=DRIFT_NONE,
-            review_status=STATUS_APPROVED,
-            semantic_scores=None,
-            consistency_result=None,
-            drift_result={"status": DRIFT_NONE, "changes": [], "similarity": None},
-            model_versions=baseline.model_versions,
+            analysis_status=_approval_status_for_baseline(baseline),
+            risk_score=source_analysis.risk_score,
+            risk_level=source_analysis.risk_level,
+            semantic_flagged=source_analysis.semantic_flagged,
+            deterministic_critical_finding=source_analysis.deterministic_critical_finding,
+            consistency_status=source_analysis.consistency_status,
+            drift_status=source_analysis.drift_status,
+            review_status=_approval_status_for_baseline(baseline),
+            semantic_scores=source_analysis.semantic_scores,
+            consistency_result=source_analysis.consistency_result,
+            drift_result=source_analysis.drift_result,
+            model_versions=source_analysis.model_versions,
             analyzer_revision=baseline.analyzer_revision,
             created_at=now,
             completed_at=now,
         )
         db.add(analysis)
         db.flush()
-        apply_analysis_to_tool(tool, analysis, baseline)
+        apply_analysis_to_tool(tool, analysis, baseline, protocol_approved_match=True)
         return analysis
 
 
@@ -870,6 +1210,7 @@ class ToolReviewService:
                 analysis_id=analysis.id,
                 fingerprint=fingerprint,
                 analysis_context_hash=analysis.analysis_context_hash,
+                approval_source=APPROVAL_SOURCE_ADMIN,
                 reviewer=reviewer,
                 justification=justification,
                 analyzer_revision=analysis.analyzer_revision,
@@ -881,16 +1222,17 @@ class ToolReviewService:
             baseline.analysis_id = analysis.id
             baseline.fingerprint = fingerprint
             baseline.analysis_context_hash = analysis.analysis_context_hash
+            baseline.approval_source = APPROVAL_SOURCE_ADMIN
             baseline.reviewer = reviewer
             baseline.justification = justification
             baseline.analyzer_revision = analysis.analyzer_revision
             baseline.model_versions = analysis.model_versions
             baseline.approved_at = datetime.utcnow()
-        analysis.analysis_status = STATUS_APPROVED
-        analysis.review_status = STATUS_APPROVED
+        analysis.analysis_status = STATUS_ADMIN_ALLOWED
+        analysis.review_status = STATUS_ADMIN_ALLOWED
         self._record_review(
             db=db,
-            action="approve",
+            action="allow",
             analysis=analysis,
             reviewer=reviewer,
             justification=justification,
@@ -924,7 +1266,12 @@ class ToolReviewService:
         )
         tool = db.get(MCPTool, tool_id)
         if tool is not None:
-            apply_analysis_to_tool(tool, analysis, baseline_for_tool(db, tool_id))
+            apply_analysis_to_tool(
+                tool,
+                analysis,
+                baseline_for_tool(db, tool_id),
+                protocol_approved_match=True,
+            )
         return review
 
     def keep_review_required(
@@ -995,12 +1342,17 @@ def apply_analysis_to_tool(
     tool: MCPTool,
     analysis: ToolAnalysis,
     baseline: ToolApprovedBaseline | None,
+    *,
+    protocol_approved_match: bool | None = None,
 ) -> None:
     approved_context_match = (
         baseline is not None
         and baseline.fingerprint == analysis.fingerprint
         and reusable_analysis_context_hash(baseline.analysis_context_hash)
         and baseline.analysis_context_hash == analysis.analysis_context_hash
+        and baseline.analyzer_revision == ANALYZER_REVISION
+        and analysis.analyzer_revision == ANALYZER_REVISION
+        and (protocol_approved_match is not False)
     )
     tool.current_fingerprint = analysis.fingerprint
     tool.approved_fingerprint = baseline.fingerprint if baseline else None
@@ -1018,7 +1370,57 @@ def apply_analysis_to_tool(
     tool.analyzer_revision = analysis.analyzer_revision
     tool.policy_status = analysis.analysis_status
     tool.status = analysis.analysis_status
+    semantic_facts = (analysis.semantic_scores or {}).get("facts")
+    if isinstance(semantic_facts, dict):
+        tool.is_sensitive = semantic_facts.get("is_sensitive") is True
+        sensitivity = semantic_facts.get("sensitivity")
+        tool.sensitivity = sensitivity if isinstance(sensitivity, str) else "unknown"
     tool.last_analyzed_at = analysis.completed_at or analysis.created_at
+
+
+def mark_tool_contract_pending_publication(tool: MCPTool) -> None:
+    """Keep draft-backed analysis evidence from becoming a runtime admission state."""
+    tool.analysis_status = STATUS_QUARANTINED
+    tool.review_status = STATUS_REVIEW_REQUIRED
+    tool.policy_status = STATUS_QUARANTINED
+    tool.status = STATUS_QUARANTINED
+    tool.approved_fingerprint_match = False
+
+
+def _upsert_framework_baseline(
+    *,
+    db: Session,
+    tool_id: int,
+    version: ToolObservedVersion,
+    analysis: ToolAnalysis,
+) -> ToolApprovedBaseline:
+    baseline = baseline_for_tool(db, tool_id)
+    values = {
+        "version_id": version.id,
+        "analysis_id": analysis.id,
+        "fingerprint": analysis.fingerprint,
+        "analysis_context_hash": analysis.analysis_context_hash,
+        "approval_source": APPROVAL_SOURCE_FRAMEWORK,
+        "reviewer": "framework",
+        "justification": "Automatically approved after a clean completed analysis.",
+        "analyzer_revision": analysis.analyzer_revision,
+        "model_versions": analysis.model_versions,
+    }
+    if baseline is None:
+        baseline = ToolApprovedBaseline(tool_id=tool_id, **values)
+        db.add(baseline)
+    else:
+        for field, value in values.items():
+            setattr(baseline, field, value)
+        baseline.approved_at = datetime.utcnow()
+    db.flush()
+    return baseline
+
+
+def _approval_status_for_baseline(baseline: ToolApprovedBaseline) -> str:
+    if baseline.approval_source == APPROVAL_SOURCE_ADMIN:
+        return STATUS_ADMIN_ALLOWED
+    return STATUS_APPROVED
 
 
 def tool_snapshot_from_model(tool: MCPTool) -> dict[str, Any]:
@@ -1047,6 +1449,51 @@ def baseline_for_tool(db: Session, tool_id: int) -> ToolApprovedBaseline | None:
     )
 
 
+def latest_protocol_observation(
+    db: Session,
+    *,
+    tool_id: int,
+    upstream_protocol_profile_id: str,
+    fingerprint: str | None = None,
+) -> ToolProtocolObservation | None:
+    query = select(ToolProtocolObservation).where(
+        ToolProtocolObservation.tool_id == tool_id,
+        ToolProtocolObservation.upstream_protocol_profile_id == upstream_protocol_profile_id,
+    )
+    if fingerprint is not None:
+        query = query.where(ToolProtocolObservation.tool_fingerprint == fingerprint)
+    return db.scalar(
+        query.order_by(
+            ToolProtocolObservation.last_seen_at.desc(),
+            ToolProtocolObservation.id.desc(),
+        )
+    )
+
+
+def approved_protocol_observation_exists(
+    db: Session,
+    *,
+    tool_id: int,
+    upstream_protocol_profile_id: str,
+    fingerprint: str,
+) -> bool:
+    observation = latest_protocol_observation(
+        db,
+        tool_id=tool_id,
+        upstream_protocol_profile_id=upstream_protocol_profile_id,
+        fingerprint=fingerprint,
+    )
+    if observation is None or observation.analysis_id is None:
+        return False
+    analysis = db.get(ToolAnalysis, observation.analysis_id)
+    return (
+        analysis is not None
+        and analysis.analysis_status in {STATUS_APPROVED, STATUS_ADMIN_ALLOWED}
+        and analysis.review_status in {STATUS_APPROVED, STATUS_ADMIN_ALLOWED}
+        and observation.analysis_state != STATUS_STALE
+    )
+
+
 def normalize_description(description: str | None) -> str:
     if description is None:
         return ""
@@ -1054,41 +1501,202 @@ def normalize_description(description: str | None) -> str:
 
 
 def capabilities_from_text(text: str) -> set[str]:
+    facts = extract_tool_semantic_facts(
+        {
+            "name": "",
+            "description": text,
+            "input_schema": {},
+            "output_schema": {},
+            "annotations": {},
+            "execution": {},
+        }
+    )
+    capabilities = _capabilities_from_semantic_facts(facts)
     lowered = text.lower()
-    capabilities: set[str] = set()
-    for capability, keywords in CAPABILITY_KEYWORDS.items():
-        if any(keyword in lowered for keyword in keywords):
-            capabilities.add(capability)
+    for pack in SecurityPackRegistry().packs():
+        for capability in pack.capabilities:
+            if _contains_capability_keyword(lowered, capability.id):
+                capabilities.add(capability.id)
     return capabilities
 
 
 def capabilities_from_profile(profile: dict[str, Any]) -> set[str]:
-    required = profile.get("required_capability")
-    capabilities = {required} if isinstance(required, str) and required else set()
-    operation = profile.get("operation")
-    if operation == "read":
-        capabilities.add("filesystem.read")
-    if operation == "list":
-        capabilities.add("filesystem.list")
-    return capabilities
+    return _capabilities_from_v2_contract(profile)
+
+
+def _unresolved_semantic_unknown_reasons(
+    reasons: tuple[str, ...],
+    profile_snapshot: dict[str, Any] | None,
+) -> tuple[str, ...]:
+    unresolved = list(reasons)
+    contract = (profile_snapshot or {}).get("contract")
+    effects = contract.get("effects") if isinstance(contract, dict) else None
+    has_bound_resource = isinstance(effects, list) and any(
+        isinstance(effect, dict)
+        and (
+            bool(effect.get("resource_bindings"))
+            or isinstance(effect.get("fixed_resource"), dict)
+        )
+        for effect in effects
+    )
+    if has_bound_resource:
+        unresolved = [reason for reason in unresolved if reason != "resource_not_evidenced"]
+    return tuple(unresolved)
 
 
 def capabilities_from_schema(schema: dict[str, Any]) -> set[str]:
-    text = _safe_json(schema)
-    capabilities = capabilities_from_text(text)
-    for name, field in _schema_properties(schema).items():
-        lowered_name = name.lower()
-        field_text = _safe_json(field).lower()
-        if lowered_name in {"upload_url", "callback_url", "destination_url"}:
+    facts = extract_tool_semantic_facts(
+        {
+            "name": "",
+            "description": "",
+            "input_schema": schema,
+            "output_schema": {},
+            "annotations": {},
+            "execution": {},
+        }
+    )
+    return _capabilities_from_semantic_facts(facts)
+
+
+def capabilities_from_execution(execution: dict[str, Any]) -> set[str]:
+    facts = extract_tool_semantic_facts(
+        {
+            "name": "",
+            "description": "",
+            "input_schema": {},
+            "output_schema": {},
+            "annotations": {},
+            "execution": execution,
+        }
+    )
+    return _capabilities_from_semantic_facts(facts)
+
+
+def _capabilities_from_semantic_facts(facts: ToolSemanticFacts) -> set[str]:
+    actions = facts.values("actions")
+    resources = facts.values("resources")
+    side_effects = facts.values("side_effects")
+    capabilities: set[str] = set()
+
+    read_actions = actions.intersection({"read", "search"})
+    write_actions = actions.intersection({"create", "update"})
+    if "filesystem" in resources:
+        if "list" in actions:
+            capabilities.add("filesystem.list")
+        if read_actions:
+            capabilities.add("filesystem.read")
+        if write_actions:
+            capabilities.add("filesystem.write")
+        if "delete" in actions:
+            capabilities.add("filesystem.delete")
+    if "database" in resources:
+        if read_actions or "list" in actions:
+            capabilities.add("database.read")
+        if write_actions:
+            capabilities.add("database.write")
+        if "delete" in actions:
+            capabilities.add("database.delete")
+    if "message" in resources:
+        if read_actions or "list" in actions:
+            capabilities.add("message.read")
+        if "send" in actions or "communication" in side_effects:
+            capabilities.add("message.send")
+        if "delete" in actions:
+            capabilities.add("message.delete")
+    if "calendar" in resources:
+        if read_actions or "list" in actions:
+            capabilities.add("calendar.read")
+        if write_actions:
+            capabilities.add("calendar.write")
+        if "delete" in actions:
+            capabilities.add("calendar.delete")
+    if "cloud_storage" in resources:
+        if read_actions or "list" in actions:
+            capabilities.add("cloud.object.read")
+        if write_actions or "send" in actions:
+            capabilities.add("cloud.object.write")
+        if "delete" in actions:
+            capabilities.add("cloud.object.delete")
+    if "identity" in resources:
+        if read_actions or "list" in actions:
+            capabilities.add("identity.read")
+        if write_actions or "delete" in actions or "authorize" in actions:
+            capabilities.add("identity.manage")
+    if "secret_store" in resources and (read_actions or "list" in actions):
+        capabilities.add("secret.access")
+    if "network_endpoint" in resources:
+        if read_actions or "search" in actions:
+            capabilities.add("network.request")
+        if "send" in actions or "external_transfer" in side_effects:
             capabilities.add("network.send")
-        if lowered_name in {"command", "shell", "script"}:
-            capabilities.add("process.execute")
-        if lowered_name in {"credentials", "token", "include_env"}:
-            capabilities.add("secret.access")
-        if lowered_name in {"delete", "overwrite"}:
-            capabilities.add("filesystem.delete")
-        if "delete" in field_text or "overwrite" in field_text:
-            capabilities.add("filesystem.delete")
+    if "process" in resources and "execute" in actions:
+        capabilities.add("process.execute")
+    if "payment" in resources:
+        if read_actions or "list" in actions:
+            capabilities.add("payment.read")
+        if "transact" in actions:
+            capabilities.add("payment.initiate")
+    if "health_check" in actions:
+        capabilities.add("system.ping")
+    return capabilities
+
+
+def _contains_capability_keyword(lowered_text: str, keyword: str) -> bool:
+    lowered_keyword = keyword.lower()
+    if not lowered_keyword:
+        return False
+    if any(not (char.isalnum() or char.isspace()) for char in lowered_keyword):
+        return lowered_keyword in lowered_text
+    parts = re.findall(r"[a-z0-9]+", lowered_keyword)
+    if not parts:
+        return False
+    pattern = r"(?<![a-z0-9])" + r"[\W_]+".join(map(re.escape, parts)) + r"(?![a-z0-9])"
+    return re.search(pattern, lowered_text) is not None
+
+
+def _schema_field_text(field: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key in ("title", "description"):
+        value = field.get(key)
+        if isinstance(value, str):
+            values.append(value)
+    enum_values = field.get("enum")
+    if isinstance(enum_values, list):
+        values.extend(str(item) for item in enum_values if isinstance(item, str))
+    return " ".join(values).lower()
+
+
+def _annotation_text(value: Any) -> str:
+    fragments: list[str] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, str):
+            fragments.append(item)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+        elif isinstance(item, dict):
+            for child in item.values():
+                visit(child)
+
+    visit(value)
+    return " ".join(fragments)
+
+
+def _capabilities_from_v2_contract(profile: dict[str, Any]) -> set[str]:
+    contract = profile.get("contract")
+    if not isinstance(contract, dict):
+        return set()
+    effects = contract.get("effects")
+    if not isinstance(effects, list):
+        return set()
+    capabilities: set[str] = set()
+    for effect in effects:
+        if not isinstance(effect, dict):
+            continue
+        capability = effect.get("capability")
+        if isinstance(capability, str) and capability:
+            capabilities.add(capability)
     return capabilities
 
 
@@ -1104,6 +1712,7 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 92,
                 "invisible unicode character detected",
                 "Remove invisible characters from tool metadata.",
+                decision=FINDING_DECISION_BLOCK,
             )
         )
     if BIDI_RE.search(text):
@@ -1116,6 +1725,7 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 94,
                 "bidirectional control character detected",
                 "Remove directional control characters from tool metadata.",
+                decision=FINDING_DECISION_BLOCK,
             )
         )
     if HTML_COMMENT_RE.search(text):
@@ -1128,21 +1738,15 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 90,
                 "HTML comment found in metadata",
                 "Remove hidden comments from tool descriptions.",
+                decision=FINDING_DECISION_REVIEW,
             )
         )
-    for url in URL_RE.findall(text):
-        findings.append(
-            _finding(
-                "external_url_reference",
-                "network",
-                source,
-                "medium",
-                75,
-                _safe_excerpt(url),
-                "Review whether external network destinations are expected.",
-            )
-        )
-    if re.search(r"\b(passwords?|credentials?|api[_ -]?keys?|tokens?)\b", text, re.I):
+    if re.search(
+        r"\b(ask|request|collect|capture|extract|steal)\w*"
+        r".{0,60}\b(passwords?|credentials?|api[_ -]?keys?|tokens?|secrets?)\b",
+        text,
+        re.I,
+    ):
         findings.append(
             _finding(
                 "credential_request",
@@ -1152,9 +1756,33 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 88,
                 "credential-like request found",
                 "Do not collect credentials through tool descriptions or schemas.",
+                decision=FINDING_DECISION_BLOCK,
             )
         )
-    if re.search(r"\b(\.env|environment variables?|include_env|process\.env)\b", text, re.I):
+    if re.search(
+        r"\b(demande[rz]?|collecte[rz]?|capture[rz]?|récup[ée]re[rz]?|extraire|vole[rz]?)\w*"
+        r".{0,60}\b(mots? de passe|identifiants?|clés? api|jetons?|secrets?)\b",
+        text,
+        re.I,
+    ):
+        findings.append(
+            _finding(
+                "credential_request",
+                "secret_collection",
+                source,
+                "critical",
+                88,
+                "credential-like request found",
+                "Do not collect credentials through tool descriptions or schemas.",
+                decision=FINDING_DECISION_BLOCK,
+            )
+        )
+    if re.search(
+        r"\b(read|access|collect|capture|include|expose|return|lire|accéder|collecter|inclure|exposer)\w*"
+        r".{0,50}\b(\.env|environment variables?|include_env|process\.env|variables? d'environnement)\b",
+        text,
+        re.I,
+    ):
         findings.append(
             _finding(
                 "environment_secret_access",
@@ -1164,9 +1792,15 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 90,
                 "environment secret access requested",
                 "Remove environment secret access from the tool contract.",
+                decision=FINDING_DECISION_BLOCK,
             )
         )
-    if re.search(r"\b(ignore|bypass|disable).{0,40}\b(policy|security|restriction|instruction)", text, re.I):
+    if re.search(
+        r"\b(ignore|bypass|disable|ignorer?|contourner?|désactiver?)"
+        r".{0,40}\b(policy|security|restriction|instruction|politique|sécurité|règle)",
+        text,
+        re.I,
+    ):
         findings.append(
             _finding(
                 "ignore_security_restrictions",
@@ -1176,6 +1810,7 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 91,
                 "instruction to bypass security restrictions detected",
                 "Remove prompt-injection instructions from the tool metadata.",
+                decision=FINDING_DECISION_BLOCK,
             )
         )
     if len(text) > 4000:
@@ -1188,6 +1823,7 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 70,
                 f"description length={len(text)}",
                 "Shorten metadata to the minimum required tool contract.",
+                decision=FINDING_DECISION_INFO,
             )
         )
     for candidate in BASE64_RE.findall(text):
@@ -1201,13 +1837,19 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                     86,
                     "base64-like encoded instruction detected",
                     "Remove encoded instructions from tool metadata.",
+                    decision=FINDING_DECISION_BLOCK,
                 )
             )
             break
     return findings
 
 
-def _schema_findings(schema: dict[str, Any], source: str) -> list[AnalysisFinding]:
+def _schema_findings(
+    schema: dict[str, Any],
+    source: str,
+    profile_capabilities: set[str] | None = None,
+    semantic_facts: ToolSemanticFacts | None = None,
+) -> list[AnalysisFinding]:
     findings: list[AnalysisFinding] = []
     if schema.get("additionalProperties") is True:
         findings.append(
@@ -1219,10 +1861,11 @@ def _schema_findings(schema: dict[str, Any], source: str) -> list[AnalysisFindin
                 82,
                 "additionalProperties is true",
                 "Declare explicit properties and reject unexpected inputs.",
+                decision=FINDING_DECISION_REVIEW,
             )
         )
     properties = _schema_properties(schema)
-    if not properties and schema:
+    if not properties and schema and not _is_closed_zero_argument_schema(schema):
         findings.append(
             _finding(
                 "schema_too_permissive",
@@ -1232,26 +1875,70 @@ def _schema_findings(schema: dict[str, Any], source: str) -> list[AnalysisFindin
                 70,
                 "schema has no declared properties",
                 "Declare a narrow input schema.",
+                decision=FINDING_DECISION_REVIEW,
             )
         )
-    for name, field in properties.items():
+    for path, name, field in iter_schema_fields(schema):
         lowered = name.lower()
         field_text = _safe_json(field)
-        if lowered in SENSITIVE_PARAMETER_NAMES:
-            severity = "critical" if lowered in {"command", "shell", "script", "include_env", "credentials", "token", "delete"} else "high"
+        if lowered in SENSITIVE_PARAMETER_NAMES and not _parameter_expected_by_contract(
+            lowered,
+            profile_capabilities or set(),
+        ):
+            process_evidenced = (
+                lowered in {"command", "shell", "script"}
+                and semantic_facts is not None
+                and "code_execution" in semantic_facts.values("side_effects")
+            )
+            if lowered in {"command", "shell", "script"} and not process_evidenced:
+                continue
+            severity = "high" if process_evidenced else "medium"
             findings.append(
                 _finding(
                     f"sensitive_parameter_{lowered}",
                     "dangerous_parameter",
                     source,
                     severity,
-                    85,
-                    f"parameter '{_safe_excerpt(name)}'",
+                    90 if process_evidenced else 74,
+                    f"parameter '{_safe_excerpt(name)}' at {path}",
                     "Require an explicit security profile and human review for this parameter.",
+                    decision=(
+                        FINDING_DECISION_BLOCK
+                        if process_evidenced
+                        else FINDING_DECISION_REVIEW
+                    ),
                 )
             )
         findings.extend(_text_findings(source, field_text))
     return findings
+
+
+def _parameter_expected_by_contract(name: str, capabilities: set[str]) -> bool:
+    if name in {"command", "shell", "script"}:
+        return "process.execute" in capabilities
+    if name in {"upload_url", "callback_url", "destination_url"}:
+        return bool(capabilities.intersection({"network.request", "network.send"}))
+    if name in {"include_env", "credentials", "token"}:
+        return bool(
+            capabilities.intersection(
+                {"secret.read", "secret.access", "identity.manage"}
+            )
+        )
+    if name in {"delete", "overwrite"}:
+        return any(
+            capability.endswith(".delete")
+            or capability in {"filesystem.write", "database.write"}
+            for capability in capabilities
+        )
+    return False
+
+
+def _is_closed_zero_argument_schema(schema: dict[str, Any]) -> bool:
+    return (
+        schema.get("type") == "object"
+        and schema.get("properties") == {}
+        and schema.get("additionalProperties") is False
+    )
 
 
 def _schema_diff(previous: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1259,7 +1946,23 @@ def _schema_diff(previous: dict[str, Any], current: dict[str, Any]) -> list[dict
     previous_props = _schema_properties(previous)
     current_props = _schema_properties(current)
     for name in sorted(set(current_props) - set(previous_props)):
-        severity = "critical" if name.lower() in {"command", "shell", "script", "delete"} else "high" if name.lower() in {"upload_url", "callback_url", "destination_url"} else "medium"
+        field_name = _schema_field_name(name)
+        field_text = _schema_field_text(current_props[name])
+        process_execution = field_name in {"command", "shell", "script"} and bool(
+            re.search(
+                r"\b(shell|script|process|executable|operating system command).{0,30}\b(execute|run|launch|execution)\b"
+                r"|\b(execute|run|launch).{0,30}\b(shell|script|process|executable|operating system command)\b",
+                field_text,
+                re.IGNORECASE,
+            )
+        )
+        severity = (
+            "critical"
+            if process_execution
+            else "high"
+            if field_name in {"upload_url", "callback_url", "destination_url"}
+            else "medium"
+        )
         changes.append({"type": "parameter_added", "name": name, "severity": severity})
     for name in sorted(set(previous_props) - set(current_props)):
         changes.append({"type": "parameter_removed", "name": name, "severity": "low"})
@@ -1339,7 +2042,7 @@ def _risk_score(
     for finding in findings:
         score = max(score, severity_scores.get(finding.severity, 20))
     if semantic_result.flagged:
-        score = max(score, int(math.ceil(semantic_result.confidence * 100)))
+        score = max(40, score, int(math.ceil(semantic_result.confidence * 100)))
     score = max(score, _drift_severity_score(drift.status))
     return min(100, score)
 
@@ -1369,26 +2072,136 @@ def _capability_mismatch_code(capabilities: set[str]) -> str:
 
 
 def _schema_properties(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    properties = schema.get("properties")
-    if not isinstance(properties, dict):
-        return {}
     return {
-        str(name): value
-        for name, value in properties.items()
-        if isinstance(value, dict)
+        path: value
+        for path, _name, value in iter_schema_fields(schema)
     }
 
 
+def _schema_field_name(path: str) -> str:
+    return path.rsplit(".", 1)[-1].lower()
+
+
 def _semantic_text(tool_snapshot: dict[str, Any]) -> str:
-    return " ".join(
-        [
-            str(tool_snapshot.get("name") or ""),
-            str(tool_snapshot.get("description") or ""),
-            _safe_json(tool_snapshot.get("annotations") or {}),
-            _safe_json(tool_snapshot.get("input_schema") or {}),
-            _safe_json(tool_snapshot.get("output_schema") or {}),
-        ]
+    fragments = [
+        str(tool_snapshot.get("name") or ""),
+        strip_documentation_examples(
+            str(tool_snapshot.get("description") or "")
+        )[:3000],
+    ]
+    for _path, name, field in iter_schema_fields(tool_snapshot.get("input_schema") or {}):
+        fragments.append(name)
+        fragments.append(_schema_field_text(field)[:240])
+    for _path, name, field in iter_schema_fields(tool_snapshot.get("output_schema") or {}):
+        fragments.append(name)
+        fragments.append(_schema_field_text(field)[:240])
+    annotation_text = _annotation_text(tool_snapshot.get("annotations") or {})
+    if annotation_text:
+        fragments.append(annotation_text[:1000])
+    execution_text = _annotation_text(tool_snapshot.get("execution") or {})
+    if execution_text:
+        fragments.append(execution_text[:1000])
+    return normalize_description(" ".join(fragment for fragment in fragments if fragment))[:8000]
+
+
+def _semantic_categories(profile_snapshot: dict[str, Any] | None) -> list[str]:
+    categories = list(SEMANTIC_CATEGORIES)
+    pack = (profile_snapshot or {}).get("security_pack")
+    declared_categories = pack.get("semantic_categories") if isinstance(pack, dict) else None
+    if isinstance(declared_categories, (list, tuple)):
+        categories.extend(
+            value for value in declared_categories if isinstance(value, str) and value
+        )
+    pack_id = pack.get("id") if isinstance(pack, dict) else None
+    if isinstance(pack_id, str):
+        manifest = next(
+            (value for value in SecurityPackRegistry().packs() if value.id == pack_id),
+            None,
+        )
+        if manifest is not None:
+            categories.extend(manifest.semantic_categories)
+    return list(dict.fromkeys(categories))
+
+
+def _corroborate_semantic_result(
+    result: SemanticResult,
+    text: str,
+    facts: ToolSemanticFacts,
+) -> SemanticResult:
+    candidates = sorted(
+        (
+            (category, score)
+            for category, score in result.scores.items()
+            if category != "normal_tool_description"
+        ),
+        key=lambda item: item[1],
+        reverse=True,
     )
+    for category, score in candidates:
+        if score < SEMANTIC_REVIEW_THRESHOLD:
+            continue
+        patterns = SEMANTIC_CORROBORATION_PATTERNS.get(category, ())
+        pattern_match = any(
+            re.search(pattern, text, re.IGNORECASE)
+            for pattern in patterns
+        )
+        if pattern_match and _semantic_fact_support(category, facts, text):
+            return replace(
+                result,
+                best_category=category,
+                confidence=score,
+                flagged=True,
+            )
+    return replace(result, flagged=False)
+
+
+def _semantic_fact_support(
+    category: str,
+    facts: ToolSemanticFacts,
+    text: str,
+) -> bool:
+    actions = facts.values("actions")
+    resources = facts.values("resources")
+    data = facts.values("data_categories")
+    side_effects = facts.values("side_effects")
+    scopes = facts.values("scopes")
+    privileges = facts.values("privileges")
+    destinations = facts.values("external_destinations")
+    sensitive_transfer_data = data.intersection(
+        {"credentials", "personal_data", "financial_data", "source_code", "location"}
+    )
+    explicit_exfiltration = bool(
+        re.search(
+            r"\b(exfiltrat\w*|collector|secretly|covertly|without (?:consent|notifying))\b",
+            text,
+            re.IGNORECASE,
+        )
+        or any("collector" in destination for destination in destinations)
+    )
+    requirements = {
+        "prompt_injection": True,
+        "security_bypass": True,
+        "secret_collection": "credentials" in data,
+        "data_exfiltration": bool(
+            (destinations or "external_transfer" in side_effects)
+            and (sensitive_transfer_data or explicit_exfiltration)
+        ),
+        "hidden_additional_action": bool(side_effects),
+        # Execution is a capability, not a security defect by itself. Contract
+        # consistency and shell-injection evidence decide whether it is risky.
+        "command_execution": False,
+        "unauthorized_data_access": bool(resources),
+        "user_deception": True,
+        "privilege_escalation": bool(privileges) and "authorize" in actions,
+        "cross_tenant_access": "cross_tenant" in scopes,
+        "unexpected_destructive_operation": "destructive" in side_effects,
+        "public_sharing": "public_exposure" in side_effects or "public" in scopes,
+        "bulk_messaging": "bulk" in scopes and "message" in resources,
+        "server_side_request_forgery": bool(destinations or "network_endpoint" in resources),
+        "shell_injection": "process" in resources,
+        "unauthorized_financial_transaction": "financial_transaction" in side_effects,
+    }
+    return requirements.get(category, True)
 
 
 def _tokens(text: str) -> list[str]:
@@ -1414,16 +2227,54 @@ def _finding(
     confidence: int,
     evidence: str,
     recommendation: str,
+    *,
+    decision: str = FINDING_DECISION_REVIEW,
 ) -> AnalysisFinding:
+    if decision not in {
+        FINDING_DECISION_BLOCK,
+        FINDING_DECISION_REVIEW,
+        FINDING_DECISION_INFO,
+    }:
+        raise ValueError("invalid finding decision")
     return AnalysisFinding(
         code=code,
         category=category,
         source=source,
         severity=severity,
         confidence=max(0, min(100, int(confidence))),
-        evidence={"summary": _safe_excerpt(evidence)},
+        evidence={
+            "summary": _safe_excerpt(evidence),
+            "decision": decision,
+        },
         recommendation=recommendation,
     )
+
+
+def _finding_decision(finding: AnalysisFinding) -> str:
+    decision = finding.evidence.get("decision")
+    if decision in {
+        FINDING_DECISION_BLOCK,
+        FINDING_DECISION_REVIEW,
+        FINDING_DECISION_INFO,
+    }:
+        return str(decision)
+    if finding.code in CRITICAL_DETERMINISTIC_CODES:
+        return FINDING_DECISION_BLOCK
+    return FINDING_DECISION_REVIEW
+
+
+def _deduplicate_findings(
+    findings: list[AnalysisFinding],
+) -> list[AnalysisFinding]:
+    unique: dict[tuple[str, str, str], AnalysisFinding] = {}
+    for finding in findings:
+        key = (
+            finding.code,
+            finding.source,
+            str(finding.evidence.get("summary") or ""),
+        )
+        unique.setdefault(key, finding)
+    return list(unique.values())
 
 
 def _safe_excerpt(value: str, limit: int = 160) -> str:
@@ -1483,6 +2334,8 @@ def _validate_approvable_analysis(
         raise ValueError("analysis is not complete.")
     if version.fingerprint != fingerprint:
         raise ValueError("observed version fingerprint does not match.")
+    if analysis.analyzer_revision != ANALYZER_REVISION:
+        raise ValueError("analysis was produced by an outdated analyzer revision.")
     if not reusable_analysis_context_hash(analysis.analysis_context_hash):
         raise ValueError("analysis context hash is missing or invalid.")
     tool = db.get(MCPTool, tool_id)
@@ -1495,6 +2348,7 @@ def _validate_approvable_analysis(
     if analysis.analysis_status == STATUS_REVIEW_REQUIRED and analysis.review_status not in {
         STATUS_REVIEW_REQUIRED,
         STATUS_APPROVED,
+        STATUS_ADMIN_ALLOWED,
     }:
         raise ValueError("review status is not approvable.")
 

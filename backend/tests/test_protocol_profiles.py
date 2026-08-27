@@ -26,6 +26,7 @@ from proxy.protocol_profiles import (
     ProtocolProfileError,
     ProtocolProfileRegistry,
     SUPPORTED_MCP_PROTOCOL_VERSIONS,
+    _find_protocol_mechanism,
 )
 from proxy.protocol_negotiation import ProtocolNegotiationError, ProtocolNegotiator, protocol_rediscovery_due
 from proxy.protocol_revisions import ProtocolRevisionRegistry, TransportKind
@@ -362,6 +363,27 @@ class ProtocolProfileTests(unittest.TestCase):
             legacy.validate_tool_response(
                 {"content": [{"type": "text", "text": "queued", "task": {"id": "1"}}]}
             )
+
+    def test_modern_discovery_allows_advertised_unsupported_capabilities(self):
+        modern = ProtocolProfileRegistry().get(MODERN_PROFILE_ID)
+        modern.validate_discover_result(
+            {
+                "resultType": "complete",
+                "ttlMs": 0,
+                "cacheScope": "private",
+                "supportedVersions": [MODERN_PROTOCOL_VERSION],
+                "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+            }
+        )
+
+    def test_mechanism_scanner_ignores_non_string_type_values(self):
+        self.assertIsNone(
+            _find_protocol_mechanism(
+                {"inputSchema": {"type": {"nonstandard": "metadata"}}},
+                forbidden_keys={"resources"},
+                forbidden_content_types={"resource", "resource_link"},
+            )
+        )
 
 
 class _MCPHandler(BaseHTTPRequestHandler):

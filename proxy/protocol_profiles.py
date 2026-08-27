@@ -504,7 +504,11 @@ class ModernEraHandler(RestrictedProtocolProfile):
             )
         except ProtocolRevisionError as exc:
             raise ProtocolProfileError(str(exc)) from exc
-        self._validate_complete_cacheable_result(result, context="discover")
+        self._validate_complete_cacheable_result(
+            result,
+            context="discover",
+            allow_capability_advertisements=True,
+        )
         supported_versions = result.get("supportedVersions")
         if (
             not isinstance(supported_versions, list)
@@ -549,15 +553,29 @@ class ModernEraHandler(RestrictedProtocolProfile):
         except ProtocolRevisionError as exc:
             raise ProtocolProfileError(str(exc)) from exc
 
-    def _validate_complete_cacheable_result(self, result: dict[str, Any], *, context: str) -> None:
-        self._validate_complete_result(result)
+    def _validate_complete_cacheable_result(
+        self,
+        result: dict[str, Any],
+        *,
+        context: str,
+        allow_capability_advertisements: bool = False,
+    ) -> None:
+        self._validate_complete_result(
+            result,
+            allow_capability_advertisements=allow_capability_advertisements,
+        )
         ttl_ms = result.get("ttlMs")
         if not isinstance(ttl_ms, int) or isinstance(ttl_ms, bool) or ttl_ms < 0:
             raise ProtocolProfileError(f"modern_{context}_ttl_invalid")
         if result.get("cacheScope") not in {"public", "private"}:
             raise ProtocolProfileError(f"modern_{context}_cache_scope_invalid")
 
-    def _validate_complete_result(self, result: dict[str, Any]) -> None:
+    def _validate_complete_result(
+        self,
+        result: dict[str, Any],
+        *,
+        allow_capability_advertisements: bool = False,
+    ) -> None:
         super().validate_tool_response(result)
         result_type = result.get("resultType")
         if result_type != "complete":
@@ -573,6 +591,7 @@ class ModernEraHandler(RestrictedProtocolProfile):
             result,
             forbidden_keys=set(self.forbidden_result_keys),
             forbidden_content_types={"resource", "resource_link"},
+            ignored_branch_keys={"capabilities"} if allow_capability_advertisements else set(),
         )
         if forbidden:
             raise ProtocolProfileError(f"modern_response_mechanism_unsupported:{forbidden}")
@@ -735,17 +754,22 @@ def _find_protocol_mechanism(
     *,
     forbidden_keys: set[str],
     forbidden_content_types: set[str],
+    ignored_branch_keys: set[str] | None = None,
 ) -> str | None:
+    ignored_branch_keys = ignored_branch_keys or set()
     if isinstance(value, dict):
         for key, child in value.items():
             if key in forbidden_keys:
                 return key
-            if key == "type" and child in forbidden_content_types:
+            if key == "type" and isinstance(child, str) and child in forbidden_content_types:
                 return str(child)
+            if key in ignored_branch_keys:
+                continue
             found = _find_protocol_mechanism(
                 child,
                 forbidden_keys=forbidden_keys,
                 forbidden_content_types=forbidden_content_types,
+                ignored_branch_keys=ignored_branch_keys,
             )
             if found:
                 return found
@@ -755,6 +779,7 @@ def _find_protocol_mechanism(
                 child,
                 forbidden_keys=forbidden_keys,
                 forbidden_content_types=forbidden_content_types,
+                ignored_branch_keys=ignored_branch_keys,
             )
             if found:
                 return found

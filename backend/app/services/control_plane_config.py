@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.models.control_plane import ControlPlaneConfigRevision, ControlPlaneState, ControlPlaneUser
 from app.models.tool_analysis import ToolObservationReviewApproval, ToolProtocolObservation
 from app.models.trusted_agent_session import TrustedAgentSession
-from app.schemas.control_plane import ControlPlaneConfigContent
+from app.schemas.control_plane import ControlPlaneConfigContent, empty_latest_configuration
 from app.services.control_plane_audit import record_control_plane_audit
 from app.services.published_configuration import (
     config_content_hash,
@@ -25,7 +25,12 @@ from app.services.revision_signing import (
 )
 from app.services.tool_observation_approval import evidence_bundle_for_observation
 from common.canonical_json import sha256_canonical_json
-from proxy.tool_security_v2 import validate_contract_for_schema
+from proxy.resource_adapters_v2 import AdapterRegistry
+from proxy.tool_security_v2 import (
+    CapabilityCatalog,
+    ResourceTypeRegistry,
+    validate_contract_for_schema,
+)
 
 
 class ControlPlaneConfigError(ValueError):
@@ -65,7 +70,13 @@ def lock_control_plane_state_for_update(db: Session) -> ControlPlaneState:
     _acquire_config_revision_lock(db)
     state = db.get(ControlPlaneState, 1)
     if state is None:
-        state = ControlPlaneState(id=1)
+        database_max = int(
+            db.scalar(select(func.max(ControlPlaneConfigRevision.revision_number))) or 0
+        )
+        state = ControlPlaneState(
+            id=1,
+            last_revision_number=database_max,
+        )
         db.add(state)
         db.flush()
 
@@ -86,12 +97,6 @@ def create_revision(
     parent_revision_id: str | None = None,
 ) -> ControlPlaneConfigRevision:
     _acquire_config_revision_lock(db)
-    if (
-        status == "PUBLISHED"
-        and content.schema_version == 1
-        and _v2_cutover_active(db)
-    ):
-        raise ControlPlaneConfigError("schema_v1_publish_after_v2_cutover_refused")
     content_json = content_model_to_json(content)
     revision = ControlPlaneConfigRevision(
         revision_number=_next_revision_number(db),
@@ -103,10 +108,35 @@ def create_revision(
         parent_revision_id=parent_revision_id,
         change_summary=change_summary,
     )
+    predecessor = None
+    if status == "PUBLISHED":
+        predecessor = db.scalar(
+            select(ControlPlaneConfigRevision)
+            .where(
+                ControlPlaneConfigRevision.status.in_({"PUBLISHED", "ARCHIVED"})
+            )
+            .order_by(ControlPlaneConfigRevision.revision_number.desc())
+            .limit(1)
+        )
+    db.add(revision)
+    db.flush()
     if status == "PUBLISHED":
         revision.published_by = actor.id if actor else None
         revision.published_at = datetime.utcnow()
-    db.add(revision)
+        previous_hash = predecessor.content_hash if predecessor is not None else "0" * 64
+        payload = revision_signature_payload(
+            revision_id=revision.id,
+            revision_number=revision.revision_number,
+            schema_version=revision.schema_version,
+            content_hash=revision.content_hash,
+            previous_revision_hash=previous_hash,
+        )
+        signature, key_id = sign_revision_payload(payload)
+        revision.previous_revision_hash = previous_hash
+        revision.signature = signature
+        revision.signature_key_id = key_id
+        revision.signature_algorithm = REVISION_SIGNATURE_ALGORITHM
+        revision.signature_version = REVISION_SIGNATURE_VERSION
     db.flush()
     return revision
 
@@ -133,6 +163,7 @@ def create_draft_from_revision(
         parent_revision_id=parent.id,
         change_summary=change_summary,
     )
+    _copy_observation_approvals_to_draft(db, source=content, draft=draft, actor=actor)
     record_control_plane_audit(
         db,
         actor=actor,
@@ -144,6 +175,169 @@ def create_draft_from_revision(
         after_json=_revision_summary(draft),
     )
     return draft
+
+
+def _copy_observation_approvals_to_draft(
+    db: Session,
+    *,
+    source: ControlPlaneConfigContent,
+    draft: ControlPlaneConfigRevision,
+    actor: ControlPlaneUser,
+) -> None:
+    if not source.tool_observation_approvals:
+        return
+
+    copied = []
+    for source_approval in source.tool_observation_approvals:
+        observation = db.get(ToolProtocolObservation, source_approval.tool_observation_id)
+        if observation is None:
+            raise ControlPlaneConfigError("approval_observation_missing")
+        if (
+            observation.server_ref != source_approval.server_ref
+            or observation.upstream_protocol_profile_id
+            != source_approval.upstream_protocol_profile_id
+            or observation.tool_fingerprint != source_approval.tool_fingerprint
+        ):
+            raise ControlPlaneConfigError("approval_observation_mismatch")
+
+        try:
+            current_bundle = evidence_bundle_for_observation(db, observation)
+        except ValueError as exc:
+            raise ControlPlaneConfigError("approval_evidence_unavailable") from exc
+        if not _evidence_snapshot_approvable(current_bundle):
+            raise ControlPlaneConfigError("inherited_approval_current_analysis_not_approvable")
+        current_hash = sha256_canonical_json(current_bundle)
+
+        source_review = db.scalar(
+            select(ToolObservationReviewApproval).where(
+                ToolObservationReviewApproval.observation_id == observation.id,
+                ToolObservationReviewApproval.tool_fingerprint
+                == source_approval.tool_fingerprint,
+                ToolObservationReviewApproval.contract_hash
+                == source_approval.contract_hash,
+                ToolObservationReviewApproval.evidence_bundle_hash
+                == source_approval.evidence_bundle_hash,
+                ToolObservationReviewApproval.revision_id
+                == source_approval.revision_id,
+                ToolObservationReviewApproval.active.is_(True),
+            )
+        )
+        source_bundle = source_review.evidence_bundle if source_review is not None else None
+        source_snapshot_current = (
+            isinstance(source_bundle, dict)
+            and sha256_canonical_json(source_bundle)
+            == source_approval.evidence_bundle_hash
+            and _evidence_snapshot_matches_observation(source_bundle, observation)
+            and current_hash == source_approval.evidence_bundle_hash
+        )
+
+        if source_snapshot_current:
+            evidence_bundle = source_bundle
+            evidence_hash = source_approval.evidence_bundle_hash
+            admin_id = source_approval.admin_id
+            approved_at = datetime.fromisoformat(source_approval.approved_at.rstrip("Z"))
+        else:
+            evidence_bundle = current_bundle
+            evidence_hash = current_hash
+            admin_id = actor.id
+            approved_at = datetime.utcnow()
+
+        copied_approval = source_approval.model_copy(
+            update={
+                "revision_id": draft.id,
+                "evidence_bundle_hash": evidence_hash,
+                "admin_id": admin_id,
+                "approved_at": approved_at.isoformat(timespec="microseconds") + "Z",
+            }
+        )
+        copied.append(copied_approval)
+        db.add(
+            ToolObservationReviewApproval(
+                observation_id=copied_approval.tool_observation_id,
+                tool_fingerprint=copied_approval.tool_fingerprint,
+                contract_hash=copied_approval.contract_hash,
+                evidence_bundle_hash=copied_approval.evidence_bundle_hash,
+                evidence_bundle=evidence_bundle,
+                admin_id=copied_approval.admin_id,
+                revision_id=draft.id,
+                active=True,
+                approved_at=approved_at,
+            )
+        )
+
+    next_content = source.model_copy(
+        update={"tool_observation_approvals": tuple(copied)}
+    )
+    draft.content = content_model_to_json(next_content)
+    draft.content_hash = config_content_hash(draft.content)
+    db.flush()
+
+
+def create_latest_draft(
+    db: Session,
+    *,
+    actor: ControlPlaneUser,
+    change_summary: str,
+) -> ControlPlaneConfigRevision:
+    draft = create_revision(
+        db,
+        content=empty_latest_configuration(),
+        status="DRAFT",
+        actor=actor,
+        change_summary=change_summary,
+    )
+    record_control_plane_audit(
+        db,
+        actor=actor,
+        action="LATEST_CONFIG_DRAFT_CREATED",
+        target_type="control_plane_config_revision",
+        target_id=draft.id,
+        revision_id=draft.id,
+        reason=change_summary,
+        after_json=_revision_summary(draft),
+    )
+    return draft
+
+
+def delete_inactive_revision(
+    db: Session,
+    *,
+    revision_id: str,
+    actor: ControlPlaneUser,
+    change_summary: str,
+) -> None:
+    revision = db.get(ControlPlaneConfigRevision, revision_id)
+    if revision is None:
+        raise ControlPlaneConfigError("revision_not_found")
+    if revision.status != "DRAFT":
+        raise ControlPlaneConfigError("only_drafts_can_be_deleted")
+    has_descendants = db.scalar(
+        select(ControlPlaneConfigRevision.id)
+        .where(ControlPlaneConfigRevision.parent_revision_id == revision.id)
+        .limit(1)
+    )
+    if has_descendants is not None:
+        raise ControlPlaneConfigError("revision_has_descendants")
+    summary = _revision_summary(revision)
+    db.execute(
+        update(ToolObservationReviewApproval)
+        .where(
+            ToolObservationReviewApproval.revision_id == revision_id,
+            ToolObservationReviewApproval.active.is_(True),
+        )
+        .values(active=False)
+    )
+    db.delete(revision)
+    db.flush()
+    record_control_plane_audit(
+        db,
+        actor=actor,
+        action="CONFIG_REVISION_DELETED",
+        target_type="control_plane_config_revision",
+        target_id=revision_id,
+        reason=change_summary,
+        before_json=summary,
+    )
 
 
 def patch_draft_revision(
@@ -193,8 +387,7 @@ def validate_revision(
     if revision is None:
         raise ControlPlaneConfigError("revision_not_found")
     content = validate_config_content(revision.content)
-    if content.schema_version == 2:
-        _validate_v2_database_artifacts(db, revision, content)
+    _validate_v2_database_artifacts(db, revision, content)
     expected_hash = config_content_hash(content_model_to_json(content))
     if expected_hash != revision.content_hash:
         raise ControlPlaneConfigError("revision_hash_mismatch")
@@ -224,8 +417,6 @@ def publish_revision(
         raise ControlPlaneConfigError("revision_not_found")
     if draft.status != "DRAFT":
         raise ControlPlaneConfigError("only_draft_can_publish")
-    if draft.schema_version == 1 and _v2_cutover_active(db):
-        raise ControlPlaneConfigError("schema_v1_publish_after_v2_cutover_refused")
     validate_revision(db, revision_id=draft.id, actor=actor, change_summary=change_summary)
     now = datetime.utcnow()
     previous = _active_revision_from_locked_state(db, state)
@@ -233,21 +424,20 @@ def publish_revision(
         validate_config_content(previous.content) if previous is not None else None
     )
     draft_content = validate_config_content(draft.content)
-    if draft.schema_version == 2:
-        previous_hash = previous.content_hash if previous is not None else "0" * 64
-        payload = revision_signature_payload(
-            revision_id=draft.id,
-            revision_number=draft.revision_number,
-            schema_version=draft.schema_version,
-            content_hash=draft.content_hash,
-            previous_revision_hash=previous_hash,
-        )
-        signature, key_id = sign_revision_payload(payload)
-        draft.previous_revision_hash = previous_hash
-        draft.signature = signature
-        draft.signature_key_id = key_id
-        draft.signature_algorithm = REVISION_SIGNATURE_ALGORITHM
-        draft.signature_version = REVISION_SIGNATURE_VERSION
+    previous_hash = previous.content_hash if previous is not None else "0" * 64
+    payload = revision_signature_payload(
+        revision_id=draft.id,
+        revision_number=draft.revision_number,
+        schema_version=draft.schema_version,
+        content_hash=draft.content_hash,
+        previous_revision_hash=previous_hash,
+    )
+    signature, key_id = sign_revision_payload(payload)
+    draft.previous_revision_hash = previous_hash
+    draft.signature = signature
+    draft.signature_key_id = key_id
+    draft.signature_algorithm = REVISION_SIGNATURE_ALGORITHM
+    draft.signature_version = REVISION_SIGNATURE_VERSION
     if previous is not None:
         previous.status = "ARCHIVED"
         previous.updated_at = now
@@ -292,8 +482,6 @@ def rollback_to_revision(
     if target is None:
         raise ControlPlaneConfigError("revision_not_found")
     current = _active_revision_from_locked_state(db, state)
-    if current is not None and current.schema_version == 2 and target.schema_version != 2:
-        raise ControlPlaneConfigError("rollback_to_v1_requires_explicit_v2_migration")
     content = validate_config_content(target.content)
     draft = create_revision(
         db,
@@ -302,6 +490,12 @@ def rollback_to_revision(
         actor=actor,
         parent_revision_id=target.id,
         change_summary=f"Rollback draft: {change_summary}",
+    )
+    _copy_observation_approvals_to_draft(
+        db,
+        source=content,
+        draft=draft,
+        actor=actor,
     )
     published = publish_revision(
         db,
@@ -339,22 +533,18 @@ def _next_revision_number(db: Session) -> int:
         database_max = int(
             db.scalar(select(func.max(ControlPlaneConfigRevision.revision_number))) or 0
         )
-        next_number = max(database_max, _LAST_ALLOCATED_REVISION_NUMBER) + 1
+        state = db.get(ControlPlaneState, 1)
+        persisted_high_water = int(state.last_revision_number or 0) if state is not None else 0
+        next_number = max(
+            database_max,
+            persisted_high_water,
+            _LAST_ALLOCATED_REVISION_NUMBER,
+        ) + 1
+        if state is not None:
+            state.last_revision_number = next_number
+            db.flush()
         _LAST_ALLOCATED_REVISION_NUMBER = next_number
         return next_number
-
-
-def _v2_cutover_active(db: Session) -> bool:
-    return bool(
-        db.scalar(
-            select(ControlPlaneConfigRevision.id)
-            .where(
-                ControlPlaneConfigRevision.schema_version == 2,
-                ControlPlaneConfigRevision.status.in_({"PUBLISHED", "ARCHIVED"}),
-            )
-            .limit(1)
-        )
-    )
 
 
 def _active_revision_from_locked_state(
@@ -448,6 +638,40 @@ def _revoke_sessions_for_changed_identity_bindings(
         )
 
 
+def _evidence_snapshot_matches_observation(
+    evidence_bundle: dict[str, Any],
+    observation: ToolProtocolObservation,
+) -> bool:
+    return (
+        evidence_bundle.get("tool_observation_id") == observation.id
+        and evidence_bundle.get("tool_fingerprint") == observation.tool_fingerprint
+        and evidence_bundle.get("canonical_tool_definition")
+        == observation.canonical_tool_definition
+    )
+
+
+def _evidence_snapshot_approvable(evidence_bundle: dict[str, Any]) -> bool:
+    analysis = evidence_bundle.get("analysis")
+    if not isinstance(analysis, dict):
+        return False
+    if analysis.get("analysis_status") in {
+        "ANALYSIS_FAILED",
+        "BLOCKED",
+        "PENDING_ANALYSIS",
+        "QUARANTINED",
+        "STALE",
+    }:
+        return False
+    if analysis.get("deterministic_critical_finding") == "true":
+        return False
+    return bool(
+        analysis.get("semantic_scores")
+        and analysis.get("consistency_result")
+        and analysis.get("drift_result")
+        and analysis.get("model_versions")
+    )
+
+
 def _validate_v2_database_artifacts(
     db: Session,
     revision: ControlPlaneConfigRevision,
@@ -458,6 +682,22 @@ def _validate_v2_database_artifacts(
         for contract in content.tool_security_contracts or ()
     }
     configured_resolutions = content.adapter_resolutions or ()
+    capability_catalog_version = content.capability_catalog_version or "1"
+    resource_type_registry_version = content.resource_type_registry_version or "1"
+    security_packs = content.security_packs or ()
+    capability_catalog = CapabilityCatalog(
+        version=capability_catalog_version,
+        security_packs=security_packs,
+    )
+    resource_type_registry = ResourceTypeRegistry(
+        version=resource_type_registry_version,
+        security_packs=security_packs,
+    )
+    adapter_registry = AdapterRegistry(
+        capability_catalog_version=capability_catalog_version,
+        resource_type_registry_version=resource_type_registry_version,
+        security_packs=security_packs,
+    )
     approved_contract_keys: set[tuple[str, str]] = set()
     for approval in content.tool_observation_approvals or ():
         if approval.revision_id != revision.id:
@@ -479,7 +719,13 @@ def _validate_v2_database_artifacts(
         if not isinstance(input_schema, dict):
             raise ControlPlaneConfigError("approval_observation_schema_missing")
         try:
-            derived = validate_contract_for_schema(contract, input_schema)
+            derived = validate_contract_for_schema(
+                contract,
+                input_schema,
+                capability_catalog=capability_catalog,
+                resource_type_registry=resource_type_registry,
+                adapter_resolver=adapter_registry,
+            )
         except Exception as exc:
             raise ControlPlaneConfigError("approval_contract_schema_invalid") from exc
         expected = sorted(
@@ -506,14 +752,6 @@ def _validate_v2_database_artifacts(
         if expected != actual:
             raise ControlPlaneConfigError("approval_adapter_resolution_mismatch")
         approved_contract_keys.add((contract.server_ref, contract.tool_name))
-        try:
-            evidence_hash = sha256_canonical_json(
-                evidence_bundle_for_observation(db, observation)
-            )
-        except ValueError as exc:
-            raise ControlPlaneConfigError("approval_evidence_unavailable") from exc
-        if evidence_hash != approval.evidence_bundle_hash:
-            raise ControlPlaneConfigError("approval_evidence_hash_mismatch")
         review = db.scalar(
             select(ToolObservationReviewApproval).where(
                 ToolObservationReviewApproval.observation_id == observation.id,
@@ -529,5 +767,21 @@ def _validate_v2_database_artifacts(
         )
         if review is None:
             raise ControlPlaneConfigError("approval_review_record_missing")
+        if not isinstance(review.evidence_bundle, dict):
+            raise ControlPlaneConfigError("approval_evidence_snapshot_missing")
+        if not _evidence_snapshot_matches_observation(review.evidence_bundle, observation):
+            raise ControlPlaneConfigError("approval_evidence_observation_mismatch")
+        evidence_hash = sha256_canonical_json(review.evidence_bundle)
+        if evidence_hash != approval.evidence_bundle_hash:
+            raise ControlPlaneConfigError("approval_evidence_hash_mismatch")
+        if revision.status == "DRAFT":
+            try:
+                current_evidence_hash = sha256_canonical_json(
+                    evidence_bundle_for_observation(db, observation)
+                )
+            except ValueError as exc:
+                raise ControlPlaneConfigError("approval_evidence_unavailable") from exc
+            if current_evidence_hash != approval.evidence_bundle_hash:
+                raise ControlPlaneConfigError("approval_evidence_not_current")
     if set(contracts) != approved_contract_keys:
         raise ControlPlaneConfigError("published_contract_requires_profile_approval")

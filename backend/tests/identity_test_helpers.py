@@ -1,4 +1,5 @@
 import base64
+import copy
 import json
 import sys
 import tempfile
@@ -19,6 +20,17 @@ BACKEND_DIR = REPO_ROOT / "backend"
 
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(BACKEND_DIR))
+
+from proxy.tool_request_preparation import prepare_tool_request_v2
+from proxy.tool_security_v2 import (
+    AuthorityResourceScope,
+    ResourceBinding,
+    ScopeMatchMode,
+    ToolEffect,
+    ToolObservationApproval,
+    ToolSecurityContract,
+    validate_contract_for_schema,
+)
 
 
 def b64url(data: bytes) -> str:
@@ -213,6 +225,60 @@ def write_bytes(path: Path, content: bytes) -> Path:
 
 
 def runtime_context(**overrides: Any) -> dict[str, Any]:
+    server_ref = "streamable_http:http://127.0.0.1:9000/mcp"
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+        "additionalProperties": False,
+    }
+    contract = ToolSecurityContract(
+        server_ref=server_ref,
+        tool_name="read_file",
+        effects=(
+            ToolEffect(
+                effect_id="filesystem.read",
+                capability="filesystem.read",
+                resource_bindings=(
+                    ResourceBinding(
+                        path=("path",),
+                        resource_type="filesystem_path",
+                    ),
+                ),
+            ),
+        ),
+    )
+    approval = ToolObservationApproval(
+        tool_observation_id=1,
+        server_ref=server_ref,
+        upstream_protocol_profile_id="mcp-legacy-2025-11-25-restricted-v1",
+        tool_fingerprint="a" * 64,
+        contract_hash=contract.contract_hash,
+        evidence_bundle_hash="b" * 64,
+        admin_id="admin",
+        approved_at="2026-01-01T00:00:00Z",
+        revision_id="control-plane-revision-1",
+    )
+    scopes = (
+        AuthorityResourceScope(
+            scope_id="fs.project_workspace",
+            authority=server_ref,
+            resource_type="filesystem_path",
+            canonical_value="contracts",
+            match_mode=ScopeMatchMode.SUBTREE,
+        ),
+    )
+    prepared = prepare_tool_request_v2(
+        raw_arguments={"path": "contracts/contract1.txt"},
+        input_schema=schema,
+        contract=contract,
+        adapter_resolutions=validate_contract_for_schema(contract, schema),
+        approval=approval,
+        authority_scopes=scopes,
+        authority_context={"filesystem_path_mode": "RELATIVE_ROOTED"},
+        client_protocol_profile_id="mcp-legacy-2025-11-25-restricted-v1",
+        upstream_protocol_profile_id="mcp-legacy-2025-11-25-restricted-v1",
+    )
     context: dict[str, Any] = {
         "subject": {
             "agent_id": "agent-demo",
@@ -231,11 +297,11 @@ def runtime_context(**overrides: Any) -> dict[str, Any]:
         "server": {
             "id": 1,
             "endpoint": "http://127.0.0.1:9000/mcp",
-            "server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
+            "server_ref": server_ref,
             "known": True,
             "trusted": True,
             "trust_status": "trusted",
-            "security_status": "pending_analysis",
+            "security_status": "approved",
         },
         "tool": {
             "id": 1,
@@ -260,21 +326,29 @@ def runtime_context(**overrides: Any) -> dict[str, Any]:
             "analyzer_revision": "tool-description-analyzer-v1",
         },
         "request": {
-            "operation": "read",
-            "resource_adapter": "filesystem",
-            "resource_type": "filesystem.file",
-            "resource_scope": "fs.project_workspace",
-            "required_capability": "filesystem.read",
-            "canonical_resource": "fs.project_workspace:/contracts/contract1.txt",
-            "arguments": {"path": "contracts/contract1.txt"},
-            "arguments_valid": True,
-            "validation_error_codes": [],
-            "resource_sensitivity": "internal",
-            "resource_resolution_status": "resolved",
-            "resource_flags": [],
-            "resource_registry_revision": "resource-scopes-test-v1",
-            "tool_profile_revision": "tool-security-profiles-test-v1",
-            "operation_allowed_on_scope": True,
+            "operation": prepared.operation,
+            "resource_adapter": prepared.resource_adapter,
+            "resource_type": prepared.resource_type,
+            "resource_scope": prepared.resource_scope,
+            "required_capability": prepared.required_capability,
+            "canonical_resource": prepared.canonical_resource,
+            "arguments": prepared.arguments,
+            "arguments_valid": prepared.arguments_valid,
+            "validation_error_codes": list(prepared.validation_error_codes),
+            "resource_sensitivity": prepared.resource_sensitivity,
+            "resource_resolution_status": prepared.resource_resolution_status,
+            "resource_flags": list(prepared.resource_flags),
+            "resource_registry_revision": prepared.resource_registry_revision,
+            "tool_profile_revision": prepared.tool_profile_revision,
+            "operation_allowed_on_scope": prepared.operation_allowed_on_scope,
+            "canonical_arguments_hash": prepared.canonical_arguments_hash,
+            "security_model_version": prepared.security_model_version,
+            "contract_hash": prepared.contract_hash,
+            "tool_security_contract": prepared.security_contract,
+            "normalized_facts": prepared.normalized_facts,
+            "tool_observation_approval": prepared.tool_observation_approval,
+            "authority_resource_scopes": list(prepared.authority_resource_scopes),
+            "capability_catalog": list(prepared.capability_catalog),
             "estimated_output_size_mb": 0.001,
         },
         "runtime": {
@@ -283,10 +357,19 @@ def runtime_context(**overrides: Any) -> dict[str, Any]:
             "control_plane_revision_id": "control-plane-revision-1",
             "control_plane_revision_number": 1,
             "control_plane_content_hash": "c" * 64,
+            "client_protocol_profile_id": "mcp-legacy-2025-11-25-restricted-v1",
+            "upstream_protocol_profile_id": "mcp-legacy-2025-11-25-restricted-v1",
+            "client_protocol_era": "legacy",
+            "client_protocol_version": "2025-11-25",
+            "client_transport_kind": "legacy_streamable_http",
+            "upstream_protocol_era": "legacy",
+            "upstream_protocol_version": "2025-11-25",
+            "upstream_transport_kind": "legacy_streamable_http",
         },
     }
-    deep_update(context, overrides)
-    return context
+    result = copy.deepcopy(context)
+    deep_update(result, overrides)
+    return result
 
 
 def deep_update(target: dict[str, Any], updates: dict[str, Any]) -> None:

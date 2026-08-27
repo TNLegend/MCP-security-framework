@@ -23,7 +23,43 @@ from app.services.subject_authorization import (
 )
 
 
-def build_opa_fail_closed_decision(*, error_code: str) -> PolicyDecision:
+def _bind_fail_closed_decision_context(
+    result: dict[str, Any],
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if context is None:
+        return result
+    try:
+        normalized = RuntimePolicyInput.model_validate(context).model_dump(mode="json")
+    except Exception:
+        return result
+    runtime = normalized.get("runtime") or {}
+    request = normalized.get("request") or {}
+    revision_id = runtime.get("control_plane_revision_id")
+    content_hash = runtime.get("control_plane_content_hash")
+    arguments_hash = request.get("canonical_arguments_hash")
+    if not all(isinstance(value, str) and value for value in (
+        revision_id,
+        content_hash,
+        arguments_hash,
+    )):
+        return result
+    result.update(
+        {
+            "decision_id": f"{revision_id}:{arguments_hash}",
+            "control_plane_revision_id": revision_id,
+            "control_plane_content_hash": content_hash,
+            "canonical_arguments_hash": arguments_hash,
+        }
+    )
+    return result
+
+
+def build_opa_fail_closed_decision(
+    *,
+    error_code: str,
+    context: dict[str, Any] | None = None,
+) -> PolicyDecision:
     result = {
         "effect": "DENY",
         "obligations": [
@@ -42,12 +78,15 @@ def build_opa_fail_closed_decision(*, error_code: str) -> PolicyDecision:
         "decision": "BLOCK",
         "rule_id": error_code,
     }
-    return PolicyDecision.model_validate(result)
+    return PolicyDecision.model_validate(
+        _bind_fail_closed_decision_context(result, context)
+    )
 
 
 def build_subject_authorization_fail_closed_decision(
     *,
     error_code: str,
+    context: dict[str, Any] | None = None,
 ) -> PolicyDecision:
     result = {
         "effect": "DENY",
@@ -66,10 +105,16 @@ def build_subject_authorization_fail_closed_decision(
         "decision": "BLOCK",
         "rule_id": "subject_authorization_unavailable",
     }
-    return PolicyDecision.model_validate(result)
+    return PolicyDecision.model_validate(
+        _bind_fail_closed_decision_context(result, context)
+    )
 
 
-def build_trusted_identity_fail_closed_decision(*, error_code: str) -> PolicyDecision:
+def build_trusted_identity_fail_closed_decision(
+    *,
+    error_code: str,
+    context: dict[str, Any] | None = None,
+) -> PolicyDecision:
     result = {
         "effect": "DENY",
         "obligations": [
@@ -87,7 +132,9 @@ def build_trusted_identity_fail_closed_decision(*, error_code: str) -> PolicyDec
         "decision": "BLOCK",
         "rule_id": "trusted_identity_required",
     }
-    return PolicyDecision.model_validate(result)
+    return PolicyDecision.model_validate(
+        _bind_fail_closed_decision_context(result, context)
+    )
 
 
 def verify_trusted_identity_context(
@@ -152,8 +199,7 @@ def enrich_subject_authorization(
                 allow_archived=True,
             )
             resolved = snapshot.get_agent_authorization(agent_id)
-            if base_context["request"].get("security_model_version") == "2":
-                _verify_v2_snapshot_context(enriched_context, snapshot)
+            _verify_v2_snapshot_context(enriched_context, snapshot)
         except Exception as exc:
             raise SubjectAuthorizationError("subject_authorization_unavailable") from exc
         enriched_context["subject"].update(
@@ -207,10 +253,11 @@ def evaluate_opa_authoritative(
         )
         return client.evaluate(context)
     except OPAClientError as exc:
-        return build_opa_fail_closed_decision(error_code=exc.code)
+        return build_opa_fail_closed_decision(error_code=exc.code, context=context)
     except Exception:
         return build_opa_fail_closed_decision(
-            error_code="opa_authoritative_unexpected_error"
+            error_code="opa_authoritative_unexpected_error",
+            context=context,
         )
 
 
@@ -232,21 +279,32 @@ def evaluate_runtime_policy(
             replay_consumer=replay_consumer,
         )
     except InternalIdentityAssertionError as exc:
-        return build_trusted_identity_fail_closed_decision(error_code=exc.code)
+        return build_trusted_identity_fail_closed_decision(
+            error_code=exc.code,
+            context=context,
+        )
     except IdentityReplayError as exc:
-        return build_trusted_identity_fail_closed_decision(error_code=exc.code)
+        return build_trusted_identity_fail_closed_decision(
+            error_code=exc.code,
+            context=context,
+        )
     except Exception:
         return build_trusted_identity_fail_closed_decision(
-            error_code="identity_verification_unexpected_error"
+            error_code="identity_verification_unexpected_error",
+            context=context,
         )
 
     try:
         authorized_context = enrich_subject_authorization(trusted_context, resolver, db)
     except SubjectAuthorizationError as exc:
-        return build_subject_authorization_fail_closed_decision(error_code=exc.code)
+        return build_subject_authorization_fail_closed_decision(
+            error_code=exc.code,
+            context=trusted_context,
+        )
     except Exception:
         return build_subject_authorization_fail_closed_decision(
-            error_code="subject_authorization_unexpected_error"
+            error_code="subject_authorization_unexpected_error",
+            context=trusted_context,
         )
 
     return evaluate_opa_authoritative(authorized_context)

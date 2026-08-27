@@ -25,10 +25,13 @@ from app.models.control_plane import (  # noqa: E402
     EmergencyDeny,
 )
 from app.models.trusted_agent_session import TrustedAgentSession  # noqa: E402
+from app.models.tool_analysis import ToolObservationReviewApproval  # noqa: E402
 from app.schemas.control_plane import ControlPlaneConfigContent  # noqa: E402
-from app.services.config_v2_migration import create_v2_migration_draft  # noqa: E402
+import app.services.control_plane_config as control_plane_config_service  # noqa: E402
 from app.services.control_plane_config import (  # noqa: E402
+    ControlPlaneConfigError,
     create_revision,
+    delete_inactive_revision,
     publish_revision,
     rollback_to_revision,
 )
@@ -41,8 +44,6 @@ from app.services.published_configuration import (  # noqa: E402
     PublishedConfigurationProvider,
 )
 from proxy.identity_binding import IdentityBinding, IdentityBindingDocument  # noqa: E402
-from proxy.resource_registry import ResourceScopeDocument  # noqa: E402
-from proxy.tool_security_profiles import ToolSecurityProfileDocument  # noqa: E402
 from app.services.subject_authorization import SubjectAuthorizationDocument  # noqa: E402
 
 
@@ -52,23 +53,13 @@ def v2_content() -> ControlPlaneConfigContent:
         identity_bindings=IdentityBindingDocument(revision="id-v2", bindings=[]),
         agent_authorizations=SubjectAuthorizationDocument(revision="auth-v2", subjects={}),
         supported_schema_profile="supported-json-schema-v1",
-        capability_catalog_version="1",
-        resource_type_registry_version="1",
+        capability_catalog_version="2",
+        resource_type_registry_version="2",
         tool_security_contracts=(),
         authority_resource_scopes=(),
         adapter_resolutions=(),
         tool_observation_approvals=(),
         authority_contexts={},
-    )
-
-
-def v1_content() -> ControlPlaneConfigContent:
-    return ControlPlaneConfigContent(
-        schema_version=1,
-        identity_bindings=IdentityBindingDocument(revision="id-v1", bindings=[]),
-        agent_authorizations=SubjectAuthorizationDocument(revision="auth-v1", subjects={}),
-        tool_security_profiles=ToolSecurityProfileDocument(revision="tools-v1", bindings=[]),
-        resource_scopes=ResourceScopeDocument(revision="scopes-v1", filesystem_scopes={}),
     )
 
 
@@ -170,6 +161,101 @@ class RevisionIntegrityAndEmergencyDenyTests(unittest.TestCase):
             ):
                 PublishedConfigurationProvider(db).load_active_snapshot()
 
+    def test_only_drafts_can_be_deleted(self) -> None:
+        with self.Session() as db:
+            first = self._publish(db, summary="first signed revision")
+            self._publish(db, summary="second signed revision")
+
+            self.assertEqual(first.status, "ARCHIVED")
+            with self.assertRaisesRegex(
+                ControlPlaneConfigError,
+                "only_drafts_can_be_deleted",
+            ):
+                delete_inactive_revision(
+                    db,
+                    revision_id=first.id,
+                    actor=self.admin,
+                    change_summary="must not delete signed history",
+                )
+            self.assertIsNotNone(db.get(ControlPlaneConfigRevision, first.id))
+
+            draft = create_revision(
+                db,
+                content=v2_content(),
+                status="DRAFT",
+                actor=self.admin,
+                change_summary="discardable draft",
+            )
+            orphan_candidate = ToolObservationReviewApproval(
+                observation_id=999,
+                tool_fingerprint="a" * 64,
+                contract_hash="b" * 64,
+                evidence_bundle_hash="c" * 64,
+                evidence_bundle={"test": True},
+                admin_id=self.admin.id,
+                revision_id=draft.id,
+                active=True,
+            )
+            db.add(orphan_candidate)
+            db.flush()
+            delete_inactive_revision(
+                db,
+                revision_id=draft.id,
+                actor=self.admin,
+                change_summary="discard test draft",
+            )
+            self.assertIsNone(db.get(ControlPlaneConfigRevision, draft.id))
+            db.refresh(orphan_candidate)
+            self.assertFalse(orphan_candidate.active)
+
+    def test_deleted_highest_draft_number_is_not_reused_after_restart(self) -> None:
+        with self.Session() as db:
+            self._publish(db, summary="seed revision")
+            draft = create_revision(
+                db,
+                content=v2_content(),
+                status="DRAFT",
+                actor=self.admin,
+                change_summary="highest disposable draft",
+            )
+            db.commit()
+            deleted_number = draft.revision_number
+            state = db.get(ControlPlaneState, 1)
+            self.assertEqual(state.last_revision_number, deleted_number)
+
+            delete_inactive_revision(
+                db,
+                revision_id=draft.id,
+                actor=self.admin,
+                change_summary="delete highest draft",
+            )
+            db.commit()
+            self.assertIsNone(db.get(ControlPlaneConfigRevision, draft.id))
+
+            original_process_high_water = (
+                control_plane_config_service._LAST_ALLOCATED_REVISION_NUMBER
+            )
+            try:
+                control_plane_config_service._LAST_ALLOCATED_REVISION_NUMBER = 0
+                successor = create_revision(
+                    db,
+                    content=v2_content(),
+                    status="DRAFT",
+                    actor=self.admin,
+                    change_summary="post-restart draft",
+                )
+                db.commit()
+                self.assertEqual(successor.revision_number, deleted_number + 1)
+                self.assertEqual(
+                    db.get(ControlPlaneState, 1).last_revision_number,
+                    deleted_number + 1,
+                )
+            finally:
+                control_plane_config_service._LAST_ALLOCATED_REVISION_NUMBER = max(
+                    original_process_high_water,
+                    control_plane_config_service._LAST_ALLOCATED_REVISION_NUMBER,
+                )
+
     def test_identity_change_revokes_sessions_but_grant_change_does_not(self) -> None:
         binding = IdentityBinding(
             issuer="https://issuer.example",
@@ -243,88 +329,90 @@ class RevisionIntegrityAndEmergencyDenyTests(unittest.TestCase):
             self.assertIsNotNone(session.revoked_at)
             self.assertEqual(session.revocation_reason, "identity_binding_changed")
 
-    def test_v1_migration_creates_new_draft_without_rewriting_history(self) -> None:
+    def test_identity_binding_revision_ignores_unrelated_policy_changes(self) -> None:
+        binding = IdentityBinding(
+            issuer="https://issuer.example",
+            subject="subject-1",
+            agent_id="agent-one",
+        )
+        initial = v2_content().model_copy(
+            update={
+                "identity_bindings": IdentityBindingDocument(
+                    revision="identity-1",
+                    bindings=[binding],
+                ),
+                "agent_authorizations": SubjectAuthorizationDocument.model_validate(
+                    {
+                        "revision": "auth-1",
+                        "subjects": {
+                            "agent-one": {"role": "operator", "grants": []}
+                        },
+                    }
+                ),
+            }
+        )
         with self.Session() as db:
-            source = self._publish(db, v1_content(), "publish legacy")
-            original_content = dict(source.content)
-            original_hash = source.content_hash
-            draft = create_v2_migration_draft(
-                db,
-                source_revision_id=source.id,
-                actor=self.admin,
-                change_summary="explicit v2 migration",
-            )
-            db.commit()
-            self.assertEqual(draft.status, "DRAFT")
-            self.assertEqual(draft.schema_version, 2)
-            self.assertEqual(source.content, original_content)
-            self.assertEqual(source.content_hash, original_hash)
+            self._publish(db, initial, "initial identity")
+            first_snapshot = PublishedConfigurationProvider(db).load_active_snapshot()
+            first_binding_revision = first_snapshot.get_identity_binding(
+                issuer=binding.issuer,
+                subject=binding.subject,
+            ).revision
 
-    def test_v2_cutover_blocks_new_v1_publish_and_direct_v1_rollback(self) -> None:
-        with self.Session() as db:
-            legacy = self._publish(db, v1_content(), "initial legacy before cutover")
-            first_v2 = self._publish(db, v2_content(), "first v2 cutover")
-            legacy_id = legacy.id
-            legacy_hash = legacy.content_hash
-            first_v2_number = first_v2.revision_number
-
-            stale_v1_draft = create_revision(
-                db,
-                content=v1_content(),
-                status="DRAFT",
-                actor=self.admin,
-                parent_revision_id=legacy_id,
-                change_summary="attempt legacy publish after cutover",
+            grant_only = initial.model_copy(
+                update={
+                    "agent_authorizations": SubjectAuthorizationDocument.model_validate(
+                        {
+                            "revision": "auth-2",
+                            "subjects": {
+                                "agent-one": {
+                                    "role": "operator",
+                                    "grants": [
+                                        {"capability": "system.ping", "scopes": []}
+                                    ],
+                                }
+                            },
+                        }
+                    )
+                }
             )
-            with self.assertRaisesRegex(
-                Exception,
-                "schema_v1_publish_after_v2_cutover_refused",
-            ):
-                publish_revision(
-                    db,
-                    draft_id=stale_v1_draft.id,
-                    actor=self.admin,
-                    change_summary="must refuse v1 after cutover",
-                )
-            db.rollback()
-
-            with self.assertRaisesRegex(
-                Exception,
-                "rollback_to_v1_requires_explicit_v2_migration",
-            ):
-                rollback_to_revision(
-                    db,
-                    revision_id=legacy_id,
-                    actor=self.admin,
-                    change_summary="must migrate instead",
-                )
-            db.rollback()
-
-            historical = PublishedConfigurationProvider(db).load_snapshot(
-                legacy_id,
-                expected_content_hash=legacy_hash,
-                allow_archived=True,
-            )
-            self.assertEqual(historical.schema_version, 1)
-
-            migration = create_v2_migration_draft(
-                db,
-                source_revision_id=legacy_id,
-                actor=self.admin,
-                change_summary="migrate historical legacy to v2",
-            )
-            restored = publish_revision(
-                db,
-                draft_id=migration.id,
-                actor=self.admin,
-                change_summary="publish migrated v2 successor",
-            )
-            db.commit()
-            self.assertEqual(restored.schema_version, 2)
-            self.assertGreater(restored.revision_number, first_v2_number)
+            self._publish(db, grant_only, "grant only")
+            grant_snapshot = PublishedConfigurationProvider(db).load_active_snapshot()
+            self.assertNotEqual(first_snapshot.content_hash, grant_snapshot.content_hash)
             self.assertEqual(
-                PublishedConfigurationProvider(db).load_active_snapshot().revision_id,
-                restored.id,
+                first_binding_revision,
+                grant_snapshot.get_identity_binding(
+                    issuer=binding.issuer,
+                    subject=binding.subject,
+                ).revision,
+            )
+
+            changed_identity = grant_only.model_copy(
+                update={
+                    "identity_bindings": IdentityBindingDocument(
+                        revision="identity-2",
+                        bindings=[
+                            binding.model_copy(update={"agent_id": "agent-two"})
+                        ],
+                    ),
+                    "agent_authorizations": SubjectAuthorizationDocument.model_validate(
+                        {
+                            "revision": "auth-3",
+                            "subjects": {
+                                "agent-two": {"role": "operator", "grants": []}
+                            },
+                        }
+                    ),
+                }
+            )
+            self._publish(db, changed_identity, "identity changed")
+            changed_snapshot = PublishedConfigurationProvider(db).load_active_snapshot()
+            self.assertNotEqual(
+                first_binding_revision,
+                changed_snapshot.get_identity_binding(
+                    issuer=binding.issuer,
+                    subject=binding.subject,
+                ).revision,
             )
 
     def test_emergency_deny_targets_ttl_and_store_failure(self) -> None:

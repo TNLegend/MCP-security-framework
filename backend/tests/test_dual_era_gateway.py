@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 import socket
@@ -22,7 +23,11 @@ for path in (str(ROOT), str(BACKEND)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from proxy.gateway import MCPGateway  # noqa: E402
+from proxy.gateway import (  # noqa: E402
+    LegacyHTTPSSEConnectionStore,
+    MCPGateway,
+    _read_bounded_json_body,
+)
 from proxy.mcp_transport import iter_sse_events, read_endpoint_event  # noqa: E402
 from proxy.protocol_profiles import (  # noqa: E402
     LEGACY_2024_11_05_PROFILE_ID,
@@ -40,11 +45,36 @@ from proxy.protocol_profiles import (  # noqa: E402
     ProtocolProfileRegistry,
 )
 from proxy.protocol_revisions import restricted_profile_id, ProtocolEra  # noqa: E402
-from proxy.strict_json import StrictJSONError, parse_strict_json  # noqa: E402
+from proxy.protocol_sessions import LegacyClientSessionStore  # noqa: E402
+from proxy.strict_json import MAX_JSON_BYTES, StrictJSONError, parse_strict_json  # noqa: E402
 
 
 class FakeSnapshot:
-    schema_version = 1
+    schema_version = 2
+
+    def get_agent_authorization(self, agent_id):
+        return SimpleNamespace(
+            grants=(
+                SimpleNamespace(capability="message.send"),
+            )
+        )
+
+    def get_tool_security_contract(self, *, server_ref, tool_name):
+        if tool_name != "send_email":
+            raise ValueError("tool_security_contract_missing")
+        return SimpleNamespace(
+            effects=(SimpleNamespace(capability="message.send"),),
+        )
+
+    def get_tool_observation_approval(
+        self,
+        *,
+        server_ref,
+        upstream_protocol_profile_id,
+        tool_fingerprint,
+    ):
+        return SimpleNamespace()
+
 
 
 class FakeSnapshotResolver:
@@ -90,6 +120,14 @@ class FakeBackend:
 
     def list_tools(self):
         return [self.tool]
+
+    def find_tool(
+        self,
+        server_id: int,
+        tool_name: str,
+        upstream_protocol_profile_id: str | None = None,
+    ):
+        return self.tool if server_id == 1 and tool_name == self.tool["name"] else None
 
 
 class FakeSecurityProxy:
@@ -412,6 +450,30 @@ class DualEraGatewayTests(unittest.TestCase):
         self.assertEqual(tools_result["ttlMs"], 0)
         self.assertEqual(tools_result["cacheScope"], "private")
         self.assertEqual([tool["name"] for tool in tools_result["tools"]], ["send_email"])
+
+    def test_tools_list_hides_tools_without_agent_capability_grant(self) -> None:
+        class NoGrantSnapshot(FakeSnapshot):
+            def get_agent_authorization(self, agent_id):
+                return SimpleNamespace(grants=())
+
+        client = TestClient(
+            MCPGateway(
+                proxy=self.proxy,
+                backend_client=self.backend,
+                snapshot_resolver=SimpleNamespace(
+                    load_active_snapshot=lambda: NoGrantSnapshot()
+                ),
+            ).create_app()
+        )
+
+        response = client.post(
+            "/mcp/1",
+            headers=self.modern_headers("tools/list"),
+            json=self.modern_payload("tools/list"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["result"]["tools"], [])
 
     def test_modern_tools_list_requires_valid_framework_identity(self) -> None:
         missing_headers = self.modern_headers("tools/list")
@@ -817,6 +879,74 @@ class StrictJSONBoundaryTests(unittest.TestCase):
         document = (b'{"a":' * 34) + b"0" + (b"}" * 34)
         with self.assertRaises(StrictJSONError):
             parse_strict_json(document)
+
+    def test_gateway_rejects_oversized_content_length_before_body_parse(self) -> None:
+        backend = FakeBackend()
+        gateway = MCPGateway(backend_client=backend, proxy=FakeSecurityProxy(backend))
+        client = TestClient(gateway.create_app())
+        response = client.post(
+            "/mcp/1",
+            headers={
+                "Content-Type": "application/json",
+                "MCP-Protocol-Version": MODERN_PROTOCOL_VERSION,
+                "Content-Length": str(MAX_JSON_BYTES + 1),
+            },
+            content=b"{}",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["error"]["message"],
+            "json_body_empty_or_too_large",
+        )
+
+    def test_gateway_streaming_body_reader_is_bounded(self) -> None:
+        class ChunkedRequest:
+            headers = {}
+
+            async def stream(self):
+                yield b"a" * MAX_JSON_BYTES
+                yield b"x"
+
+        with self.assertRaisesRegex(StrictJSONError, "json_body_empty_or_too_large"):
+            asyncio.run(_read_bounded_json_body(ChunkedRequest()))
+
+    def test_legacy_client_session_store_has_global_and_server_caps(self) -> None:
+        global_store = LegacyClientSessionStore(max_sessions=1)
+        global_store.create(1)
+        with self.assertRaisesRegex(ValueError, "legacy_protocol_session_capacity_exceeded"):
+            global_store.create(2)
+
+        server_store = LegacyClientSessionStore(
+            max_sessions=10,
+            max_sessions_per_server=1,
+        )
+        server_store.create(1)
+        with self.assertRaisesRegex(
+            ValueError,
+            "legacy_protocol_server_session_capacity_exceeded",
+        ):
+            server_store.create(1)
+
+    def test_legacy_http_sse_connection_store_has_global_and_server_caps(self) -> None:
+        global_store = LegacyHTTPSSEConnectionStore(max_connections=1)
+        global_store.create(1)
+        with self.assertRaisesRegex(
+            Exception,
+            "legacy_http_sse_connection_capacity_exceeded",
+        ):
+            global_store.create(2)
+
+        server_store = LegacyHTTPSSEConnectionStore(
+            max_connections=10,
+            max_connections_per_server=1,
+        )
+        server_store.create(1)
+        with self.assertRaisesRegex(
+            Exception,
+            "legacy_http_sse_server_connection_capacity_exceeded",
+        ):
+            server_store.create(1)
 
 
 if __name__ == "__main__":

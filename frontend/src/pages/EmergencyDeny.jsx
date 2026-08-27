@@ -1,5 +1,12 @@
 import { useState } from "react";
 import { createEmergencyDeny, revokeEmergencyDeny } from "../api/client";
+import {
+  LIMITS,
+  clearFieldError,
+  emergencyDenyPayload,
+  futureLocalDateTime,
+  validateEmergencyDeny,
+} from "../utils/validation";
 
 const TARGET_TYPES = [
   "global",
@@ -17,43 +24,58 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
     reason: "Emergency deny from Control Center",
     expires_at: futureLocalDateTime(),
   });
+  const [fieldErrors, setFieldErrors] = useState({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   async function submit(event) {
     event.preventDefault();
-    setError("");
-    setMessage("");
-    const payload = {
-      target_type: form.target_type,
-      target_value: form.target_type === "global" ? null : form.target_value || null,
-      target_secondary_value:
-        form.target_type === "server_tool" ? form.target_secondary_value || null : null,
-      reason: form.reason,
-      expires_at: new Date(form.expires_at).toISOString(),
-    };
-    try {
-      await createEmergencyDeny(payload);
-      setMessage("Emergency Deny created.");
-      await onRefresh?.();
-    } catch (err) {
-      setError(err.message || "Emergency Deny creation failed");
-    }
-  }
-
-  async function revoke(denyId) {
-    if (!window.confirm("Revoke this Emergency Deny?")) {
+    if (busy) {
       return;
     }
     setError("");
     setMessage("");
+    const errors = validateEmergencyDeny(form);
+    setFieldErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      return;
+    }
+    const { payload } = emergencyDenyPayload(form);
+    setBusy(true);
+    try {
+      await createEmergencyDeny(payload);
+      setMessage("Emergency Deny created.");
+      setFieldErrors({});
+      await onRefresh?.();
+    } catch (err) {
+      setError(err.message || "Emergency Deny creation failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revoke(denyId) {
+    if (busy || !window.confirm("Revoke this Emergency Deny?")) {
+      return;
+    }
+    setError("");
+    setMessage("");
+    setBusy(true);
     try {
       await revokeEmergencyDeny(denyId);
       setMessage("Emergency Deny revoked.");
       await onRefresh?.();
     } catch (err) {
       setError(err.message || "Emergency Deny revocation failed");
+    } finally {
+      setBusy(false);
     }
+  }
+
+  function updateField(field, value) {
+    setForm({ ...form, [field]: value });
+    setFieldErrors((current) => clearFieldError(current, field));
   }
 
   if (loading) {
@@ -81,7 +103,23 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
           <label>
             Target type
             <select
-              onChange={(event) => setForm({ ...form, target_type: event.target.value })}
+              onChange={(event) => {
+                setForm({
+                  ...form,
+                  target_type: event.target.value,
+                  target_value: "",
+                  target_secondary_value: "",
+                });
+                setFieldErrors((current) =>
+                  clearFieldError(
+                    clearFieldError(
+                      clearFieldError(current, "target_type"),
+                      "target_value",
+                    ),
+                    "target_secondary_value",
+                  ),
+                );
+              }}
               value={form.target_type}
             >
               {TARGET_TYPES.map((target) => (
@@ -95,39 +133,63 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
             <label>
               Target value
               <input
-                onChange={(event) => setForm({ ...form, target_value: event.target.value })}
+                aria-describedby="deny-target-value-error"
+                aria-invalid={Boolean(fieldErrors.target_value)}
+                maxLength={LIMITS.emergencyTargetValueMax}
+                onChange={(event) => updateField("target_value", event.target.value)}
+                required
                 value={form.target_value}
               />
+              <FieldError id="deny-target-value-error" message={fieldErrors.target_value} />
             </label>
           )}
           {form.target_type === "server_tool" && (
             <label>
               Tool name
               <input
+                aria-describedby="deny-secondary-target-error"
+                aria-invalid={Boolean(fieldErrors.target_secondary_value)}
+                maxLength={LIMITS.emergencySecondaryTargetMax}
                 onChange={(event) =>
-                  setForm({ ...form, target_secondary_value: event.target.value })
+                  updateField("target_secondary_value", event.target.value)
                 }
+                required
                 value={form.target_secondary_value}
+              />
+              <FieldError
+                id="deny-secondary-target-error"
+                message={fieldErrors.target_secondary_value}
               />
             </label>
           )}
           <label>
             Expires at
             <input
-              onChange={(event) => setForm({ ...form, expires_at: event.target.value })}
+              aria-describedby="deny-expiry-error"
+              aria-invalid={Boolean(fieldErrors.expires_at)}
+              min={futureLocalDateTime(5 * 60 * 1000)}
+              onChange={(event) => updateField("expires_at", event.target.value)}
+              required
               type="datetime-local"
               value={form.expires_at}
             />
+            <FieldError id="deny-expiry-error" message={fieldErrors.expires_at} />
           </label>
           <label className="wide-field">
             Reason
             <input
-              onChange={(event) => setForm({ ...form, reason: event.target.value })}
+              aria-describedby="deny-reason-error"
+              aria-invalid={Boolean(fieldErrors.reason)}
+              maxLength={LIMITS.emergencyReasonMax}
+              minLength={LIMITS.emergencyReasonMin}
+              onChange={(event) => updateField("reason", event.target.value)}
+              required
               value={form.reason}
             />
+            <FieldError id="deny-reason-error" message={fieldErrors.reason} />
           </label>
-          <button className="secondary-action" type="submit">
-            Create Emergency Deny
+          <button className="secondary-action" disabled={busy} type="submit">
+            {busy ? "Creating..." : "Create Emergency Deny"}
           </button>
         </form>
       )}
@@ -159,7 +221,12 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
                   <td>{formatDate(deny.expires_at)}</td>
                   <td>
                     {isAdmin ? (
-                      <button className="tiny-action" onClick={() => revoke(deny.id)} type="button">
+                      <button
+                        className="tiny-action"
+                        disabled={busy}
+                        onClick={() => revoke(deny.id)}
+                        type="button"
+                      >
                         Revoke
                       </button>
                     ) : (
@@ -186,9 +253,12 @@ function targetValue(deny) {
   return deny.target_value || "-";
 }
 
-function futureLocalDateTime() {
-  const date = new Date(Date.now() + 60 * 60 * 1000);
-  return date.toISOString().slice(0, 16);
+function FieldError({ id, message }) {
+  return message ? (
+    <span className="field-error" id={id}>
+      {message}
+    </span>
+  ) : null;
 }
 
 function formatDate(value) {

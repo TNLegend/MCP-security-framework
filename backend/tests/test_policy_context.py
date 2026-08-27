@@ -26,8 +26,7 @@ from app.main import app  # noqa: E402
 from app.schemas.policy_decision import PolicyDecision  # noqa: E402
 from app.schemas.policy_context import RuntimePolicyInput  # noqa: E402
 from app.services import policy_runtime  # noqa: E402
-from proxy.mcp_proxy import MCPProxy  # noqa: E402
-from proxy.tool_request_preparation import prepare_tool_request  # noqa: E402
+from identity_test_helpers import runtime_context  # noqa: E402
 from test_policy_decision import valid_decision_payload  # noqa: E402
 
 
@@ -113,17 +112,13 @@ def trust_identity(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def valid_context() -> dict:
-    return {
-        "subject": {
-            "agent_id": "agent-demo",
-            "identity_status": "verified",
-            "identity_issuer": "https://issuer.example/",
-            "identity_binding_revision": "test-bindings-v1",
-            "session_status": "active",
+    return runtime_context(
+        subject={
+            "identity_binding_revision": "test-bindings-v2",
             "session_reference": "session-demo",
+            "authorization_revision": "test-authorization-v2",
             "role": "legal_agent",
             "authorization_status": "resolved",
-            "authorization_revision": "test-authorization-v1",
             "grants": [
                 {
                     "capability": "filesystem.read",
@@ -133,63 +128,7 @@ def valid_context() -> dict:
             "allowed_capabilities": ["filesystem.read"],
             "allowed_scopes": ["fs.project_workspace"],
         },
-        "server": {
-            "id": 1,
-            "endpoint": "http://127.0.0.1:9000/mcp",
-            "server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
-            "known": True,
-            "trusted": True,
-            "trust_status": "trusted",
-            "security_status": "pending_analysis",
-        },
-        "tool": {
-            "id": 1,
-            "name": "read_file",
-            "profile_status": "resolved",
-            "profile_revision": "tool-security-profiles-test-v1",
-            "risk_score": 40,
-            "sensitivity": "medium",
-            "capabilities": [],
-            "admission_status": "unknown",
-            "description_risk_score": 0.0,
-            "capability_mismatch": False,
-            "drift_status": "unknown",
-            "analysis_status": "APPROVED",
-            "current_fingerprint": "a" * 64,
-            "approved_fingerprint_match": True,
-            "risk_level": "low",
-            "semantic_flagged": False,
-            "deterministic_critical_finding": False,
-            "consistency_status": "consistent",
-            "review_status": "APPROVED",
-            "analyzer_revision": "tool-description-analyzer-v1",
-        },
-        "request": {
-            "operation": "read",
-            "resource_adapter": "filesystem",
-            "resource_type": "filesystem.file",
-            "resource_scope": "fs.project_workspace",
-            "required_capability": "filesystem.read",
-            "canonical_resource": "fs.project_workspace:/contracts/contract1.txt",
-            "arguments": {"path": "contracts/contract1.txt"},
-            "arguments_valid": True,
-            "validation_error_codes": [],
-            "resource_sensitivity": "internal",
-            "resource_resolution_status": "resolved",
-            "resource_flags": [],
-            "resource_registry_revision": "resource-scopes-test-v1",
-            "tool_profile_revision": "tool-security-profiles-test-v1",
-            "operation_allowed_on_scope": True,
-            "estimated_output_size_mb": 0.001,
-        },
-        "runtime": {
-            "environment": "local",
-            "session_id": "session-demo",
-            "control_plane_revision_id": "control-plane-revision-1",
-            "control_plane_revision_number": 1,
-            "control_plane_content_hash": "c" * 64,
-        },
-    }
+    )
 
 
 def read_file_schema() -> dict[str, Any]:
@@ -213,7 +152,7 @@ class RuntimePolicyInputTests(unittest.TestCase):
 
         self.assertEqual(
             set(model.model_dump().keys()),
-            {"subject", "server", "tool", "request", "runtime"},
+            {"subject", "server", "tool", "request", "runtime", "policy_settings"},
         )
 
     def test_tool_name_is_required(self) -> None:
@@ -286,6 +225,30 @@ class RuntimePolicyInputTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             RuntimePolicyInput.model_validate(payload)
 
+    def test_invalid_arguments_can_omit_v2_security_metadata(self) -> None:
+        payload = valid_context()
+        request = payload["request"]
+        request["arguments_valid"] = False
+        request["canonical_resource"] = None
+        request["validation_error_codes"] = ["unexpected_argument:path"]
+        request["canonical_arguments_hash"] = "invalid"
+        for field in (
+            "contract_hash",
+            "tool_security_contract",
+            "normalized_facts",
+            "tool_observation_approval",
+        ):
+            request.pop(field, None)
+        request["capability_catalog"] = []
+
+        model = RuntimePolicyInput.model_validate(payload)
+
+        self.assertFalse(model.request.arguments_valid)
+        self.assertEqual(
+            model.request.validation_error_codes,
+            ["unexpected_argument:path"],
+        )
+
     def test_invalid_arguments_cannot_have_canonical_resource(self) -> None:
         payload = valid_context()
         payload["request"]["arguments_valid"] = False
@@ -299,7 +262,7 @@ class RuntimePolicyInputTests(unittest.TestCase):
 
         self.assertEqual(
             model.request.canonical_resource,
-            "fs.project_workspace:/contracts/contract1.txt",
+            "contracts/contract1.txt",
         )
 
     def test_too_many_validation_error_codes_are_rejected(self) -> None:
@@ -415,181 +378,6 @@ class RuntimePolicyInputTests(unittest.TestCase):
                 payload = valid_context()
                 payload["request"]["required_capability"] = capability
                 RuntimePolicyInput.model_validate(payload)
-
-
-class ProxyPolicyContextTests(unittest.TestCase):
-    def test_proxy_builds_expected_structured_context(self) -> None:
-        proxy = MCPProxy()
-        tool_call = {
-            "agent_id": "agent-demo",
-            "identity_status": "verified",
-            "identity_issuer": "https://issuer.example/",
-            "identity_binding_revision": "test-bindings-v1",
-            "session_status": "active",
-            "session_reference": "session-001",
-            "agent_role": "legal_agent",
-            "session_id": "session-001",
-            "tool_name": "read_file",
-            "arguments": {"path": "contracts/contract1.txt"},
-        }
-        server = {
-            "id": 1,
-            "endpoint": "http://127.0.0.1:9000/mcp",
-            "trust_status": "trusted",
-            "security_status": "pending_analysis",
-        }
-        tool = {
-            "id": 2,
-            "name": "read_file",
-            "risk_score": 40,
-            "sensitivity": "medium",
-            "description_risk_score": 0,
-            "input_schema": read_file_schema(),
-        }
-
-        prepared = prepare_tool_request(
-            tool_name="read_file",
-            raw_arguments=tool_call["arguments"],
-            input_schema=tool["input_schema"],
-        )
-        prepared_tool_call = proxy._prepared_tool_call(tool_call, prepared)
-        context = proxy._build_policy_context(prepared_tool_call, server, tool, prepared)
-        validated = RuntimePolicyInput.model_validate(context)
-
-        self.assertEqual(validated.subject.role, "unknown")
-        self.assertEqual(validated.subject.authorization_status, "unknown")
-        self.assertEqual(validated.subject.grants, [])
-        self.assertEqual(validated.request.operation, "read")
-        self.assertEqual(validated.request.resource_type, "file")
-        self.assertEqual(validated.request.resource_scope, "contracts")
-        self.assertEqual(validated.request.required_capability, "filesystem.read")
-        self.assertEqual(validated.request.canonical_resource, "contracts/contract1.txt")
-        self.assertEqual(validated.tool.admission_status, "unknown")
-
-    def test_proxy_does_not_mask_invalid_capability_mismatch(self) -> None:
-        proxy = MCPProxy()
-        tool_call = {
-            "agent_id": "agent-demo",
-            "identity_status": "verified",
-            "identity_issuer": "https://issuer.example/",
-            "identity_binding_revision": "test-bindings-v1",
-            "session_status": "active",
-            "session_reference": "session-001",
-            "session_id": "session-001",
-            "tool_name": "read_file",
-            "arguments": {"path": "contracts/contract1.txt"},
-        }
-        server = {
-            "id": 1,
-            "endpoint": "http://127.0.0.1:9000/mcp",
-            "trust_status": "trusted",
-        }
-        tool = {
-            "id": 2,
-            "name": "read_file",
-            "risk_score": 40,
-            "sensitivity": "medium",
-            "capability_mismatch": "true",
-            "input_schema": read_file_schema(),
-        }
-
-        prepared = prepare_tool_request(
-            tool_name="read_file",
-            raw_arguments=tool_call["arguments"],
-            input_schema=tool["input_schema"],
-        )
-        prepared_tool_call = proxy._prepared_tool_call(tool_call, prepared)
-        context = proxy._build_policy_context(prepared_tool_call, server, tool, prepared)
-
-        self.assertEqual(context["tool"]["capability_mismatch"], "true")
-        with self.assertRaises(ValidationError):
-            RuntimePolicyInput.model_validate(context)
-
-    def test_proxy_requires_agent_id_and_session_id_in_policy_context(self) -> None:
-        proxy = MCPProxy()
-        server = {
-            "id": 1,
-            "endpoint": "http://127.0.0.1:9000/mcp",
-            "trust_status": "trusted",
-        }
-        tool = {
-            "id": 2,
-            "name": "read_file",
-        }
-
-        with self.assertRaises(KeyError):
-            proxy._build_policy_context(
-                {
-                    "session_id": "session-001",
-                    "identity_status": "verified",
-                    "identity_issuer": "https://issuer.example/",
-                    "identity_binding_revision": "test-bindings-v1",
-                    "tool_name": "read_file",
-                    "arguments": {},
-                },
-                server,
-                tool,
-                prepare_tool_request(
-                    tool_name="read_file",
-                    raw_arguments={},
-                    input_schema=read_file_schema(),
-                ),
-            )
-
-        with self.assertRaises(KeyError):
-            proxy._build_policy_context(
-                {
-                    "agent_id": "agent-demo",
-                    "tool_name": "read_file",
-                    "arguments": {},
-                },
-                server,
-                tool,
-                prepare_tool_request(
-                    tool_name="read_file",
-                    raw_arguments={},
-                    input_schema=read_file_schema(),
-                ),
-            )
-
-    def test_proxy_does_not_mask_invalid_scores(self) -> None:
-        proxy = MCPProxy()
-        tool_call = {
-            "agent_id": "agent-demo",
-            "identity_status": "verified",
-            "identity_issuer": "https://issuer.example/",
-            "identity_binding_revision": "test-bindings-v1",
-            "session_status": "active",
-            "session_reference": "session-001",
-            "session_id": "session-001",
-            "tool_name": "read_file",
-            "arguments": {"path": "contracts/contract1.txt"},
-        }
-        server = {
-            "id": 1,
-            "endpoint": "http://127.0.0.1:9000/mcp",
-            "trust_status": "trusted",
-        }
-        tool = {
-            "id": 2,
-            "name": "read_file",
-            "risk_score": "",
-            "description_risk_score": "high",
-            "input_schema": read_file_schema(),
-        }
-
-        prepared = prepare_tool_request(
-            tool_name="read_file",
-            raw_arguments=tool_call["arguments"],
-            input_schema=tool["input_schema"],
-        )
-        prepared_tool_call = proxy._prepared_tool_call(tool_call, prepared)
-        context = proxy._build_policy_context(prepared_tool_call, server, tool, prepared)
-
-        self.assertEqual(context["tool"]["risk_score"], "")
-        self.assertEqual(context["tool"]["description_risk_score"], "high")
-        with self.assertRaises(ValidationError):
-            RuntimePolicyInput.model_validate(context)
 
 
 class RuntimeDecisionHttpTests(unittest.TestCase):

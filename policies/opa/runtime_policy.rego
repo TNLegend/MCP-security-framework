@@ -218,6 +218,34 @@ approved_fingerprint_match := value if {
 	is_boolean(value)
 }
 
+default policy_settings := {"rules": {}}
+
+policy_settings := value if {
+	value := object.get(input, "policy_settings", {"rules": {}})
+	is_object(value)
+}
+
+default policy_rules := {}
+
+policy_rules := value if {
+	value := object.get(policy_settings, "rules", {})
+	is_object(value)
+}
+
+default tool_analysis_required_rule := {}
+
+tool_analysis_required_rule := value if {
+	value := object.get(policy_rules, "tool_analysis_required", {})
+	is_object(value)
+}
+
+default tool_analysis_required_severity := "critical"
+
+tool_analysis_required_severity := lower(value) if {
+	value := object.get(tool_analysis_required_rule, "severity", "CRITICAL")
+	value in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+}
+
 default semantic_flagged := false
 
 semantic_flagged := value if {
@@ -260,31 +288,56 @@ analyzer_revision := value if {
 	is_string(value)
 }
 
+decision_binding := {
+	"decision_id": sprintf("%s:%s", [object.get(runtime_object, "control_plane_revision_id", "unknown"), object.get(request_object, "canonical_arguments_hash", "unknown")]),
+	"control_plane_revision_id": object.get(runtime_object, "control_plane_revision_id", "unknown"),
+	"control_plane_content_hash": object.get(runtime_object, "control_plane_content_hash", "unknown"),
+	"canonical_arguments_hash": object.get(request_object, "canonical_arguments_hash", "unknown"),
+}
+
 default decision := {
-	"effect": "ALLOW",
-	"obligations": [{"type": "LOG", "parameters": {}}],
-	"rule_ids": ["log_normal_runtime_call"],
-	"reason": "Runtime call logged for audit purposes.",
-	"severity": "low",
+	"effect": "DENY",
+	"obligations": [
+		{"type": "LOG", "parameters": {}},
+		{"type": "ALERT", "parameters": {}},
+	],
+	"rule_ids": ["deny_no_policy_decision"],
+	"reason": "No runtime policy decision matched.",
+	"severity": "critical",
 	"evidence": {},
 	"recommended_action": null,
 	"policy_revision": "opa-runtime-v2",
-	"decision": "LOG_ONLY",
-	"rule_id": "log_normal_runtime_call",
+	"decision": "BLOCK",
+	"rule_id": "deny_no_policy_decision",
 }
 
 security_model_v2 if {
 	object.get(request_object, "security_model_version", "1") == "2"
 }
 
+decision := candidate.decision if {
+	security_model_v2
+	some candidate in v2_precondition_candidates
+	candidate.precedence == winning_v2_precondition_precedence
+}
+
 decision := generic_v2_allow_decision if {
 	security_model_v2
+	count(v2_precondition_candidates) == 0
 	generic_v2_allow
+}
+
+decision := generic_v2_sensitive_resource_block_decision if {
+	security_model_v2
+	count(v2_precondition_candidates) == 0
+	v2_sensitive_reference_exists
 }
 
 decision := generic_v2_block_decision if {
 	security_model_v2
+	count(v2_precondition_candidates) == 0
 	not generic_v2_allow
+	not v2_sensitive_reference_exists
 }
 
 decision := candidate.decision if {
@@ -293,15 +346,21 @@ decision := candidate.decision if {
 	candidate.precedence == winning_precedence
 }
 
+decision := log_normal_runtime_call_decision if {
+	not security_model_v2
+	count(rule_candidates) == 0
+}
+
 generic_v2_allow if {
 	identity_status == "verified"
 	session_status == "active"
 	authorization_status == "resolved"
 	not is_unknown_or_blocked_server
 	arguments_valid
-	analysis_status == "APPROVED"
+	analysis_status in {"APPROVED", "ADMIN_ALLOWED"}
 	not deterministic_critical_finding
-	review_status == "APPROVED"
+	review_status in {"APPROVED", "ADMIN_ALLOWED"}
+	not v2_sensitive_reference_exists
 	v2_snapshot_binding_valid
 	v2_approval_valid
 	v2_normalized_request_valid
@@ -473,6 +532,7 @@ v2_cardinality_valid(effect, fact) if {
 v2_resource_semantics_valid(effect, fact, capability) if {
 	object.get(capability, "requires_resource", true) == false
 	count(object.get(effect, "resource_bindings", [])) == 0
+	object.get(effect, "fixed_resource", null) == null
 	count(object.get(fact, "bindings", [])) == 0
 }
 
@@ -487,6 +547,21 @@ v2_resource_semantics_valid(effect, fact, capability) if {
 	every binding in expected {
 		v2_binding_authorized(binding, actual, object.get(effect, "capability", ""))
 	}
+}
+
+v2_resource_semantics_valid(effect, fact, capability) if {
+	object.get(capability, "requires_resource", false) == true
+	count(object.get(effect, "resource_bindings", [])) == 0
+	fixed := object.get(effect, "fixed_resource", null)
+	is_object(fixed)
+	actual := object.get(fact, "bindings", [])
+	is_array(actual)
+	count(actual) == 1
+	expected := {
+		"path": [],
+		"resource_type": object.get(fixed, "resource_type", ""),
+	}
+	v2_binding_authorized(expected, actual, object.get(effect, "capability", ""))
 }
 
 v2_binding_authorized(expected, actual_bindings, capability_id) if {
@@ -528,6 +603,34 @@ v2_reference_authorized(reference, capability_id) if {
 	v2_scope_matches(scope, reference)
 }
 
+v2_sensitive_reference_exists if {
+	some effect in v2_fact_effects
+	some binding in object.get(effect, "bindings", [])
+	some reference in object.get(binding, "references", [])
+	object.get(reference, "resource_sensitivity", "unknown") == "secret"
+}
+
+v2_sensitive_reference_exists if {
+	some effect in v2_fact_effects
+	some binding in object.get(effect, "bindings", [])
+	some reference in object.get(binding, "references", [])
+	flags := object.get(reference, "resource_flags", [])
+	is_array(flags)
+	some flag in flags
+	flag in {"sensitive_name", "sensitive_directory", "denied_pattern"}
+}
+
+v2_sensitive_reference_exists if {
+	some effect in v2_fact_effects
+	some binding in object.get(effect, "bindings", [])
+	some reference in object.get(binding, "references", [])
+	object.get(reference, "resource_type", "") == "filesystem_path"
+	canonical := object.get(reference, "canonical_value", "")
+	is_string(canonical)
+	some pattern in sensitive_path_patterns
+	contains(lower(canonical), lower(pattern))
+}
+
 v2_scope_matches(scope, reference) if {
 	object.get(scope, "match_mode", "") == "SELF"
 	object.get(scope, "canonical_value", "") == object.get(reference, "canonical_value", "")
@@ -554,6 +657,14 @@ generic_v2_block_decision := v2_decision(
 	"deny_generic_security_model_v2",
 	"Generic security model authorization requirements were not satisfied.",
 	"high",
+)
+
+generic_v2_sensitive_resource_block_decision := v2_decision(
+	"DENY",
+	"BLOCK",
+	"deny_sensitive_resource",
+	"Sensitive resource access is forbidden.",
+	"critical",
 )
 
 v2_decision(effect, runtime_decision, rule_id, reason, severity) := {
@@ -601,6 +712,64 @@ v2_decision(effect, runtime_decision, rule_id, reason, severity) := {
 
 winning_precedence := max({candidate.precedence | some candidate in rule_candidates})
 
+winning_v2_precondition_precedence := max({
+	candidate.precedence |
+	some candidate in v2_precondition_candidates
+})
+
+v2_precondition_candidates contains {
+	"precedence": 1000,
+	"decision": deny_missing_or_unapproved_analysis_decision,
+} if {
+	analysis_blocks_runtime
+}
+
+v2_precondition_candidates contains {
+	"precedence": 999,
+	"decision": deny_tool_fingerprint_mismatch_decision,
+} if {
+	analysis_status in {"APPROVED", "ADMIN_ALLOWED"}
+	not approved_fingerprint_match
+}
+
+v2_precondition_candidates contains {
+	"precedence": 998,
+	"decision": deny_drift_not_approved_decision,
+} if {
+	drift_status in {"HIGH", "CRITICAL"}
+	not approved_fingerprint_match
+}
+
+v2_precondition_candidates contains {
+	"precedence": 997,
+	"decision": deny_deterministic_critical_finding_decision,
+} if {
+	deterministic_critical_finding
+}
+
+v2_precondition_candidates contains {
+	"precedence": 996,
+	"decision": deny_semantic_review_required_decision,
+} if {
+	semantic_flagged
+	not review_status == "APPROVED"
+	not review_status == "ADMIN_ALLOWED"
+}
+
+v2_precondition_candidates contains {
+	"precedence": 995,
+	"decision": deny_review_required_decision,
+} if {
+	review_status == "REVIEW_REQUIRED"
+}
+
+v2_precondition_candidates contains {
+	"precedence": 897,
+	"decision": deny_invalid_arguments_decision,
+} if {
+	not arguments_valid
+}
+
 rule_candidates contains {
 	"precedence": 1000,
 	"decision": deny_missing_or_unapproved_analysis_decision,
@@ -612,7 +781,7 @@ rule_candidates contains {
 	"precedence": 999,
 	"decision": deny_tool_fingerprint_mismatch_decision,
 } if {
-	analysis_status == "APPROVED"
+	analysis_status in {"APPROVED", "ADMIN_ALLOWED"}
 	not approved_fingerprint_match
 }
 
@@ -636,7 +805,8 @@ rule_candidates contains {
 	"decision": deny_semantic_review_required_decision,
 } if {
 	semantic_flagged
-	review_status != "APPROVED"
+	not review_status == "APPROVED"
+	not review_status == "ADMIN_ALLOWED"
 }
 
 rule_candidates contains {
@@ -796,13 +966,17 @@ rule_candidates contains {
 
 rule_candidates contains {
 	"precedence": 300,
-	"decision": allow_contracts_read_decision,
+	"decision": allow_authorized_resource_decision,
 } if {
-	is_contract_read
+	authorized_legacy_resource_call
 }
 
 is_unknown_or_blocked_server if {
-	trust_status in {"unknown", "blocked"}
+	not trusted_server_status
+}
+
+trusted_server_status if {
+	trust_status in {"trusted", "lab_trusted"}
 }
 
 analysis_blocks_runtime if {
@@ -821,33 +995,15 @@ is_sensitive_path if {
 	contains(canonical_resource_lower, lower(pattern))
 }
 
-is_contract_read if {
-	request_operation == "read"
-	resource_adapter == "filesystem"
-	filesystem_file_resource
-	startswith(canonical_resource, "contracts/")
-}
-
-is_contract_read if {
-	request_operation == "read"
-	resource_adapter == "filesystem"
-	filesystem_file_resource
-	startswith(canonical_resource, "fs.project_workspace:/contracts/")
-}
-
-is_contract_read if {
-	request_operation == "read"
-	resource_adapter == "filesystem"
-	filesystem_file_resource
-	startswith(canonical_resource, "fs.legal_contracts:/")
-}
-
-filesystem_file_resource if {
-	resource_type == "file"
-}
-
-filesystem_file_resource if {
-	resource_type == "filesystem.file"
+authorized_legacy_resource_call if {
+	request_operation != "unknown"
+	resource_adapter != "unknown"
+	resource_type != "unknown"
+	resource_resolution_status == "resolved"
+	required_capability != "unclassified"
+	subject_has_required_capability
+	subject_has_required_capability_scope
+	operation_allowed_on_scope
 }
 
 is_high_risk_tool if {
@@ -883,37 +1039,43 @@ deny_invalid_arguments_decision := deny_decision(
 	"Tool arguments failed schema validation.",
 )
 
-deny_unverified_identity_decision := {
-	"effect": "DENY",
-	"obligations": [
-		{"type": "LOG", "parameters": {}},
-		{"type": "ALERT", "parameters": {}},
-	],
-	"rule_ids": ["deny_unverified_identity"],
-	"reason": "Trusted agent identity is required.",
-	"severity": "critical",
-	"evidence": {},
-	"recommended_action": null,
-	"policy_revision": policy_revision,
-	"decision": "BLOCK",
-	"rule_id": "deny_unverified_identity",
-}
+deny_unverified_identity_decision := object.union(
+	{
+		"effect": "DENY",
+		"obligations": [
+			{"type": "LOG", "parameters": {}},
+			{"type": "ALERT", "parameters": {}},
+		],
+		"rule_ids": ["deny_unverified_identity"],
+		"reason": "Trusted agent identity is required.",
+		"severity": "critical",
+		"evidence": {},
+		"recommended_action": null,
+		"policy_revision": policy_revision,
+		"decision": "BLOCK",
+		"rule_id": "deny_unverified_identity",
+	},
+	decision_binding,
+)
 
-deny_invalid_or_expired_session_decision := {
-	"effect": "DENY",
-	"obligations": [
-		{"type": "LOG", "parameters": {}},
-		{"type": "ALERT", "parameters": {}},
-	],
-	"rule_ids": ["deny_invalid_or_expired_session"],
-	"reason": "Trusted runtime session is invalid or expired.",
-	"severity": "critical",
-	"evidence": {},
-	"recommended_action": null,
-	"policy_revision": policy_revision,
-	"decision": "BLOCK",
-	"rule_id": "deny_invalid_or_expired_session",
-}
+deny_invalid_or_expired_session_decision := object.union(
+	{
+		"effect": "DENY",
+		"obligations": [
+			{"type": "LOG", "parameters": {}},
+			{"type": "ALERT", "parameters": {}},
+		],
+		"rule_ids": ["deny_invalid_or_expired_session"],
+		"reason": "Trusted runtime session is invalid or expired.",
+		"severity": "critical",
+		"evidence": {},
+		"recommended_action": null,
+		"policy_revision": policy_revision,
+		"decision": "BLOCK",
+		"rule_id": "deny_invalid_or_expired_session",
+	},
+	decision_binding,
+)
 
 deny_unknown_subject_decision := deny_decision(
 	"deny_unknown_subject",
@@ -925,25 +1087,28 @@ deny_unknown_tool_security_profile_decision := deny_decision(
 	"Tool security profile is unknown.",
 )
 
-deny_missing_or_unapproved_analysis_decision := {
-	"effect": "DENY",
-	"obligations": [
-		{"type": "LOG", "parameters": {}},
-		{"type": "ALERT", "parameters": {}},
-	],
-	"rule_ids": ["deny_tool_analysis_not_approved"],
-	"reason": "Tool analysis is missing, pending, failed, blocked, stale, or not approved.",
-	"severity": "critical",
-	"evidence": {
-		"analysis_status": analysis_status,
-		"review_status": review_status,
-		"analyzer_revision": analyzer_revision,
+deny_missing_or_unapproved_analysis_decision := object.union(
+	{
+		"effect": "DENY",
+		"obligations": [
+			{"type": "LOG", "parameters": {}},
+			{"type": "ALERT", "parameters": {}},
+		],
+		"rule_ids": ["deny_tool_analysis_not_approved"],
+		"reason": "Tool analysis is missing, pending, failed, blocked, stale, or not approved.",
+		"severity": tool_analysis_required_severity,
+		"evidence": {
+			"analysis_status": analysis_status,
+			"review_status": review_status,
+			"analyzer_revision": analyzer_revision,
+		},
+		"recommended_action": "Review and approve the exact analyzed tool fingerprint.",
+		"policy_revision": policy_revision,
+		"decision": "BLOCK",
+		"rule_id": "deny_tool_analysis_not_approved",
 	},
-	"recommended_action": "Review and approve the exact analyzed tool fingerprint.",
-	"policy_revision": policy_revision,
-	"decision": "BLOCK",
-	"rule_id": "deny_tool_analysis_not_approved",
-}
+	decision_binding,
+)
 
 deny_tool_fingerprint_mismatch_decision := deny_decision(
 	"deny_tool_fingerprint_mismatch",
@@ -960,43 +1125,49 @@ deny_deterministic_critical_finding_decision := deny_decision(
 	"Tool analysis has a deterministic critical finding.",
 )
 
-deny_semantic_review_required_decision := {
-	"effect": "DENY",
-	"obligations": [
-		{"type": "LOG", "parameters": {}},
-		{"type": "ALERT", "parameters": {}},
-	],
-	"rule_ids": ["deny_tool_semantic_review_required"],
-	"reason": "Semantic analysis flagged the tool for human review.",
-	"severity": "high",
-	"evidence": {
-		"analysis_status": analysis_status,
-		"review_status": review_status,
+deny_semantic_review_required_decision := object.union(
+	{
+		"effect": "DENY",
+		"obligations": [
+			{"type": "LOG", "parameters": {}},
+			{"type": "ALERT", "parameters": {}},
+		],
+		"rule_ids": ["deny_tool_semantic_review_required"],
+		"reason": "Semantic analysis flagged the tool for human review.",
+		"severity": "high",
+		"evidence": {
+			"analysis_status": analysis_status,
+			"review_status": review_status,
+		},
+		"recommended_action": "Review the semantic finding before approving this fingerprint.",
+		"policy_revision": policy_revision,
+		"decision": "BLOCK",
+		"rule_id": "deny_tool_semantic_review_required",
 	},
-	"recommended_action": "Review the semantic finding before approving this fingerprint.",
-	"policy_revision": policy_revision,
-	"decision": "BLOCK",
-	"rule_id": "deny_tool_semantic_review_required",
-}
+	decision_binding,
+)
 
-deny_review_required_decision := {
-	"effect": "DENY",
-	"obligations": [
-		{"type": "LOG", "parameters": {}},
-		{"type": "ALERT", "parameters": {}},
-	],
-	"rule_ids": ["deny_tool_review_required"],
-	"reason": "Tool analysis requires human review.",
-	"severity": "high",
-	"evidence": {
-		"analysis_status": analysis_status,
-		"review_status": review_status,
+deny_review_required_decision := object.union(
+	{
+		"effect": "DENY",
+		"obligations": [
+			{"type": "LOG", "parameters": {}},
+			{"type": "ALERT", "parameters": {}},
+		],
+		"rule_ids": ["deny_tool_review_required"],
+		"reason": "Tool analysis requires human review.",
+		"severity": "high",
+		"evidence": {
+			"analysis_status": analysis_status,
+			"review_status": review_status,
+		},
+		"recommended_action": "Approve or block the exact fingerprint through the review workflow.",
+		"policy_revision": policy_revision,
+		"decision": "BLOCK",
+		"rule_id": "deny_tool_review_required",
 	},
-	"recommended_action": "Approve or block the exact fingerprint through the review workflow.",
-	"policy_revision": policy_revision,
-	"decision": "BLOCK",
-	"rule_id": "deny_tool_review_required",
-}
+	decision_binding,
+)
 
 deny_tool_security_profile_drift_decision := deny_decision(
 	"deny_tool_security_profile_drift",
@@ -1018,21 +1189,24 @@ deny_ambiguous_resource_scope_decision := deny_decision(
 	"Resource scope is ambiguous.",
 )
 
-deny_sensitive_resource_decision := {
-	"effect": "DENY",
-	"obligations": [
-		{"type": "LOG", "parameters": {}},
-		{"type": "ALERT", "parameters": {}},
-	],
-	"rule_ids": ["deny_sensitive_resource"],
-	"reason": "Sensitive resource access is forbidden.",
-	"severity": "critical",
-	"evidence": {},
-	"recommended_action": null,
-	"policy_revision": policy_revision,
-	"decision": "BLOCK",
-	"rule_id": "deny_sensitive_resource",
-}
+deny_sensitive_resource_decision := object.union(
+	{
+		"effect": "DENY",
+		"obligations": [
+			{"type": "LOG", "parameters": {}},
+			{"type": "ALERT", "parameters": {}},
+		],
+		"rule_ids": ["deny_sensitive_resource"],
+		"reason": "Sensitive resource access is forbidden.",
+		"severity": "critical",
+		"evidence": {},
+		"recommended_action": null,
+		"policy_revision": policy_revision,
+		"decision": "BLOCK",
+		"rule_id": "deny_sensitive_resource",
+	},
+	decision_binding,
+)
 
 deny_sensitive_paths_decision := deny_decision(
 	"deny_sensitive_paths",
@@ -1059,92 +1233,110 @@ deny_operation_not_allowed_on_scope_decision := deny_decision(
 	"The requested operation is not allowed on the resource scope.",
 )
 
-allow_contracts_read_decision := {
-	"effect": "ALLOW",
-	"obligations": [{"type": "LOG", "parameters": {}}],
-	"rule_ids": ["allow_contracts_read"],
-	"reason": "The requested path is allowed.",
-	"severity": "low",
-	"evidence": {},
-	"recommended_action": null,
-	"policy_revision": policy_revision,
-	"decision": "ALLOW",
-	"rule_id": "allow_contracts_read",
-}
+allow_authorized_resource_decision := object.union(
+	{
+		"effect": "ALLOW",
+		"obligations": [{"type": "LOG", "parameters": {}}],
+		"rule_ids": ["allow_authorized_resource"],
+		"reason": "The requested resource operation is authorized.",
+		"severity": "low",
+		"evidence": {},
+		"recommended_action": null,
+		"policy_revision": policy_revision,
+		"decision": "ALLOW",
+		"rule_id": "allow_authorized_resource",
+	},
+	decision_binding,
+)
 
-warn_high_risk_tool_decision := {
-	"effect": "ALLOW",
-	"obligations": [
-		{"type": "WARN", "parameters": {}},
-		{"type": "LOG", "parameters": {}},
-	],
-	"rule_ids": ["warn_high_risk_tool"],
-	"reason": "High-risk MCP tool call detected.",
-	"severity": "medium",
-	"evidence": {},
-	"recommended_action": null,
-	"policy_revision": policy_revision,
-	"decision": "WARN",
-	"rule_id": "warn_high_risk_tool",
-}
+warn_high_risk_tool_decision := object.union(
+	{
+		"effect": "ALLOW",
+		"obligations": [
+			{"type": "WARN", "parameters": {}},
+			{"type": "LOG", "parameters": {}},
+		],
+		"rule_ids": ["warn_high_risk_tool"],
+		"reason": "High-risk MCP tool call detected.",
+		"severity": "medium",
+		"evidence": {},
+		"recommended_action": null,
+		"policy_revision": policy_revision,
+		"decision": "WARN",
+		"rule_id": "warn_high_risk_tool",
+	},
+	decision_binding,
+)
 
-require_approval_for_sensitive_tool_decision := {
-	"effect": "DEFER",
-	"obligations": [
-		{"type": "REQUIRE_APPROVAL", "parameters": {}},
-		{"type": "LOG", "parameters": {}},
-	],
-	"rule_ids": ["require_approval_for_sensitive_tool"],
-	"reason": "Sensitive tool requires human approval.",
-	"severity": "high",
-	"evidence": {},
-	"recommended_action": null,
-	"policy_revision": policy_revision,
-	"decision": "ASK_APPROVAL",
-	"rule_id": "require_approval_for_sensitive_tool",
-}
+require_approval_for_sensitive_tool_decision := object.union(
+	{
+		"effect": "DEFER",
+		"obligations": [
+			{"type": "REQUIRE_APPROVAL", "parameters": {}},
+			{"type": "LOG", "parameters": {}},
+		],
+		"rule_ids": ["require_approval_for_sensitive_tool"],
+		"reason": "Sensitive tool requires human approval.",
+		"severity": "high",
+		"evidence": {},
+		"recommended_action": null,
+		"policy_revision": policy_revision,
+		"decision": "ASK_APPROVAL",
+		"rule_id": "require_approval_for_sensitive_tool",
+	},
+	decision_binding,
+)
 
-limit_large_outputs_decision := {
-	"effect": "ALLOW",
-	"obligations": [
-		{"type": "LIMIT_OUTPUT", "parameters": {}},
-		{"type": "LOG", "parameters": {}},
-	],
-	"rule_ids": ["limit_large_outputs"],
-	"reason": "Estimated output exceeds the configured limit.",
-	"severity": "medium",
-	"evidence": {},
-	"recommended_action": null,
-	"policy_revision": policy_revision,
-	"decision": "LIMIT",
-	"rule_id": "limit_large_outputs",
-}
+limit_large_outputs_decision := object.union(
+	{
+		"effect": "ALLOW",
+		"obligations": [
+			{"type": "LIMIT_OUTPUT", "parameters": {}},
+			{"type": "LOG", "parameters": {}},
+		],
+		"rule_ids": ["limit_large_outputs"],
+		"reason": "Estimated output exceeds the configured limit.",
+		"severity": "medium",
+		"evidence": {},
+		"recommended_action": null,
+		"policy_revision": policy_revision,
+		"decision": "LIMIT",
+		"rule_id": "limit_large_outputs",
+	},
+	decision_binding,
+)
 
-log_normal_runtime_call_decision := {
-	"effect": "ALLOW",
-	"obligations": [{"type": "LOG", "parameters": {}}],
-	"rule_ids": ["log_normal_runtime_call"],
-	"reason": "Runtime call logged for audit purposes.",
-	"severity": "low",
-	"evidence": {},
-	"recommended_action": null,
-	"policy_revision": policy_revision,
-	"decision": "LOG_ONLY",
-	"rule_id": "log_normal_runtime_call",
-}
+log_normal_runtime_call_decision := object.union(
+	{
+		"effect": "ALLOW",
+		"obligations": [{"type": "LOG", "parameters": {}}],
+		"rule_ids": ["log_normal_runtime_call"],
+		"reason": "Runtime call logged for audit purposes.",
+		"severity": "low",
+		"evidence": {},
+		"recommended_action": null,
+		"policy_revision": policy_revision,
+		"decision": "LOG_ONLY",
+		"rule_id": "log_normal_runtime_call",
+	},
+	decision_binding,
+)
 
-deny_decision(rule_id, reason) := {
-	"effect": "DENY",
-	"obligations": [
-		{"type": "LOG", "parameters": {}},
-		{"type": "ALERT", "parameters": {}},
-	],
-	"rule_ids": [rule_id],
-	"reason": reason,
-	"severity": "high",
-	"evidence": {},
-	"recommended_action": null,
-	"policy_revision": policy_revision,
-	"decision": "BLOCK",
-	"rule_id": rule_id,
-}
+deny_decision(rule_id, reason) := object.union(
+	{
+		"effect": "DENY",
+		"obligations": [
+			{"type": "LOG", "parameters": {}},
+			{"type": "ALERT", "parameters": {}},
+		],
+		"rule_ids": [rule_id],
+		"reason": reason,
+		"severity": "high",
+		"evidence": {},
+		"recommended_action": null,
+		"policy_revision": policy_revision,
+		"decision": "BLOCK",
+		"rule_id": rule_id,
+	},
+	decision_binding,
+)

@@ -47,7 +47,7 @@ function Audit({ events = [], loading = false }) {
           />
         </label>
       </div>
-      <div className="table-shell">
+      <div className="table-shell audit-table">
         <table>
           <thead>
             <tr>
@@ -66,12 +66,14 @@ function Audit({ events = [], loading = false }) {
                 <td colSpan="7">No audit events.</td>
               </tr>
             ) : (
-              filtered.map((event) => (
+              filtered.map((event) => {
+                const target = [event.target_type, event.target_id].filter(Boolean).join(" / ");
+                return (
                 <tr key={event.id}>
                   <td>{formatDate(event.timestamp)}</td>
                   <td>{event.actor_username_snapshot || "system"}</td>
                   <td>{event.action}</td>
-                  <td>{[event.target_type, event.target_id].filter(Boolean).join(" / ")}</td>
+                  <td><span className="audit-target" title={target}>{shorten(target, 42)}</span></td>
                   <td>{shorten(event.revision_id)}</td>
                   <td>
                     <span className={`badge ${event.result === "SUCCESS" ? "badge-success" : "badge-danger"}`}>
@@ -80,7 +82,8 @@ function Audit({ events = [], loading = false }) {
                   </td>
                   <td>{event.reason || "-"}</td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>
@@ -97,11 +100,11 @@ function formatDate(value) {
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 
-function shorten(value) {
+function shorten(value, maxLength = 22) {
   if (!value) {
     return "-";
   }
-  return String(value).length > 22
+  return String(value).length > maxLength
     ? `${String(value).slice(0, 10)}...${String(value).slice(-6)}`
     : String(value);
 }

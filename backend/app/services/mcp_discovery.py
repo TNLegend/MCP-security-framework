@@ -14,7 +14,7 @@ from common.upstream_auth import (
     resolve_upstream_bearer_token,
 )
 from proxy.http_mcp_client import MCPHttpClient
-from proxy.protocol_negotiation import ProtocolNegotiator
+from proxy.protocol_negotiation import MCP_CLIENT_USER_AGENT, ProtocolNegotiator
 from proxy.protocol_profiles import (
     LEGACY_PROFILE_ID,
     MODERN_PROFILE_ID,
@@ -50,11 +50,16 @@ def discover_http_mcp_server(
     protocol_version: str = DEFAULT_PROTOCOL_VERSION,
     auth_mode: str = AUTH_MODE_NONE,
     credential_ref: str | None = None,
+    oauth_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     del protocol_version
     try:
         validate_mcp_endpoint(mcp_endpoint)
-        bearer_token = resolve_upstream_bearer_token(auth_mode, credential_ref)
+        bearer_token = resolve_upstream_bearer_token(
+            auth_mode,
+            credential_ref,
+            oauth_config=oauth_config,
+        )
         negotiation = ProtocolNegotiator(bearer_token=bearer_token).negotiate(
             endpoint=mcp_endpoint,
             registered_endpoint=mcp_endpoint,
@@ -267,6 +272,7 @@ def send_json_rpc(
     headers = {
         "Accept": MCP_ACCEPT_HEADER,
         "Content-Type": "application/json",
+        "User-Agent": MCP_CLIENT_USER_AGENT,
     }
     if protocol_version:
         headers["MCP-Protocol-Version"] = protocol_version

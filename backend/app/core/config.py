@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     backend_port: int = 8000
     frontend_host: str = "127.0.0.1"
     frontend_port: int = Field(default=5173, ge=1, le=65535)
+    control_center_public_url: str = ""
+    upstream_oauth_callback_url: str = ""
     mcp_gateway_host: str = "127.0.0.1"
     mcp_gateway_port: int = 9001
     agent_identity_jwks_url: str = "<configure>"
@@ -121,6 +123,21 @@ class Settings(BaseSettings):
             if origin not in origins:
                 origins.append(origin)
         return origins
+
+    @property
+    def control_center_url(self) -> str:
+        configured = self.control_center_public_url.strip().rstrip("/")
+        if configured:
+            return configured
+        return f"http://{self.frontend_host.strip() or '127.0.0.1'}:{self.frontend_port}"
+
+    @property
+    def upstream_oauth_callback_uri(self) -> str:
+        configured = self.upstream_oauth_callback_url.strip()
+        if configured:
+            return configured
+        host = self.backend_host.strip() or "127.0.0.1"
+        return f"http://{host}:{self.backend_port}{self.api_prefix}/control-plane/upstream-oauth/callback"
 
     class Config:
         env_file = REPO_ROOT / ".env"

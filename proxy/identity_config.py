@@ -57,7 +57,6 @@ class AgentIdentityConfig:
             environment=os.getenv("ENVIRONMENT", "local"),
         )
 
-
 @dataclass(frozen=True)
 class ProxyAssertionConfig:
     issuer: str
@@ -107,54 +106,3 @@ class IdentityBindingConfig:
                 project_root=REPO_ROOT,
             )
         )
-
-
-@dataclass(frozen=True)
-class ToolSecurityProfilesConfig:
-    path: Path
-
-    @classmethod
-    def from_env(cls) -> "ToolSecurityProfilesConfig":
-        return cls(
-            path=resolve_project_path(
-                os.getenv(
-                    "TOOL_SECURITY_PROFILES_PATH",
-                    str(REPO_ROOT / "policies" / "tool_security_profiles.yaml"),
-                ),
-                project_root=REPO_ROOT,
-            )
-        )
-
-
-@dataclass(frozen=True)
-class ResourceScopesConfig:
-    path: Path
-    max_path_bytes: int
-    max_path_segments: int
-    allow_unc: bool
-    allow_device_paths: bool
-    allow_ntfs_ads: bool
-
-    @classmethod
-    def from_env(cls) -> "ResourceScopesConfig":
-        return cls(
-            path=resolve_project_path(
-                os.getenv(
-                    "RESOURCE_SCOPES_PATH",
-                    str(REPO_ROOT / "policies" / "resource_scopes.yaml"),
-                ),
-                project_root=REPO_ROOT,
-            ),
-            max_path_bytes=int(os.getenv("RESOURCE_MAX_PATH_BYTES", "4096")),
-            max_path_segments=int(os.getenv("RESOURCE_MAX_PATH_SEGMENTS", "256")),
-            allow_unc=_env_bool("RESOURCE_ALLOW_UNC", default=False),
-            allow_device_paths=_env_bool("RESOURCE_ALLOW_DEVICE_PATHS", default=False),
-            allow_ntfs_ads=_env_bool("RESOURCE_ALLOW_NTFS_ADS", default=False),
-        )
-
-
-def _env_bool(name: str, *, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}

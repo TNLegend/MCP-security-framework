@@ -84,17 +84,38 @@ class MCPEndpointPolicyTests(unittest.TestCase):
             )
 
     def test_local_lab_trust_uses_exact_parsed_hostname(self) -> None:
-        self.assertTrue(is_exact_local_lab_endpoint("http://localhost:9000/mcp"))
         self.assertTrue(is_local_lab_endpoint("http://127.0.0.1:9000/mcp"))
         for endpoint in (
+            "http://localhost:9000/mcp",
+            "http://[::1]:9000/mcp",
             "http://localhost.attacker.example/mcp",
             "http://127.0.0.1.attacker.example/mcp",
             "http://attacker-localhost.example/mcp",
             "https://localhost/mcp",
+            "http://127.0.0.1:9001/mcp",
+            "http://127.0.0.1:9000/other",
+            "http://127.0.0.1:9000/mcp?tenant=lab",
         ):
             with self.subTest(endpoint=endpoint):
                 self.assertFalse(is_exact_local_lab_endpoint(endpoint))
                 self.assertFalse(is_local_lab_endpoint(endpoint))
+
+    def test_arbitrary_loopback_server_is_not_lab_trusted(self) -> None:
+        payload = DiscoveryImportPayload.model_validate(
+            {
+                "server": {
+                    "endpoint": "http://127.0.0.1:9100/mcp",
+                    "server_info_name": "other-loopback",
+                },
+                "tools": [],
+            }
+        )
+        db = MagicMock()
+        db.scalar.return_value = None
+
+        server = upsert_server(payload, db, datetime.utcnow())
+
+        self.assertEqual(server.trust_status, "unknown")
 
     def test_remote_discovery_pipeline_accepts_http_and_https(self) -> None:
         negotiation = SimpleNamespace(
@@ -159,6 +180,50 @@ class MCPEndpointPolicyTests(unittest.TestCase):
 
         server = upsert_server(payload, db, datetime.utcnow())
 
+        self.assertEqual(server.trust_status, "unknown")
+
+    def test_remote_rediscovery_preserves_explicit_admin_trust(self) -> None:
+        payload = DiscoveryImportPayload.model_validate(
+            {
+                "server": {
+                    "endpoint": "https://mcp.vendor.example/mcp",
+                    "server_info_name": "remote-test",
+                },
+                "tools": [],
+            }
+        )
+        existing = MagicMock()
+        existing.name = "remote-test"
+        existing.trust_status = "trusted"
+        existing.status = "active"
+        db = MagicMock()
+        db.scalar.return_value = existing
+
+        server = upsert_server(payload, db, datetime.utcnow())
+
+        self.assertIs(server, existing)
+        self.assertEqual(server.trust_status, "trusted")
+
+    def test_remote_reactivation_does_not_restore_archived_trust(self) -> None:
+        payload = DiscoveryImportPayload.model_validate(
+            {
+                "server": {
+                    "endpoint": "https://mcp.vendor.example/mcp",
+                    "server_info_name": "remote-test",
+                },
+                "tools": [],
+            }
+        )
+        existing = MagicMock()
+        existing.name = "remote-test"
+        existing.trust_status = "archived"
+        existing.status = "archived"
+        db = MagicMock()
+        db.scalar.return_value = existing
+
+        server = upsert_server(payload, db, datetime.utcnow())
+
+        self.assertIs(server, existing)
         self.assertEqual(server.trust_status, "unknown")
 
     def test_runtime_http_client_does_not_follow_redirects(self) -> None:

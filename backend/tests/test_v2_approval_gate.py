@@ -31,14 +31,20 @@ from app.models.tool_analysis import (  # noqa: E402
 from app.schemas.control_plane import AuthorityContext, ControlPlaneConfigContent  # noqa: E402
 from app.services.control_plane_config import (  # noqa: E402
     ControlPlaneConfigError,
+    create_draft_from_revision,
     create_revision,
     patch_draft_revision,
     publish_revision,
+    rollback_to_revision,
     validate_revision,
 )
 from app.services.published_configuration import PublishedConfigurationProvider  # noqa: E402
 from app.services.subject_authorization import SubjectAuthorizationDocument  # noqa: E402
-from app.services.tool_observation_approval import approve_tool_observation  # noqa: E402
+from app.services.tool_observation_approval import (  # noqa: E402
+    approve_tool_observation,
+    evidence_bundle_for_observation,
+)
+from common.canonical_json import sha256_canonical_json  # noqa: E402
 from proxy.identity_binding import IdentityBindingDocument  # noqa: E402
 from proxy.protocol_profiles import LEGACY_PROFILE_ID, MODERN_PROFILE_ID  # noqa: E402
 from proxy.tool_security_v2 import (  # noqa: E402
@@ -155,8 +161,8 @@ class V2ApprovalGateTests(unittest.TestCase):
                 identity_bindings=IdentityBindingDocument(revision="id-v2", bindings=[]),
                 agent_authorizations=SubjectAuthorizationDocument(revision="auth-v2", subjects={}),
                 supported_schema_profile="supported-json-schema-v1",
-                capability_catalog_version="1",
-                resource_type_registry_version="1",
+                capability_catalog_version="2",
+                resource_type_registry_version="2",
                 tool_security_contracts=(),
                 authority_resource_scopes=(),
                 adapter_resolutions=(),
@@ -191,6 +197,15 @@ class V2ApprovalGateTests(unittest.TestCase):
                 admin_id=admin.id,
                 revision_id=draft.id,
             )
+            self.assertEqual(analysis.analysis_status, "REVIEW_REQUIRED")
+            self.assertEqual(analysis.review_status, "REVIEW_REQUIRED")
+            self.assertEqual(observation.analysis_state, "REVIEW_REQUIRED")
+            self.assertNotEqual(tool.analysis_status, "APPROVED")
+            self.assertFalse(tool.approved_fingerprint_match)
+            self.assertEqual(
+                approval.evidence_bundle_hash,
+                sha256_canonical_json(evidence_bundle_for_observation(db, observation)),
+            )
             analysis.deterministic_critical_finding = "true"
             with self.assertRaisesRegex(ValueError, "critical_finding_cannot_be_approved"):
                 approve_tool_observation(
@@ -216,8 +231,8 @@ class V2ApprovalGateTests(unittest.TestCase):
                     },
                     "policy_settings": {"rules": {}},
                     "supported_schema_profile": "supported-json-schema-v1",
-                    "capability_catalog_version": "1",
-                    "resource_type_registry_version": "1",
+                    "capability_catalog_version": "2",
+                    "resource_type_registry_version": "2",
                     "tool_security_contracts": [contract.model_dump(mode="json")],
                     "authority_resource_scopes": [
                         AuthorityResourceScope(
@@ -271,6 +286,89 @@ class V2ApprovalGateTests(unittest.TestCase):
                     upstream_protocol_profile_id=MODERN_PROFILE_ID,
                     tool_fingerprint=fingerprint,
                 )
+
+            newer_analysis = ToolAnalysis(
+                tool_id=tool.id,
+                version_id=version.id,
+                fingerprint=fingerprint,
+                analysis_status="APPROVED",
+                risk_score=0,
+                risk_level="info",
+                semantic_flagged="false",
+                deterministic_critical_finding="false",
+                consistency_status="consistent",
+                drift_status="NONE",
+                review_status="APPROVED",
+                semantic_scores={"normal_tool_description": 0.95},
+                consistency_result={"status": "consistent", "findings": []},
+                drift_result={"status": "NONE", "changes": []},
+                model_versions={"semantic": "test", "embedding": "test"},
+                analyzer_revision="v1",
+                completed_at=datetime.utcnow(),
+            )
+            db.add(newer_analysis)
+            db.flush()
+            observation.analysis_id = newer_analysis.id
+            observation.analysis_state = "APPROVED"
+            renewed = create_draft_from_revision(
+                db,
+                published_revision_id=published.id,
+                actor=admin,
+                change_summary="renew inherited approval against current evidence",
+            )
+            renewed_content = ControlPlaneConfigContent.model_validate(renewed.content)
+            renewed_approval = renewed_content.tool_observation_approvals[0]
+            self.assertNotEqual(
+                renewed_approval.evidence_bundle_hash,
+                approval.evidence_bundle_hash,
+            )
+            renewed_review = db.query(ToolObservationReviewApproval).filter(
+                ToolObservationReviewApproval.revision_id == renewed.id
+            ).one()
+            self.assertIsInstance(renewed_review.evidence_bundle, dict)
+            self.assertEqual(
+                sha256_canonical_json(renewed_review.evidence_bundle),
+                renewed_approval.evidence_bundle_hash,
+            )
+            validate_revision(
+                db,
+                revision_id=renewed.id,
+                actor=admin,
+                change_summary="validate re-anchored inherited approval",
+            )
+            newer_published = publish_revision(
+                db,
+                draft_id=renewed.id,
+                actor=admin,
+                change_summary="publish renewed approval",
+            )
+            rolled_back = rollback_to_revision(
+                db,
+                revision_id=published.id,
+                actor=admin,
+                change_summary="rollback approved archived revision",
+            )
+            rolled_back_content = ControlPlaneConfigContent.model_validate(rolled_back.content)
+            self.assertNotEqual(rolled_back.id, published.id)
+            self.assertEqual(rolled_back.status, "PUBLISHED")
+            self.assertEqual(published.status, "ARCHIVED")
+            self.assertEqual(
+                rolled_back.previous_revision_hash,
+                newer_published.content_hash,
+            )
+            self.assertEqual(
+                rolled_back_content.tool_observation_approvals[0].revision_id,
+                rolled_back.id,
+            )
+            rollback_review = db.query(ToolObservationReviewApproval).filter(
+                ToolObservationReviewApproval.revision_id == rolled_back.id,
+                ToolObservationReviewApproval.active.is_(True),
+            ).one()
+            self.assertIsInstance(rollback_review.evidence_bundle, dict)
+            self.assertEqual(
+                sha256_canonical_json(rollback_review.evidence_bundle),
+                rolled_back_content.tool_observation_approvals[0].evidence_bundle_hash,
+            )
 
             changed_contract = contract.model_copy(update={"tool_name": "send_email_v2"})
             changed = content.model_copy(
@@ -340,8 +438,8 @@ class V2ApprovalGateTests(unittest.TestCase):
                     identity_bindings=IdentityBindingDocument(revision="id-v2", bindings=[]),
                     agent_authorizations=SubjectAuthorizationDocument(revision="auth-v2", subjects={}),
                     supported_schema_profile="supported-json-schema-v1",
-                    capability_catalog_version="1",
-                    resource_type_registry_version="1",
+                    capability_catalog_version="2",
+                    resource_type_registry_version="2",
                     tool_security_contracts=(),
                     authority_resource_scopes=(),
                     adapter_resolutions=(),

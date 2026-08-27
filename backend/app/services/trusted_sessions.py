@@ -51,6 +51,7 @@ def create_trusted_session(
     identity_subject: str,
     identity_binding_revision: str,
     external_token_id: str | None,
+    external_expires_at: datetime | None = None,
     db: Session,
 ) -> CreatedTrustedSession:
     if not settings.trusted_session_enabled:
@@ -58,6 +59,11 @@ def create_trusted_session(
 
     now = _utcnow_naive()
     expires_at = now + timedelta(seconds=settings.trusted_session_ttl_seconds)
+    if external_expires_at is not None:
+        external_expires_at_naive = _as_naive_utc(external_expires_at)
+        if external_expires_at_naive <= now:
+            raise TrustedSessionError("trusted_session_source_token_expired")
+        expires_at = min(expires_at, external_expires_at_naive)
     cleanup_expired_trusted_sessions(db=db)
     _enforce_active_session_limit(agent_id=agent_id, db=db, now=now)
 
@@ -238,3 +244,9 @@ def _hash_session_token(session_token: str) -> str:
 
 def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _as_naive_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)

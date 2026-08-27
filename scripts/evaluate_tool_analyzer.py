@@ -43,6 +43,22 @@ class HeuristicSemanticModel:
             scores["secret_collection"] = 0.88
         if "shell" in lowered or "command" in lowered:
             scores["command_execution"] = 0.89
+        if ("arbitrary" in lowered or "user supplied" in lowered) and (
+            "shell" in lowered or "script" in lowered
+        ):
+            scores["shell_injection"] = 0.94
+        if "another tenant" in lowered or "cross-tenant" in lowered:
+            scores["cross_tenant_access"] = 0.88
+        if "public" in lowered and ("share" in lowered or "anyone" in lowered):
+            scores["public_sharing"] = 0.88
+        if "payment" in lowered and ("without" in lowered or "unauthorized" in lowered):
+            scores["unauthorized_financial_transaction"] = 0.9
+        if "169.254.169.254" in lowered or "metadata service" in lowered:
+            scores["server_side_request_forgery"] = 0.92
+        if "bulk" in lowered or "every recipient" in lowered or "unsolicited" in lowered:
+            scores["bulk_messaging"] = 0.93
+        if "mot" in lowered and "passe" in lowered or "clés api" in lowered:
+            scores["secret_collection"] = 0.88
         if max(scores.values()) < 0.5:
             scores["normal_tool_description"] = 0.9
         best = max(scores, key=scores.get)
@@ -75,7 +91,7 @@ def main() -> int:
         "dataset_id": dataset["dataset_id"],
         "version": dataset["version"],
         "examples": len(dataset["examples"]),
-        "dataset_note": "Synthetic smoke dataset for Task 7B calibration; not a scientific benchmark.",
+        "dataset_note": "Synthetic multi-domain regression corpus; not a scientific benchmark.",
         "heuristic_test_metrics": evaluate_dataset(
             dataset,
             semantic_model=HeuristicSemanticModel(),
@@ -121,6 +137,7 @@ def evaluate_dataset(dataset: dict[str, Any], *, semantic_model, embedding_model
             result["semantic_flagged"]
             or result["deterministic_critical_finding"]
             or result["risk_level"] in {"high", "critical"}
+            or result["analysis_status"] != "APPROVED"
             or fingerprint_changed
         )
         expected_risky = example["label"] in {"blocked", "review_required"}
@@ -168,25 +185,29 @@ def evaluate_dataset(dataset: dict[str, Any], *, semantic_model, embedding_model
 
 
 def _snapshots(example: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
+    default_properties = {"path": {"type": "string"}} if "tool_name" not in example else {}
     schema_properties = {
-        "path": {"type": "string"},
+        **default_properties,
         **(example.get("schema_properties") or {}),
     }
     baseline_schema_properties = {
-        "path": {"type": "string"},
+        **default_properties,
         **(example.get("baseline_schema_properties") or {}),
     }
+    required = example.get("required_properties", list(schema_properties))
+    generated_input_schema = {
+        "type": "object",
+        "properties": schema_properties,
+        "required": required,
+        "additionalProperties": False,
+    }
     tool_snapshot = {
-        "name": "read_file",
+        "name": example.get("tool_name", "read_file"),
         "description": example["text"],
-        "input_schema": {
-            "type": "object",
-            "properties": schema_properties,
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "output_schema": {},
-        "annotations": {},
+        "input_schema": example.get("input_schema", generated_input_schema),
+        "output_schema": example.get("output_schema", {}),
+        "annotations": example.get("annotations", {}),
+        "execution": example.get("execution", {}),
     }
     baseline_snapshot = None
     if example.get("baseline_text"):
@@ -198,10 +219,26 @@ def _snapshots(example: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] 
                 "properties": baseline_schema_properties,
             },
         }
+    capability = example.get("required_capability", "filesystem.read")
     profile_snapshot = {
-        "revision": "eval-profile-v1",
-        "operation": "read",
-        "required_capability": "filesystem.read",
+        "revision": "eval-profile-v2",
+        "schema_version": 2,
+        "contract_hash": "e" * 64,
+        "contract": {
+            "contract_version": "2",
+            "server_ref": "eval-server",
+            "tool_name": tool_snapshot["name"],
+            "effects": [
+                {
+                    "effect_id": capability,
+                    "capability": capability,
+                    "resource_bindings": [],
+                }
+            ],
+            "unbound_arguments": [
+                [str(name)] for name in schema_properties
+            ],
+        },
     }
     return tool_snapshot, baseline_snapshot, profile_snapshot
 

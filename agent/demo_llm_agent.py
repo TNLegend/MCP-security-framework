@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ def main() -> None:
     print("=" * 50)
     print("Preconditions:")
     print("1. Backend must be running at http://127.0.0.1:8000")
-    print("2. MCP lab server must be running at http://127.0.0.1:9000/mcp")
+    print("2. At least one governed MCP server must be registered and reachable")
     print("3. Discovery must have been run at least once")
     print("4. Local identity provider must be running with the configured JWKS URL")
     print("5. LLM_PROVIDER can be mock, gemini, or groq")
@@ -66,7 +67,7 @@ def run_prompt(
     session_token: str,
 ) -> dict[str, Any]:
     try:
-        server = select_mcp_lab_server(backend_client)
+        server = select_mcp_server(backend_client)
         available_tools = build_available_tools(backend_client, server["id"])
     except Exception as exc:
         return {
@@ -123,10 +124,27 @@ def run_prompt(
     return summary
 
 
-def select_mcp_lab_server(backend_client: BackendClient) -> dict[str, Any]:
-    server = backend_client.find_server()
+def select_mcp_server(backend_client: BackendClient) -> dict[str, Any]:
+    configured_id = os.getenv("MCP_DEMO_SERVER_ID", "").strip()
+    if configured_id:
+        if not configured_id.isdigit():
+            raise RuntimeError("MCP_DEMO_SERVER_ID must be an integer.")
+        server = backend_client.find_server(server_id=int(configured_id))
+        if server is None or server.get("status") == "archived":
+            raise RuntimeError("Configured MCP demo server is unavailable.")
+        return server
+
+    server = next(
+        (
+            value
+            for value in backend_client.list_servers()
+            if value.get("status") != "archived"
+            and value.get("trust_status") in {"trusted", "lab_trusted"}
+        ),
+        None,
+    )
     if server is None:
-        raise RuntimeError("No local Streamable HTTP MCP server found.")
+        raise RuntimeError("No trusted governed MCP server found.")
     return server
 
 

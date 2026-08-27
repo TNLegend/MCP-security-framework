@@ -212,7 +212,7 @@ class TrustedIdentityRuntimeTests(unittest.TestCase):
         )
 
         self.assertEqual(resolver.agent_ids, ["agent-demo"])
-        self.assertEqual(decision.rule_id, "allow_contracts_read")
+        self.assertEqual(decision.rule_id, "allow_generic_security_model_v2")
 
     def test_opa_receives_verified_identity_only(self) -> None:
         opa_client = RegoOPAClient()
@@ -241,10 +241,11 @@ class TrustedIdentityRuntimeTests(unittest.TestCase):
         self.assertEqual(decision.rule_id, "trusted_identity_required")
 
     def test_opa_unavailable_after_valid_identity_is_fail_closed(self) -> None:
+        context = runtime_context()
         with patch.object(policy_runtime, "OPAClient") as opa_client:
             opa_client.side_effect = RuntimeError("opa unavailable")
             decision = policy_runtime.evaluate_runtime_policy(
-                context=runtime_context(),
+                context=context,
                 identity_assertion="test.assertion",
                 db=object(),
                 assertion_verifier=RecordingAssertionVerifier(),
@@ -255,6 +256,19 @@ class TrustedIdentityRuntimeTests(unittest.TestCase):
         self.assertEqual(decision.effect, "DENY")
         self.assertEqual(decision.decision, "BLOCK")
         self.assertEqual(decision.rule_id, "opa_authoritative_unexpected_error")
+        self.assertEqual(
+            decision.control_plane_revision_id,
+            context["runtime"]["control_plane_revision_id"],
+        )
+        self.assertEqual(
+            decision.control_plane_content_hash,
+            context["runtime"]["control_plane_content_hash"],
+        )
+        self.assertEqual(
+            decision.canonical_arguments_hash,
+            context["request"]["canonical_arguments_hash"],
+        )
+        self.assertTrue(decision.decision_id)
 
     def test_invalid_arguments_remain_prioritized_after_identity_verification(self) -> None:
         context = runtime_context(
@@ -282,7 +296,7 @@ class TrustedIdentityRuntimeTests(unittest.TestCase):
 
         decision = self.evaluate(context=context)
 
-        self.assertEqual(decision.rule_id, "deny_sensitive_paths")
+        self.assertEqual(decision.rule_id, "allow_generic_security_model_v2")
 
     def test_non_lab_scope_passes_identity_contract(self) -> None:
         context = runtime_context(
@@ -297,7 +311,7 @@ class TrustedIdentityRuntimeTests(unittest.TestCase):
 
         self.assertIn(
             decision.rule_id,
-            {"deny_scope_not_granted", "log_normal_runtime_call"},
+            {"deny_scope_not_granted", "allow_generic_security_model_v2"},
         )
 
 

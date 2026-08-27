@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from pathlib import Path
@@ -29,11 +30,18 @@ for import_path in (ROOT, BACKEND):
     if str(import_path) not in sys.path:
         sys.path.insert(0, str(import_path))
 
+import app.models  # noqa: E402,F401
 from app.models.control_plane import ControlPlaneUser  # noqa: E402
 from app.core.config import Settings  # noqa: E402
-from app.db.database import engine as configured_engine  # noqa: E402
+from app.db.database import Base, engine as configured_engine  # noqa: E402
 from app.db import init_db as init_db_module  # noqa: E402
+from app.models.control_plane import ControlPlaneConfigRevision, ControlPlaneState  # noqa: E402
 from app.models.runtime_call import RuntimeCall  # noqa: E402
+from app.services.control_plane_config import create_revision  # noqa: E402
+from app.services.published_configuration import (  # noqa: E402
+    PublishedConfigurationError,
+    PublishedConfigurationProvider,
+)
 from common.file_permissions import restrict_private_file  # noqa: E402
 from common.project_environment import load_project_environment  # noqa: E402
 from common.project_paths import resolve_project_path  # noqa: E402
@@ -53,12 +61,23 @@ from scripts.setup_local_environment import (  # noqa: E402
     ensure_environment_file,
     ensure_trusted_session_pepper,
     _runtime_calls_schema_ok,
+    published_configuration_installation_check,
     prepare_source_only_environment,
     run_post_dependency_setup,
+)
+from scripts.import_control_plane_config import (  # noqa: E402
+    ConfigurationBootstrapError,
+    ensure_initial_published_configuration,
+    load_latest_config,
 )
 
 
 class ProjectPortabilityTests(unittest.TestCase):
+    def _config_session(self):
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        return sessionmaker(bind=engine)
+
     def test_project_relative_paths_resolve_against_supplied_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             project_root = Path(temporary) / "portable-clone"
@@ -250,6 +269,184 @@ class ProjectPortabilityTests(unittest.TestCase):
             scoped_engine.dispose()
             with configured_engine.begin() as connection:
                 connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+
+    def test_fresh_config_bootstrap_creates_valid_published_snapshot_once(self) -> None:
+        Session = self._config_session()
+        with Session() as db:
+            first = ensure_initial_published_configuration(db)
+            db.commit()
+            first_id = first.revision_id
+
+        with Session() as db:
+            snapshot = PublishedConfigurationProvider(db).load_active_snapshot()
+            self.assertEqual(snapshot.revision_id, first_id)
+            self.assertEqual(snapshot.schema_version, 2)
+            self.assertEqual(db.query(ControlPlaneConfigRevision).count(), 1)
+
+            second = ensure_initial_published_configuration(db)
+            db.commit()
+
+        self.assertEqual(second.status, "READY")
+        self.assertEqual(second.revision_id, first_id)
+        with Session() as db:
+            self.assertEqual(db.query(ControlPlaneConfigRevision).count(), 1)
+            self.assertEqual(db.get(ControlPlaneState, 1).active_revision_id, first_id)
+
+    def test_concurrent_pristine_bootstrap_creates_one_initial_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            engine = create_engine(
+                f"sqlite:///{Path(temporary) / 'bootstrap.db'}",
+                connect_args={"check_same_thread": False},
+            )
+            Base.metadata.create_all(engine)
+            Session = sessionmaker(bind=engine)
+            barrier = threading.Barrier(2)
+            results = []
+            errors = []
+
+            def bootstrap() -> None:
+                try:
+                    barrier.wait()
+                    with Session() as db:
+                        results.append(ensure_initial_published_configuration(db).status)
+                        db.commit()
+                except Exception as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            workers = [threading.Thread(target=bootstrap) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=10)
+
+            self.assertFalse(errors)
+            self.assertFalse(any(worker.is_alive() for worker in workers))
+            self.assertCountEqual(results, ["IMPORTED", "READY"])
+            with Session() as db:
+                self.assertEqual(db.query(ControlPlaneConfigRevision).count(), 1)
+                self.assertIsNotNone(db.get(ControlPlaneState, 1).active_revision_id)
+            engine.dispose()
+
+    def test_unexpected_snapshot_error_does_not_trigger_bootstrap(self) -> None:
+        Session = self._config_session()
+        with Session() as db:
+            with patch(
+                "scripts.import_control_plane_config.PublishedConfigurationProvider.load_active_snapshot",
+                side_effect=RuntimeError("unexpected provider failure"),
+            ):
+                with self.assertRaises(ConfigurationBootstrapError) as ctx:
+                    ensure_initial_published_configuration(db)
+            db.rollback()
+            self.assertEqual(ctx.exception.code, "active_config_validation_failed")
+            self.assertEqual(db.query(ControlPlaneConfigRevision).count(), 0)
+            self.assertIsNone(db.get(ControlPlaneState, 1))
+
+    def test_only_active_config_missing_allows_pristine_bootstrap(self) -> None:
+        Session = self._config_session()
+        with Session() as db:
+            with patch(
+                "scripts.import_control_plane_config.PublishedConfigurationProvider.load_active_snapshot",
+                side_effect=PublishedConfigurationError("config_hash_mismatch"),
+            ):
+                with self.assertRaises(ConfigurationBootstrapError) as ctx:
+                    ensure_initial_published_configuration(db)
+            db.rollback()
+            self.assertEqual(ctx.exception.code, "config_hash_mismatch")
+            self.assertEqual(db.query(ControlPlaneConfigRevision).count(), 0)
+            self.assertIsNone(db.get(ControlPlaneState, 1))
+
+    def test_valid_existing_config_is_preserved_by_bootstrap(self) -> None:
+        Session = self._config_session()
+        with Session() as db:
+            content = load_latest_config()
+            revision = create_revision(
+                db,
+                content=content,
+                status="PUBLISHED",
+                actor=None,
+                change_summary="existing",
+            )
+            db.add(ControlPlaneState(id=1, active_revision_id=revision.id))
+            db.commit()
+            revision_id = revision.id
+
+        with Session() as db:
+            result = ensure_initial_published_configuration(db)
+            db.commit()
+
+        self.assertEqual(result.status, "READY")
+        self.assertEqual(result.revision_id, revision_id)
+        with Session() as db:
+            self.assertEqual(db.query(ControlPlaneConfigRevision).count(), 1)
+
+    def test_revisions_without_active_config_are_not_auto_selected(self) -> None:
+        Session = self._config_session()
+        with Session() as db:
+            create_revision(
+                db,
+                content=load_latest_config(),
+                status="DRAFT",
+                actor=None,
+                change_summary="ambiguous draft",
+            )
+            db.commit()
+
+        with Session() as db:
+            with self.assertRaises(ConfigurationBootstrapError) as ctx:
+                ensure_initial_published_configuration(db)
+            db.rollback()
+            self.assertEqual(ctx.exception.code, "active_config_missing")
+            self.assertEqual(ctx.exception.revision_count, 1)
+            self.assertIsNone(db.get(ControlPlaneState, 1))
+            self.assertEqual(db.query(ControlPlaneConfigRevision).count(), 1)
+
+    def test_broken_active_pointer_is_not_auto_repaired(self) -> None:
+        Session = self._config_session()
+        with Session() as db:
+            db.add(ControlPlaneState(id=1, active_revision_id=str(uuid.uuid4())))
+            db.commit()
+
+        with Session() as db:
+            with self.assertRaises(ConfigurationBootstrapError) as ctx:
+                ensure_initial_published_configuration(db)
+            db.rollback()
+            self.assertEqual(ctx.exception.code, "active_config_revision_missing")
+            self.assertEqual(db.query(ControlPlaneConfigRevision).count(), 0)
+
+    def test_invalid_active_snapshot_fails_bootstrap_and_self_check(self) -> None:
+        Session = self._config_session()
+        with Session() as db:
+            revision = create_revision(
+                db,
+                content=load_latest_config(),
+                status="PUBLISHED",
+                actor=None,
+                change_summary="corrupt me",
+            )
+            db.add(ControlPlaneState(id=1, active_revision_id=revision.id))
+            db.flush()
+            revision.content_hash = "0" * 64
+            db.commit()
+
+        with Session() as db:
+            with self.assertRaises(ConfigurationBootstrapError) as ctx:
+                ensure_initial_published_configuration(db)
+            self.assertEqual(ctx.exception.code, "config_hash_mismatch")
+
+        check = published_configuration_installation_check(Session)
+        self.assertFalse(check.ok)
+        self.assertEqual(check.detail, "config_hash_mismatch")
+
+    def test_published_configuration_self_check_uses_runtime_snapshot_validation(self) -> None:
+        Session = self._config_session()
+        self.assertFalse(published_configuration_installation_check(Session).ok)
+
+        with Session() as db:
+            ensure_initial_published_configuration(db)
+            db.commit()
+
+        check = published_configuration_installation_check(Session)
+        self.assertTrue(check.ok)
 
     def _create_legacy_runtime_upgrade_tables(self, engine) -> None:  # noqa: ANN001
         with engine.begin() as connection:
@@ -565,6 +762,7 @@ class SetupOrchestrationTests(unittest.TestCase):
             ),
             patch("scripts.setup_local_environment.validate_internal_artifacts"),
             patch("scripts.setup_local_environment.initialize_database_schema") as initialize_db,
+            patch("scripts.setup_local_environment.ensure_published_configuration") as ensure_config,
             patch("scripts.setup_local_environment.bootstrap_initial_admin") as initial_admin,
             patch(
                 "scripts.setup_local_environment.installation_self_check",
@@ -597,7 +795,9 @@ class SetupOrchestrationTests(unittest.TestCase):
             ],
         )
         initialize_db.assert_called_once_with()
+        ensure_config.assert_called_once_with()
         initial_admin.assert_called_once_with(interactive=True)
+        self.assertIn("published_configuration", completed)
         self.assertIn("self_check", completed)
 
     def test_database_bootstrap_reuses_runtime_manager_and_existing_init_db(self) -> None:

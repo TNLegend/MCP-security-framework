@@ -17,6 +17,8 @@ from app.api.routes_runtime import router as runtime_router
 from app.api.routes_servers import router as servers_router
 from app.api.routes_tool_analysis import router as tool_analysis_router
 from app.api.routes_tools import router as tools_router
+from app.api.routes_upstream_oauth import router as upstream_oauth_router
+from app.api.routes_security_packs import router as security_packs_router
 from app.core.config import settings
 
 app = FastAPI(
@@ -46,6 +48,8 @@ app.include_router(internal_router, prefix=settings.api_prefix)
 app.include_router(inventory_router, prefix=settings.api_prefix)
 app.include_router(tool_analysis_router, prefix=settings.api_prefix)
 app.include_router(control_plane_auth_router, prefix=settings.api_prefix)
+app.include_router(upstream_oauth_router, prefix=settings.api_prefix)
+app.include_router(security_packs_router, prefix=settings.api_prefix)
 app.include_router(control_plane_users_router, prefix=settings.api_prefix)
 app.include_router(control_plane_config_router, prefix=settings.api_prefix)
 app.include_router(control_plane_tool_analysis_router, prefix=settings.api_prefix)

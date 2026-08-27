@@ -34,7 +34,9 @@ class GroqProvider(BaseLLMProvider):
         user_prompt: str,
         available_tools: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        prompt = build_tool_prompt(user_prompt, available_tools)
+        return self.generate_json(build_tool_prompt(user_prompt, available_tools))
+
+    def generate_json(self, prompt: str) -> dict[str, Any]:
         payload = {
             "model": self.model,
             "temperature": self.temperature,
@@ -64,7 +66,13 @@ class GroqProvider(BaseLLMProvider):
         if not isinstance(content, str) or not content.strip():
             raise LLMProviderError("Groq returned an empty response.")
 
-        return json.loads(_extract_json_object(content))
+        try:
+            result = json.loads(_extract_json_object(content))
+        except json.JSONDecodeError as exc:
+            raise LLMProviderError("Groq output was not valid JSON.") from exc
+        if not isinstance(result, dict):
+            raise LLMProviderError("Groq output was not a JSON object.")
+        return result
 
     def _post_json(self, payload: dict[str, Any]) -> dict[str, Any]:
         request = Request(

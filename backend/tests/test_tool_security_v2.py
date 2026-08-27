@@ -1,10 +1,13 @@
 import unittest
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
 from proxy.resource_adapters_v2 import AdapterRegistry, resolve_effect_facts
+from proxy.tool_request_preparation import prepare_tool_request_v2
 from proxy.tool_security_v2 import (
     AuthorityResourceScope,
+    FixedResourceReference,
     ReferencePrecision,
     ResourceBinding,
     ResourceTypeRegistry,
@@ -12,6 +15,7 @@ from proxy.tool_security_v2 import (
     SecurityModelError,
     SupportedSchemaProfileV1,
     ToolEffect,
+    ToolObservationApproval,
     ToolSecurityContract,
     validate_contract_for_schema,
     validate_scope,
@@ -93,7 +97,7 @@ class SupportedSchemaProfileTests(unittest.TestCase):
     def test_unsupported_or_unbounded_schema_is_rejected(self):
         for schema in (
             {"type": "object", "properties": {}, "additionalProperties": True},
-            {"type": "object", "properties": {}, "additionalProperties": False, "$ref": "x"},
+            {"$ref": "https://vendor.example/schema.json"},
             {
                 "type": "object",
                 "properties": {
@@ -120,6 +124,98 @@ class SupportedSchemaProfileTests(unittest.TestCase):
             with self.subTest(schema=schema):
                 with self.assertRaises(SecurityModelError):
                     SupportedSchemaProfileV1.validate(schema)
+
+    def test_conditional_action_selector_schema_is_rejected(self):
+        selectors = (
+            ("action", {"type": "string", "maxLength": 16, "enum": ["read", "export"]}),
+            ("verb", {"type": "string", "maxLength": 16, "enum": ["read", "delete"]}),
+            ("delete", {"type": "boolean"}),
+        )
+        for name, selector_schema in selectors:
+            with self.subTest(name=name), self.assertRaisesRegex(
+                SecurityModelError,
+                "conditional_selector_schema_unsupported",
+            ):
+                SupportedSchemaProfileV1.validate(
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            name: selector_schema,
+                            "path": {"type": "string", "maxLength": 4096},
+                        },
+                        "required": [name, "path"],
+                    }
+                )
+
+    def test_ordinary_string_enum_remains_supported(self):
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "format": {
+                    "type": "string",
+                    "maxLength": 16,
+                    "enum": ["json", "text"],
+                }
+            },
+            "required": ["format"],
+        }
+
+        self.assertEqual(SupportedSchemaProfileV1.validate(schema), (("format",),))
+
+    def test_local_defs_nullable_and_equivalent_unions_are_supported(self):
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "$defs": {
+                "destination": {"type": ["string", "null"], "maxLength": 512},
+            },
+            "properties": {
+                "url": {"$ref": "#/$defs/destination"},
+                "identifier": {
+                    "oneOf": [
+                        {"type": "string", "maxLength": 64},
+                        {"type": "integer", "minimum": 1, "maximum": 999999},
+                    ],
+                },
+            },
+            "required": ["url", "identifier"],
+        }
+
+        self.assertEqual(
+            SupportedSchemaProfileV1.validate(schema),
+            (("identifier",), ("url",)),
+        )
+
+    def test_ambiguous_union_and_recursive_ref_remain_fail_closed(self):
+        cases = (
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "target": {
+                        "anyOf": [
+                            {"type": "string", "maxLength": 64},
+                            {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {"id": {"type": "string", "maxLength": 64}},
+                                "required": ["id"],
+                            },
+                        ],
+                    },
+                },
+                "required": ["target"],
+            },
+            {
+                "$ref": "#/$defs/loop",
+                "$defs": {"loop": {"$ref": "#/$defs/loop"}},
+            },
+        )
+        for schema in cases:
+            with self.subTest(schema=schema), self.assertRaises(SecurityModelError):
+                SupportedSchemaProfileV1.validate(schema)
 
 
 class ContractAdmissionTests(unittest.TestCase):
@@ -183,6 +279,125 @@ class ContractAdmissionTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(SecurityModelError, "contract_path_not_in_schema"):
             validate_contract_for_schema(contract, send_email_schema())
+
+    def test_zero_argument_resource_tool_uses_fixed_reference(self):
+        schema = {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+        contract = ToolSecurityContract(
+            server_ref="files-a",
+            tool_name="list_files",
+            effects=(
+                ToolEffect(
+                    effect_id="list",
+                    capability="filesystem.list",
+                    fixed_resource=FixedResourceReference(
+                        resource_type="filesystem_path",
+                        canonical_value="fs.project_workspace",
+                    ),
+                ),
+            ),
+        )
+
+        resolutions = validate_contract_for_schema(contract, schema)
+        facts = resolve_effect_facts(
+            {},
+            contract.effects[0],
+            resolutions[0],
+            {
+                "authority": "files-a",
+                "resource_type_config": {"filesystem_path_mode": "RELATIVE_ROOTED"},
+            },
+        )
+
+        self.assertEqual(resolutions[0].adapter_id, "filesystem")
+        self.assertEqual(facts.bindings[0].path, ())
+        self.assertEqual(facts.bindings[0].occurrence_count, 1)
+        self.assertEqual(
+            facts.bindings[0].references[0].canonical_value,
+            "fs.project_workspace",
+        )
+
+    def test_invalid_multi_effect_request_does_not_keep_resolved_fixed_resource(self):
+        schema = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        }
+        contract = ToolSecurityContract(
+            server_ref="files-a",
+            tool_name="mixed_files",
+            effects=(
+                ToolEffect(
+                    effect_id="list",
+                    capability="filesystem.list",
+                    fixed_resource=FixedResourceReference(
+                        resource_type="filesystem_path",
+                        canonical_value="contracts",
+                    ),
+                ),
+                ToolEffect(
+                    effect_id="read",
+                    capability="filesystem.read",
+                    resource_bindings=(
+                        ResourceBinding(
+                            path=("path",),
+                            resource_type="filesystem_path",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        approval = ToolObservationApproval(
+            tool_observation_id=1,
+            server_ref="files-a",
+            upstream_protocol_profile_id="modern",
+            tool_fingerprint="a" * 64,
+            contract_hash=contract.contract_hash,
+            evidence_bundle_hash="b" * 64,
+            admin_id="admin",
+            approved_at="2026-01-01T00:00:00Z",
+            revision_id="revision-1",
+        )
+        resolutions = validate_contract_for_schema(contract, schema)
+        first_facts = resolve_effect_facts(
+            {"path": "contracts/a.txt"},
+            contract.effects[0],
+            resolutions[0],
+            {
+                "authority": "files-a",
+                "resource_type_config": {
+                    "filesystem_path_mode": "RELATIVE_ROOTED",
+                },
+            },
+        )
+        with patch(
+            "proxy.tool_request_preparation.resolve_effect_facts",
+            side_effect=[
+                first_facts,
+                SecurityModelError("filesystem_path_traversal"),
+            ],
+        ):
+            prepared = prepare_tool_request_v2(
+                raw_arguments={"path": "contracts/a.txt"},
+                input_schema=schema,
+                contract=contract,
+                adapter_resolutions=resolutions,
+                approval=approval,
+                authority_scopes=(),
+                authority_context={"filesystem_path_mode": "RELATIVE_ROOTED"},
+                client_protocol_profile_id="modern",
+                upstream_protocol_profile_id="modern",
+            )
+
+        self.assertFalse(prepared.arguments_valid)
+        self.assertTrue(prepared.validation_error_codes)
+        self.assertIsNone(prepared.canonical_resource)
+        self.assertEqual(prepared.arguments, {})
+        self.assertEqual(prepared.execution_arguments, {})
 
 
 class ResourceTypeAndAdapterTests(unittest.TestCase):
@@ -380,6 +595,82 @@ class ResourceTypeAndAdapterTests(unittest.TestCase):
         self.assertIs(first, same)
         self.assertIsNot(first, second)
         self.assertEqual(len(created), 2)
+
+    def test_legacy_upstream_pool_has_caps_and_closes_sessions(self):
+        from proxy.protocol_sessions import LegacyUpstreamSessionPool
+
+        class ClosableClient:
+            closed = 0
+
+            def close(self):
+                type(self).closed += 1
+
+        pool = LegacyUpstreamSessionPool(max_clients=1)
+        pool.get_or_create(
+            framework_session_id="agent-session-a",
+            server_id=1,
+            profile_id="legacy",
+            factory=ClosableClient,
+        )
+        with self.assertRaisesRegex(RuntimeError, "legacy_upstream_session_capacity_exceeded"):
+            pool.get_or_create(
+                framework_session_id="agent-session-b",
+                server_id=1,
+                profile_id="legacy",
+                factory=ClosableClient,
+            )
+        self.assertEqual(pool.close_framework_session("agent-session-a"), 1)
+        self.assertEqual(ClosableClient.closed, 1)
+
+        per_session_pool = LegacyUpstreamSessionPool(
+            max_clients=10,
+            max_clients_per_framework_session=1,
+        )
+        per_session_pool.get_or_create(
+            framework_session_id="agent-session-a",
+            server_id=1,
+            profile_id="legacy",
+            connection_context_hash="a",
+            factory=ClosableClient,
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "legacy_upstream_framework_session_capacity_exceeded",
+        ):
+            per_session_pool.get_or_create(
+                framework_session_id="agent-session-a",
+                server_id=2,
+                profile_id="legacy",
+                connection_context_hash="b",
+                factory=ClosableClient,
+            )
+
+    def test_legacy_upstream_pool_closes_expired_clients(self):
+        from proxy.protocol_sessions import LegacyUpstreamSessionPool
+
+        class ClosableClient:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        pool = LegacyUpstreamSessionPool(ttl_seconds=0)
+        first = pool.get_or_create(
+            framework_session_id="agent-session-a",
+            server_id=1,
+            profile_id="legacy",
+            factory=ClosableClient,
+        )
+        second = pool.get_or_create(
+            framework_session_id="agent-session-a",
+            server_id=1,
+            profile_id="legacy",
+            factory=ClosableClient,
+        )
+
+        self.assertTrue(first.closed)
+        self.assertIsNot(first, second)
 
 
 if __name__ == "__main__":

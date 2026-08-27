@@ -20,6 +20,7 @@ from app.services.mcp_discovery import MCPDiscoveryError, discover_http_mcp_serv
 from common.upstream_auth import (  # noqa: E402
     AUTH_MODE_BEARER,
     UpstreamAuthError,
+    delete_upstream_secret,
     resolve_upstream_bearer_token,
 )
 from proxy.http_mcp_client import MCPHttpClient, MCPHttpError  # noqa: E402
@@ -218,6 +219,21 @@ class UpstreamBearerAuthTests(unittest.TestCase):
     def test_secret_reference_cannot_escape_runtime_secret_root(self) -> None:
         with self.assertRaises(UpstreamAuthError):
             resolve_upstream_bearer_token(AUTH_MODE_BEARER, "../outside.token")
+
+    def test_delete_upstream_secret_is_idempotent_when_file_is_missing(self) -> None:
+        reference = "mcp/vendor/missing.token"
+        delete_upstream_secret(reference)
+        delete_upstream_secret(reference)
+
+    def test_delete_upstream_secret_removes_existing_secret(self) -> None:
+        target = self.secret_root / "mcp" / "vendor" / "service.token"
+        self.assertTrue(target.exists())
+        delete_upstream_secret("mcp/vendor/service.token")
+        self.assertFalse(target.exists())
+
+    def test_delete_upstream_secret_rejects_escaping_reference(self) -> None:
+        with self.assertRaisesRegex(UpstreamAuthError, "upstream_credential_ref_invalid"):
+            delete_upstream_secret("../outside.token")
 
     def test_public_inventory_schema_never_returns_credential_reference_or_secret(self) -> None:
         payload = {

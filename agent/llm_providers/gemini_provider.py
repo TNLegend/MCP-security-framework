@@ -35,7 +35,9 @@ class GeminiProvider(BaseLLMProvider):
         user_prompt: str,
         available_tools: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        prompt = build_tool_prompt(user_prompt, available_tools)
+        return self.generate_json(build_tool_prompt(user_prompt, available_tools))
+
+    def generate_json(self, prompt: str) -> dict[str, Any]:
         payload = {
             "contents": [
                 {
@@ -61,7 +63,13 @@ class GeminiProvider(BaseLLMProvider):
         if not isinstance(text, str) or not text.strip():
             raise LLMProviderError("Gemini returned an empty response.")
 
-        return json.loads(_extract_json_object(text))
+        try:
+            result = json.loads(_extract_json_object(text))
+        except json.JSONDecodeError as exc:
+            raise LLMProviderError("Gemini output was not valid JSON.") from exc
+        if not isinstance(result, dict):
+            raise LLMProviderError("Gemini output was not a JSON object.")
+        return result
 
     def _post_json(self, payload: dict[str, Any]) -> dict[str, Any]:
         model = quote(self.model, safe="")

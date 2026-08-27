@@ -97,6 +97,11 @@ class ControlPlaneState(Base):
         ForeignKey("control_plane_config_revisions.id"),
         nullable=True,
     )
+    last_revision_number: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,

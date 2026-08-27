@@ -14,6 +14,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.runtime_paths import configure_runtime_environment  # noqa: E402
+from app.db.init_db import init_db  # noqa: E402
 from common.project_environment import load_project_environment  # noqa: E402
 
 load_project_environment()
@@ -39,6 +40,7 @@ def main() -> int:
         if database.status != "healthy":
             print(json.dumps({"ready": False, "database": database.as_dict()}, indent=2))
             return 1
+        init_db()
 
         opa = manager.ensure_opa(auto_start=True)
         if opa.status != "healthy":

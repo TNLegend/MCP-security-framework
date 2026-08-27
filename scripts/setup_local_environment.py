@@ -64,6 +64,7 @@ class SetupOptions:
     skip_service_identities: bool = False
     skip_local_idp: bool = False
     skip_database: bool = False
+    skip_config: bool = False
     skip_admin: bool = False
     skip_self_check: bool = False
 
@@ -193,6 +194,10 @@ def run_post_dependency_setup(
         initialize_database_schema()
         completed.append("database_schema")
 
+    if not options.skip_database and not options.skip_config:
+        ensure_published_configuration()
+        completed.append("published_configuration")
+
     if not options.skip_admin:
         bootstrap_initial_admin(interactive=not options.non_interactive)
         completed.append("initial_admin")
@@ -222,6 +227,33 @@ def initialize_database_schema() -> None:
         init_db()
     finally:
         manager.shutdown()
+
+
+def ensure_published_configuration() -> None:
+    from scripts.import_control_plane_config import (
+        ConfigurationBootstrapError,
+        bootstrap_initial_published_configuration,
+    )
+
+    try:
+        bootstrap_initial_published_configuration()
+    except ConfigurationBootstrapError as exc:
+        detail = (
+            "Published Control Plane configuration is unavailable and automatic "
+            "bootstrap was refused. "
+            f"reason={exc.code}; revision_count={exc.revision_count}"
+        )
+        if exc.revisions:
+            safe_revisions = [
+                {
+                    "revision_number": revision["revision_number"],
+                    "status": revision["status"],
+                    "schema_version": revision["schema_version"],
+                }
+                for revision in exc.revisions
+            ]
+            detail += f"; revisions={safe_revisions}"
+        raise RuntimeError(detail) from exc
 
 
 def bootstrap_initial_admin(*, interactive: bool) -> None:
@@ -284,6 +316,11 @@ def installation_self_check(*, check_database: bool = True) -> list[Installation
 
         schema_ok = False
         admin_ok = False
+        published_configuration_check = InstallationCheck(
+            "Published configuration",
+            False,
+            "database_unavailable",
+        )
         if database_ok:
             try:
                 inspector = inspect(engine)
@@ -294,6 +331,7 @@ def installation_self_check(*, check_database: bool = True) -> list[Installation
             except Exception:
                 schema_ok = False
             if schema_ok:
+                published_configuration_check = published_configuration_installation_check()
                 try:
                     with SessionLocal() as db:
                         admin_count = int(
@@ -308,13 +346,40 @@ def installation_self_check(*, check_database: bool = True) -> list[Installation
                     admin_ok = admin_count >= 1
                 except Exception:
                     admin_ok = False
+            else:
+                published_configuration_check = InstallationCheck(
+                    "Published configuration",
+                    False,
+                    "schema_unavailable",
+                )
         checks.extend(
             [
                 InstallationCheck("DB schema", schema_ok),
+                published_configuration_check,
                 InstallationCheck("Initial ADMIN", admin_ok),
             ]
         )
     return checks
+
+
+def published_configuration_installation_check(
+    session_factory=None,  # noqa: ANN001
+) -> InstallationCheck:
+    from app.db.database import SessionLocal
+    from app.services.published_configuration import (
+        PublishedConfigurationError,
+        PublishedConfigurationProvider,
+    )
+
+    factory = session_factory or SessionLocal
+    try:
+        with factory() as db:
+            PublishedConfigurationProvider(db).load_active_snapshot()
+    except PublishedConfigurationError as exc:
+        return InstallationCheck("Published configuration", False, exc.code)
+    except Exception:
+        return InstallationCheck("Published configuration", False, "unavailable")
+    return InstallationCheck("Published configuration", True)
 
 
 def _runtime_calls_schema_ok(inspector) -> bool:  # noqa: ANN001
@@ -421,6 +486,7 @@ def _parse_options(argv: Sequence[str] | None) -> SetupOptions:
         "service-identities",
         "local-idp",
         "database",
+        "config",
         "admin",
         "self-check",
     ):

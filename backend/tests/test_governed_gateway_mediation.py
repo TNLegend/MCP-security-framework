@@ -111,7 +111,7 @@ class GovernedBackend:
     def list_tools(self):
         return [self.find_tool(1, "send_email")]
 
-    def find_tool(self, server_id: int, tool_name: str):
+    def find_tool(self, server_id: int, tool_name: str, upstream_protocol_profile_id: str | None = None):
         if server_id != 1 or tool_name != "send_email":
             return None
         return {

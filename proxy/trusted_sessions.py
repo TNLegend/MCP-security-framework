@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 import sys
 
@@ -49,6 +50,7 @@ class TrustedSessionManager:
                 identity_subject=external_identity.subject,
                 identity_binding_revision=identity_binding.revision,
                 external_token_id=external_identity.token_id,
+                external_expires_at=external_identity.expires_at,
                 db=db,
             )
         except TrustedSessionError:
@@ -86,3 +88,26 @@ class TrustedSessionManager:
             identity_subject=verified.identity_subject,
             identity_binding_revision=verified.identity_binding_revision,
         )
+
+
+def direct_bearer_session(
+    *,
+    external_identity: VerifiedExternalIdentity,
+    identity_binding: ResolvedIdentityBinding,
+) -> ProxyTrustedSession:
+    reference_material = "\0".join(
+        (
+            external_identity.issuer,
+            external_identity.subject,
+            external_identity.token_id,
+        )
+    )
+    session_reference = f"bearer_{sha256(reference_material.encode('utf-8')).hexdigest()[:32]}"
+    return ProxyTrustedSession(
+        session_reference=session_reference,
+        session_token=None,
+        agent_id=identity_binding.agent_id,
+        identity_issuer=external_identity.issuer,
+        identity_subject=external_identity.subject,
+        identity_binding_revision=identity_binding.revision,
+    )

@@ -36,6 +36,7 @@ MAX_PROBE_RESPONSE_BYTES = 262_144
 DEFAULT_PROBE_TIMEOUT_SECONDS = 3.0
 DEFAULT_REDISCOVERY_INTERVAL_SECONDS = 900
 MCP_ACCEPT_HEADER = "application/json, text/event-stream"
+MCP_CLIENT_USER_AGENT = "MCP-Security-Framework/1.0"
 
 
 class ProtocolNegotiationError(Exception):
@@ -90,9 +91,9 @@ class ProtocolNegotiator:
         self.timeout_seconds = timeout_seconds
         self.max_response_bytes = max_response_bytes
         self.allow_local_lab = allow_local_lab
-        self._upstream_headers = (
-            {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
-        )
+        self._upstream_headers = {"User-Agent": MCP_CLIENT_USER_AGENT}
+        if bearer_token:
+            self._upstream_headers["Authorization"] = f"Bearer {bearer_token}"
         self._opener = build_opener(NoRedirectHandler)
         self.revision_registry = ProtocolRevisionRegistry()
         self.profile_registry = ProtocolProfileRegistry()

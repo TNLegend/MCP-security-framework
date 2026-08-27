@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import threading
 import unittest
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -445,6 +446,11 @@ class V2Snapshot:
 
     def __init__(self) -> None:
         self.approved_profiles = {MODERN_PROFILE_ID, LEGACY_PROFILE_ID}
+        self.content = SimpleNamespace(
+            capability_catalog_version="2",
+            resource_type_registry_version="2",
+            security_packs=(),
+        )
 
     def resolve(self, *, issuer: str, subject: str):
         return ResolvedIdentityBinding(agent_id=subject, revision=self.content_hash)
@@ -561,7 +567,7 @@ class IntegratedBackend:
     def list_tools(self):
         return [self.find_tool(1, "send_email")]
 
-    def find_tool(self, _server_id: int, tool_name: str):
+    def find_tool(self, _server_id: int, tool_name: str, upstream_protocol_profile_id: str | None = None):
         if tool_name != "send_email":
             return None
         return {

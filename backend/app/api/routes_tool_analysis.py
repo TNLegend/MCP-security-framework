@@ -91,12 +91,11 @@ def tool_findings(
     db: Session = Depends(get_db),
 ):
     _tool_or_404(tool_id, db)
-    analysis_ids = [
-        analysis.id
-        for analysis in db.scalars(
+    analysis_ids = list(
+        db.scalars(
             select(ToolAnalysis.id).where(ToolAnalysis.tool_id == tool_id)
         ).all()
-    ]
+    )
     if not analysis_ids:
         return []
     findings = db.scalars(
@@ -126,6 +125,7 @@ def tool_baseline(
         "analysis_id": baseline.analysis_id,
         "fingerprint": baseline.fingerprint,
         "analysis_context_hash": baseline.analysis_context_hash,
+        "approval_source": baseline.approval_source,
         "reviewer": baseline.reviewer,
         "justification": baseline.justification,
         "analyzer_revision": baseline.analyzer_revision,
