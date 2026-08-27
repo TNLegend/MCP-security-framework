@@ -18,3 +18,12 @@ test("tool onboarding keeps pack contract publication and reanalysis in one flow
   assert.match(source, /reanalyzeToolContract/);
   assert.match(source, /Publish & reanalyse/);
 });
+
+test("advanced onboarding exposes effects constraints roles and typed scopes", () => {
+  assert.match(source, /templateEffects\(selectedTemplate\)/);
+  assert.match(source, /selectedConstraints/);
+  assert.match(source, /binding\.role \|\| "RESOURCE"/);
+  assert.match(source, /resource_type: resourceType/);
+  assert.match(source, /Authorized scope \(\{resourceType\}\)/);
+  assert.match(source, /resultControlLabel/);
+});

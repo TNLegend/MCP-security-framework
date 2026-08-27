@@ -14,6 +14,7 @@ class TemplateSuggestionPublic(BaseModel):
     title: str
     description: str
     capability: str
+    capabilities: tuple[str, ...] = ()
     confidence: float = Field(ge=0, le=1)
     argument_mappings: dict[str, tuple[str, ...]]
     missing_bindings: tuple[str, ...] = ()
@@ -41,6 +42,7 @@ class SecurityPackCatalogPublic(BaseModel):
 
 class ContractScopeInput(BaseModel):
     scope_id: str = Field(min_length=1, max_length=128)
+    resource_type: str | None = Field(default=None, min_length=1, max_length=128)
     canonical_value: str = Field(min_length=1, max_length=4096)
     match_mode: Literal["SELF", "SUBTREE"] = "SELF"
     broad_scope_acknowledged: StrictBool = False

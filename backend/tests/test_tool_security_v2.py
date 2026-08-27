@@ -4,9 +4,12 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 from proxy.resource_adapters_v2 import AdapterRegistry, resolve_effect_facts
+from proxy.security_packs import PackCapability, PackResourceType, SecurityPackManifest
 from proxy.tool_request_preparation import prepare_tool_request_v2
 from proxy.tool_security_v2 import (
+    ArgumentConstraint,
     AuthorityResourceScope,
+    CapabilityCatalog,
     FixedResourceReference,
     ReferencePrecision,
     ResourceBinding,
@@ -51,6 +54,104 @@ def send_email_contract():
             ),
         ),
         unbound_arguments=(("subject",), ("body",)),
+    )
+
+
+def transfer_pack():
+    resource = PackResourceType(
+        id="lot3_account",
+        canonicalizer="hierarchical_name",
+        hierarchy_support=True,
+        allowed_matching_modes=("SELF", "SUBTREE"),
+        adapter_id="generic-declarative",
+    )
+    return SecurityPackManifest(
+        id="lot3-transfer",
+        version="1.0.0",
+        title="Lot 3 Transfer",
+        description="Advanced multi-effect transfer pack",
+        origin="DECLARATIVE",
+        capabilities=(
+            PackCapability(
+                id="lot3_transfer.debit",
+                domain="lot3_transfer",
+                verb="debit",
+                destructive=True,
+                external_effect=True,
+                allowed_resource_types=(resource.id,),
+            ),
+            PackCapability(
+                id="lot3_transfer.credit",
+                domain="lot3_transfer",
+                verb="credit",
+                external_effect=True,
+                allowed_resource_types=(resource.id,),
+            ),
+        ),
+        resource_types=(resource,),
+    )
+
+
+def transfer_schema():
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "source_account": {"type": "string", "maxLength": 128},
+            "destination_account": {"type": "string", "maxLength": 128},
+            "amount": {"type": "number", "minimum": 0, "maximum": 1000000},
+        },
+        "required": ["source_account", "destination_account", "amount"],
+    }
+
+
+def transfer_contract():
+    return ToolSecurityContract(
+        server_ref="transfer-a",
+        tool_name="transfer_payment",
+        effects=(
+            ToolEffect(
+                effect_id="debit",
+                capability="lot3_transfer.debit",
+                resource_bindings=(
+                    ResourceBinding(
+                        path=("source_account",),
+                        resource_type="lot3_account",
+                        role="SOURCE",
+                    ),
+                ),
+            ),
+            ToolEffect(
+                effect_id="credit",
+                capability="lot3_transfer.credit",
+                resource_bindings=(
+                    ResourceBinding(
+                        path=("destination_account",),
+                        resource_type="lot3_account",
+                        role="DESTINATION",
+                    ),
+                ),
+            ),
+        ),
+        argument_constraints=(
+            ArgumentConstraint(
+                constraint_id="amount-limit",
+                path=("amount",),
+                operator="LE",
+                value=500,
+            ),
+        ),
+        unbound_arguments=(("amount",),),
+    )
+
+
+def transfer_resolutions(contract, pack):
+    return validate_contract_for_schema(
+        contract,
+        transfer_schema(),
+        capability_catalog=CapabilityCatalog(security_packs=(pack,)),
+        resource_type_registry=ResourceTypeRegistry(security_packs=(pack,)),
+        adapter_resolver=AdapterRegistry(security_packs=(pack,)),
     )
 
 
@@ -216,6 +317,48 @@ class SupportedSchemaProfileTests(unittest.TestCase):
         for schema in cases:
             with self.subTest(schema=schema), self.assertRaises(SecurityModelError):
                 SupportedSchemaProfileV1.validate(schema)
+
+
+class ContractHashCompatibilityTests(unittest.TestCase):
+    def test_lot3_neutral_defaults_preserve_historical_contract_hash(self):
+        historical = {
+            "contract_version": "2",
+            "server_ref": "streamable_http:http://127.0.0.1:9000/mcp",
+            "tool_name": "read_file",
+            "effects": [
+                {
+                    "effect_id": "tool-1.filesystem.read",
+                    "capability": "filesystem.read",
+                    "resource_bindings": [
+                        {
+                            "path": ["path"],
+                            "resource_type": "filesystem_path",
+                        }
+                    ],
+                    "fixed_resource": None,
+                    "max_resource_cardinality": 100,
+                    "declared_reference_precision": "EXPLICIT",
+                }
+            ],
+            "unbound_arguments": [],
+        }
+        contract = ToolSecurityContract.model_validate(historical)
+        self.assertEqual(
+            contract.contract_hash,
+            "ef5188e981b4d5e5289a384af01ee330084279d74aff305034bb6e5baca84de0",
+        )
+        self.assertNotIn("argument_constraints", contract.contract_hash_payload())
+        self.assertNotIn("result_control", contract.contract_hash_payload())
+        self.assertNotIn(
+            "role",
+            contract.contract_hash_payload()["effects"][0]["resource_bindings"][0],
+        )
+
+    def test_advanced_security_semantics_change_contract_hash(self):
+        base = transfer_contract()
+        advanced_hash = base.contract_hash
+        without_constraint = base.model_copy(update={"argument_constraints": ()})
+        self.assertNotEqual(advanced_hash, without_constraint.contract_hash)
 
 
 class ContractAdmissionTests(unittest.TestCase):
@@ -398,6 +541,90 @@ class ContractAdmissionTests(unittest.TestCase):
         self.assertIsNone(prepared.canonical_resource)
         self.assertEqual(prepared.arguments, {})
         self.assertEqual(prepared.execution_arguments, {})
+
+
+class ArgumentConstraintRuntimeTests(unittest.TestCase):
+    def _prepare(self, amount):
+        pack = transfer_pack()
+        contract = transfer_contract()
+        approval = ToolObservationApproval(
+            tool_observation_id=1,
+            server_ref="transfer-a",
+            upstream_protocol_profile_id="modern",
+            tool_fingerprint="a" * 64,
+            contract_hash=contract.contract_hash,
+            evidence_bundle_hash="b" * 64,
+            admin_id="admin",
+            approved_at="2026-01-01T00:00:00Z",
+            revision_id="revision-1",
+        )
+        return prepare_tool_request_v2(
+            raw_arguments={
+                "source_account": "account/source",
+                "destination_account": "account/destination",
+                "amount": amount,
+            },
+            input_schema=transfer_schema(),
+            contract=contract,
+            adapter_resolutions=transfer_resolutions(contract, pack),
+            approval=approval,
+            authority_scopes=(),
+            authority_context={},
+            client_protocol_profile_id="modern",
+            upstream_protocol_profile_id="modern",
+            security_packs=(pack,),
+        )
+
+    def test_multi_effect_request_under_limit_resolves_both_effects(self):
+        prepared = self._prepare(100)
+        self.assertTrue(prepared.arguments_valid)
+        self.assertEqual(prepared.validation_error_codes, ())
+        self.assertEqual(
+            {effect["capability_id"] for effect in prepared.normalized_facts["effects"]},
+            {"lot3_transfer.debit", "lot3_transfer.credit"},
+        )
+        roles = {
+            effect["bindings"][0]["role"]
+            for effect in prepared.normalized_facts["effects"]
+        }
+        self.assertEqual(roles, {"SOURCE", "DESTINATION"})
+
+    def test_constraint_violation_fails_closed_before_effect_resolution(self):
+        with patch(
+            "proxy.tool_request_preparation.resolve_effect_facts"
+        ) as resolver:
+            prepared = self._prepare(1000)
+        self.assertFalse(prepared.arguments_valid)
+        self.assertIn(
+            "argument_constraint_failed:amount-limit",
+            prepared.validation_error_codes,
+        )
+        self.assertEqual(prepared.arguments, {})
+        self.assertEqual(prepared.execution_arguments, {})
+        resolver.assert_not_called()
+
+    def test_constraint_path_outside_schema_is_rejected(self):
+        contract = transfer_contract().model_copy(
+            update={
+                "argument_constraints": (
+                    ArgumentConstraint(
+                        constraint_id="unknown-field",
+                        path=("missing",),
+                        operator="EQ",
+                        value="x",
+                    ),
+                )
+            }
+        )
+        pack = transfer_pack()
+        with self.assertRaisesRegex(SecurityModelError, "constraint_path_not_in_schema"):
+            validate_contract_for_schema(
+                contract,
+                transfer_schema(),
+                capability_catalog=CapabilityCatalog(security_packs=(pack,)),
+                resource_type_registry=ResourceTypeRegistry(security_packs=(pack,)),
+                adapter_resolver=AdapterRegistry(security_packs=(pack,)),
+            )
 
 
 class ResourceTypeAndAdapterTests(unittest.TestCase):

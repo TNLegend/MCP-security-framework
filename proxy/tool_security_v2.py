@@ -96,9 +96,25 @@ PRECISION_RANK = {
 }
 
 
+def _constraint_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _constraint_scalar(value: Any) -> bool:
+    return (
+        isinstance(value, (str, bool))
+        or _constraint_number(value)
+    )
+
+
 class ResourceBinding(BaseModel):
     path: tuple[str, ...]
     resource_type: str = Field(min_length=1, max_length=128)
+    role: Literal["RESOURCE", "SOURCE", "DESTINATION"] = "RESOURCE"
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -119,6 +135,74 @@ class ResourceBinding(BaseModel):
 class FixedResourceReference(BaseModel):
     resource_type: str = Field(min_length=1, max_length=128)
     canonical_value: str = Field(min_length=1, max_length=4096)
+    role: Literal["RESOURCE", "SOURCE", "DESTINATION"] = "RESOURCE"
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ArgumentConstraint(BaseModel):
+    constraint_id: str = Field(min_length=1, max_length=128)
+    path: tuple[str, ...]
+    operator: Literal[
+        "EQ",
+        "NE",
+        "LT",
+        "LE",
+        "GT",
+        "GE",
+        "IN",
+        "NOT_IN",
+        "MAX_OCCURRENCES",
+    ]
+    value: Any
+    required: StrictBool = True
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @field_validator("constraint_id")
+    @classmethod
+    def validate_constraint_id(cls, value: str) -> str:
+        if not IDENTIFIER_PATTERN.fullmatch(value):
+            raise ValueError("invalid argument constraint id")
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def validate_constraint_path(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        validate_binding_tokens(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_constraint_value(self) -> "ArgumentConstraint":
+        scalar = _constraint_scalar(self.value)
+        if self.operator in {"EQ", "NE"}:
+            if not scalar:
+                raise ValueError("equality constraint requires a scalar value")
+        elif self.operator in {"LT", "LE", "GT", "GE"}:
+            if not _constraint_number(self.value):
+                raise ValueError("ordered constraint requires a finite number")
+        elif self.operator in {"IN", "NOT_IN"}:
+            if (
+                not isinstance(self.value, (list, tuple))
+                or not self.value
+                or len(self.value) > 100
+                or not all(_constraint_scalar(item) for item in self.value)
+            ):
+                raise ValueError("membership constraint requires bounded scalar values")
+        elif self.operator == "MAX_OCCURRENCES":
+            if (
+                not isinstance(self.value, int)
+                or isinstance(self.value, bool)
+                or self.value < 0
+                or self.value > MAX_RESOURCE_CARDINALITY
+            ):
+                raise ValueError("max occurrences constraint requires a bounded integer")
+        return self
+
+
+class ResultControl(BaseModel):
+    classification: Literal["UNSPECIFIED", "INTERNAL", "SENSITIVE", "SECRET"] = "UNSPECIFIED"
+    track_for_exfiltration: StrictBool = False
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -151,6 +235,8 @@ class ToolSecurityContract(BaseModel):
     server_ref: str = Field(min_length=1, max_length=512)
     tool_name: str = Field(min_length=1, max_length=255)
     effects: tuple[ToolEffect, ...] = Field(min_length=1)
+    argument_constraints: tuple[ArgumentConstraint, ...] = ()
+    result_control: ResultControl = ResultControl()
     unbound_arguments: tuple[tuple[str, ...], ...] = ()
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -172,18 +258,45 @@ class ToolSecurityContract(BaseModel):
         effect_ids = [effect.effect_id for effect in self.effects]
         if len(effect_ids) != len(set(effect_ids)):
             raise ValueError("effect ids must be unique.")
-        bound_paths = [
-            binding.path
-            for effect in self.effects
-            for binding in effect.resource_bindings
-        ]
-        if len(bound_paths) != len(set(bound_paths)):
-            raise ValueError("resource binding paths must be unique across effects.")
+        constraint_ids = [value.constraint_id for value in self.argument_constraints]
+        if len(constraint_ids) != len(set(constraint_ids)):
+            raise ValueError("argument constraint ids must be unique.")
+        resource_types_by_path: dict[tuple[str, ...], str] = {}
+        for effect in self.effects:
+            effect_paths = [binding.path for binding in effect.resource_bindings]
+            if len(effect_paths) != len(set(effect_paths)):
+                raise ValueError("resource binding paths must be unique within an effect.")
+            for binding in effect.resource_bindings:
+                existing_type = resource_types_by_path.get(binding.path)
+                if existing_type is not None and existing_type != binding.resource_type:
+                    raise ValueError(
+                        "resource binding path cannot use different resource types across effects."
+                    )
+                resource_types_by_path[binding.path] = binding.resource_type
         return self
+
+    def contract_hash_payload(self) -> dict[str, Any]:
+        payload = self.model_dump(mode="json")
+        if not payload.get("argument_constraints"):
+            payload.pop("argument_constraints", None)
+        result_control = payload.get("result_control")
+        if result_control == {
+            "classification": "UNSPECIFIED",
+            "track_for_exfiltration": False,
+        }:
+            payload.pop("result_control", None)
+        for effect in payload.get("effects", []):
+            for binding in effect.get("resource_bindings", []):
+                if binding.get("role") == "RESOURCE":
+                    binding.pop("role", None)
+            fixed_resource = effect.get("fixed_resource")
+            if isinstance(fixed_resource, dict) and fixed_resource.get("role") == "RESOURCE":
+                fixed_resource.pop("role", None)
+        return payload
 
     @property
     def contract_hash(self) -> str:
-        return sha256_canonical_json(self.model_dump(mode="json"))
+        return sha256_canonical_json(self.contract_hash_payload())
 
 
 class AuthorityResourceScope(BaseModel):
@@ -250,6 +363,7 @@ class NormalizedBindingFacts(BaseModel):
     path: tuple[str, ...]
     status: Literal["resolved", "missing", "invalid", "truncated", "error"]
     resource_type: str
+    role: Literal["RESOURCE", "SOURCE", "DESTINATION"] = "RESOURCE"
     occurrence_count: int = Field(ge=0, strict=True)
     truncated: StrictBool = False
     references: tuple[ClaimedResourceReference, ...] = ()
@@ -701,11 +815,14 @@ def validate_contract_for_schema(
         for binding in effect.resource_bindings
     }
     unbound_paths = set(contract.unbound_arguments)
+    constraint_paths = {constraint.path for constraint in contract.argument_constraints}
     if bound_paths.intersection(unbound_paths):
         raise SecurityModelError("argument_bound_and_unbound")
     unknown = (bound_paths | unbound_paths) - schema_paths
     if unknown:
         raise SecurityModelError("contract_path_not_in_schema")
+    if constraint_paths - schema_paths:
+        raise SecurityModelError("constraint_path_not_in_schema")
     if schema_paths != bound_paths | unbound_paths:
         raise SecurityModelError("unaccounted_schema_argument")
 

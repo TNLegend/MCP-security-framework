@@ -48,10 +48,12 @@ from proxy.security_packs import (
 )
 from common.mcp_endpoint import server_ref_for_server
 from proxy.tool_security_v2 import (
+    ArgumentConstraint,
     AuthorityResourceScope,
     FixedResourceReference,
     ReferencePrecision,
     ResourceBinding,
+    ResultControl,
     ScopeMatchMode,
     SupportedSchemaProfileV1,
     ToolEffect,
@@ -175,7 +177,8 @@ def suggest_templates_for_tool(
                 "template_id": template.id,
                 "title": template.title,
                 "description": template.description,
-                "capability": template.capability,
+                "capability": _template_primary_capability(template),
+                "capabilities": _template_capabilities(template),
                 "confidence": round(confidence, 2),
                 "argument_mappings": mappings,
                 "missing_bindings": tuple(missing),
@@ -205,8 +208,25 @@ def suggest_template_with_ai(
         {
             "template_id": template.id,
             "pack_id": pack.id,
-            "capability": template.capability,
+            "capability": _template_primary_capability(template),
+            "capabilities": _template_capabilities(template),
             "description": template.description,
+            "effects": [
+                {
+                    "key": effect.key,
+                    "capability": effect.capability,
+                    "bindings": [
+                        {
+                            "key": binding.key,
+                            "resource_type": binding.resource_type,
+                            "required": binding.required,
+                            "argument_hints": binding.argument_hints,
+                        }
+                        for binding in effect.bindings
+                    ],
+                }
+                for effect in _template_effects(template)
+            ],
             "bindings": [
                 {
                     "key": binding.key,
@@ -214,7 +234,16 @@ def suggest_template_with_ai(
                     "required": binding.required,
                     "argument_hints": binding.argument_hints,
                 }
-                for binding in template.bindings
+                for binding in _template_bindings(template)
+            ],
+            "constraints": [
+                {
+                    "key": constraint.key,
+                    "operator": constraint.operator,
+                    "required": constraint.required,
+                    "argument_hints": constraint.argument_hints,
+                }
+                for constraint in template.constraints
             ],
         }
         for pack, template in registry.templates()
@@ -247,15 +276,15 @@ def suggest_template_with_ai(
             suggestion = _AISuggestion.model_validate(raw)
             pack, template = registry.template(suggestion.template_id)
             schema_paths = set(_schema_paths(tool.input_schema))
-            expected_bindings = {binding.key for binding in template.bindings}
-            if set(suggestion.argument_mappings) - expected_bindings:
+            expected_mappings = {value.key for value in _template_mapping_specs(template)}
+            if set(suggestion.argument_mappings) - expected_mappings:
                 raise SecurityPackOnboardingError("ai_unknown_template_binding")
             if any(path not in schema_paths for path in suggestion.argument_mappings.values()):
                 raise SecurityPackOnboardingError("ai_mapping_path_not_in_schema")
             missing = tuple(
-                binding.key
-                for binding in template.bindings
-                if binding.required and binding.key not in suggestion.argument_mappings
+                value.key
+                for value in _template_mapping_specs(template)
+                if value.required and value.key not in suggestion.argument_mappings
             )
             return {
                 "pack_id": pack.id,
@@ -263,7 +292,8 @@ def suggest_template_with_ai(
                 "template_id": template.id,
                 "title": template.title,
                 "description": template.description,
-                "capability": template.capability,
+                "capability": _template_primary_capability(template),
+                "capabilities": _template_capabilities(template),
                 "confidence": suggestion.confidence,
                 "argument_mappings": suggestion.argument_mappings,
                 "missing_bindings": missing,
@@ -790,6 +820,30 @@ def _pack_for_contract(
     )
 
 
+def _template_effects(template: ToolContractTemplate):
+    return template.resolved_effects()
+
+
+def _template_bindings(template: ToolContractTemplate):
+    return tuple(
+        binding
+        for effect in _template_effects(template)
+        for binding in effect.bindings
+    )
+
+
+def _template_mapping_specs(template: ToolContractTemplate):
+    return (*_template_bindings(template), *template.constraints)
+
+
+def _template_capabilities(template: ToolContractTemplate) -> tuple[str, ...]:
+    return tuple(effect.capability for effect in _template_effects(template))
+
+
+def _template_primary_capability(template: ToolContractTemplate) -> str:
+    return _template_capabilities(template)[0]
+
+
 def _build_contract(
     *,
     tool: MCPTool,
@@ -799,50 +853,96 @@ def _build_contract(
     fixed_resources: dict[str, str],
     schema_paths: set[tuple[str, ...]],
 ) -> ToolSecurityContract:
-    expected_keys = {binding.key for binding in template.bindings}
-    if set(mappings) - expected_keys or set(fixed_resources) - expected_keys:
+    template_effects = _template_effects(template)
+    resource_keys = {binding.key for binding in _template_bindings(template)}
+    mapping_keys = {value.key for value in _template_mapping_specs(template)}
+    if set(mappings) - mapping_keys or set(fixed_resources) - resource_keys:
         raise SecurityPackOnboardingError("unknown_template_binding")
-    resource_bindings: list[ResourceBinding] = []
-    fixed_resource: FixedResourceReference | None = None
+
     bound_paths: set[tuple[str, ...]] = set()
-    for binding in template.bindings:
-        path = mappings.get(binding.key)
-        fixed = fixed_resources.get(binding.key)
-        if path and fixed:
-            raise SecurityPackOnboardingError("binding_resource_source_ambiguous")
-        if path:
-            if path not in schema_paths:
-                raise SecurityPackOnboardingError("contract_path_not_in_schema")
-            resource_bindings.append(
-                ResourceBinding(path=path, resource_type=binding.resource_type)
+    effects: list[ToolEffect] = []
+    for template_effect in template_effects:
+        resource_bindings: list[ResourceBinding] = []
+        fixed_resource: FixedResourceReference | None = None
+        effect_fixed_keys: list[str] = []
+        for binding in template_effect.bindings:
+            path = mappings.get(binding.key)
+            fixed = fixed_resources.get(binding.key)
+            if path and fixed:
+                raise SecurityPackOnboardingError("binding_resource_source_ambiguous")
+            if path:
+                if path not in schema_paths:
+                    raise SecurityPackOnboardingError("contract_path_not_in_schema")
+                resource_bindings.append(
+                    ResourceBinding(
+                        path=path,
+                        resource_type=binding.resource_type,
+                        role=binding.role,
+                    )
+                )
+                bound_paths.add(path)
+            elif fixed:
+                effect_fixed_keys.append(binding.key)
+                fixed_resource = FixedResourceReference(
+                    resource_type=binding.resource_type,
+                    canonical_value=fixed,
+                    role=binding.role,
+                )
+            elif binding.required:
+                raise SecurityPackOnboardingError("required_template_binding_missing")
+
+        if effect_fixed_keys and (
+            len(effect_fixed_keys) != 1
+            or resource_bindings
+            or len(template_effect.bindings) != 1
+        ):
+            raise SecurityPackOnboardingError("fixed_resource_multi_binding_unsupported")
+
+        if template.effects:
+            effect_id = f"tool-{tool.id}.{template_effect.key}"
+        else:
+            effect_id = f"tool-{tool.id}.{template_effect.capability}"
+        effects.append(
+            ToolEffect(
+                effect_id=effect_id,
+                capability=template_effect.capability,
+                resource_bindings=tuple(resource_bindings),
+                fixed_resource=fixed_resource,
+                max_resource_cardinality=template_effect.max_resource_cardinality,
+                declared_reference_precision=ReferencePrecision(
+                    template_effect.declared_reference_precision
+                ),
             )
-            bound_paths.add(path)
-        elif fixed:
-            if len(template.bindings) != 1:
-                raise SecurityPackOnboardingError("fixed_resource_multi_binding_unsupported")
-            fixed_resource = FixedResourceReference(
-                resource_type=binding.resource_type,
-                canonical_value=fixed,
+        )
+
+    argument_constraints: list[ArgumentConstraint] = []
+    for constraint in template.constraints:
+        path = mappings.get(constraint.key)
+        if path is None:
+            if constraint.required:
+                raise SecurityPackOnboardingError("required_template_constraint_missing")
+            continue
+        if path not in schema_paths:
+            raise SecurityPackOnboardingError("contract_path_not_in_schema")
+        argument_constraints.append(
+            ArgumentConstraint(
+                constraint_id=f"tool-{tool.id}.{constraint.key}",
+                path=path,
+                operator=constraint.operator,
+                value=constraint.value,
+                required=constraint.required,
             )
-        elif binding.required:
-            raise SecurityPackOnboardingError("required_template_binding_missing")
+        )
+
     unbound = tuple(sorted(schema_paths - bound_paths))
-    effect_id = f"tool-{tool.id}.{template.capability}"
     return ToolSecurityContract(
         server_ref=server_ref_for_server(
             {"transport": server.transport, "endpoint": server.endpoint}
         ),
         tool_name=tool.name,
-        effects=(
-            ToolEffect(
-                effect_id=effect_id,
-                capability=template.capability,
-                resource_bindings=tuple(resource_bindings),
-                fixed_resource=fixed_resource,
-                max_resource_cardinality=template.max_resource_cardinality,
-                declared_reference_precision=ReferencePrecision.EXPLICIT,
-            ),
-        ),
+        effects=tuple(effects),
+        argument_constraints=tuple(argument_constraints),
+        result_control=ResultControl(**template.result_control.model_dump()),
         unbound_arguments=unbound,
     )
 
@@ -859,10 +959,16 @@ def _merge_scopes(
     if not requested:
         return scopes
     unique_resource_types = tuple(dict.fromkeys(resource_types))
-    if len(unique_resource_types) != 1:
-        raise SecurityPackOnboardingError("scope_resource_type_ambiguous")
-    resource_type = unique_resource_types[0]
+    if not unique_resource_types:
+        raise SecurityPackOnboardingError("scope_resource_type_unavailable")
     for value in requested:
+        resource_type = value.resource_type
+        if resource_type is None:
+            if len(unique_resource_types) != 1:
+                raise SecurityPackOnboardingError("scope_resource_type_ambiguous")
+            resource_type = unique_resource_types[0]
+        elif resource_type not in unique_resource_types:
+            raise SecurityPackOnboardingError("scope_resource_type_not_in_contract")
         candidate = AuthorityResourceScope(
             scope_id=value.scope_id,
             authority=authority,
@@ -921,8 +1027,15 @@ def _keyword_matches_searchable(keyword: str, searchable: str) -> bool:
 
 
 def _template_score(template: ToolContractTemplate, searchable: str) -> int:
-    verb = template.capability.rsplit(".", 1)[-1]
-    action_keywords = set(CAPABILITY_ACTION_KEYWORDS.get(verb, ()))
+    verbs = {
+        effect.capability.rsplit(".", 1)[-1]
+        for effect in _template_effects(template)
+    }
+    action_keywords = {
+        keyword
+        for verb in verbs
+        for keyword in CAPABILITY_ACTION_KEYWORDS.get(verb, ())
+    }
     matched_keywords = tuple(
         keyword
         for keyword in template.keywords
@@ -953,15 +1066,16 @@ def _suggest_mappings(
 ) -> tuple[dict[str, tuple[str, ...]], list[str]]:
     mappings: dict[str, tuple[str, ...]] = {}
     missing: list[str] = []
-    used: set[tuple[str, ...]] = set()
-    for binding in template.bindings:
-        ranked = sorted(
+    used_resource_paths: set[tuple[str, ...]] = set()
+
+    def ranked_paths(hints, *, exclude: set[tuple[str, ...]]):
+        return sorted(
             (
                 (
                     max(
                         (
                             2 if path[-1].lower() == hint.lower() else 1
-                            for hint in binding.argument_hints
+                            for hint in hints
                             if hint.lower() in path[-1].lower()
                         ),
                         default=0,
@@ -969,13 +1083,24 @@ def _suggest_mappings(
                     path,
                 )
                 for path in paths
-                if path not in used and path
+                if path not in exclude and path
             ),
             key=lambda value: (-value[0], value[1]),
         )
+
+    for binding in _template_bindings(template):
+        ranked = ranked_paths(binding.argument_hints, exclude=used_resource_paths)
         if ranked and ranked[0][0] > 0:
             mappings[binding.key] = ranked[0][1]
-            used.add(ranked[0][1])
+            used_resource_paths.add(ranked[0][1])
         elif binding.required:
             missing.append(binding.key)
+
+    for constraint in template.constraints:
+        ranked = ranked_paths(constraint.argument_hints, exclude=set())
+        if ranked and ranked[0][0] > 0:
+            mappings[constraint.key] = ranked[0][1]
+        elif constraint.required:
+            missing.append(constraint.key)
+
     return mappings, missing

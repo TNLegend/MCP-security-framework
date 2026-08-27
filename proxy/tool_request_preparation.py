@@ -9,7 +9,11 @@ from jsonschema.exceptions import SchemaError
 
 from common.canonical_json import canonical_json_bytes, sha256_canonical_json
 
-from proxy.resource_adapters_v2 import AdapterRegistry, resolve_effect_facts
+from proxy.resource_adapters_v2 import (
+    AdapterRegistry,
+    extract_values_at_path,
+    resolve_effect_facts,
+)
 from proxy.security_packs import SecurityPackManifest
 from proxy.tool_security_v2 import (
     AdapterResolution,
@@ -141,6 +145,13 @@ def prepare_tool_request_v2(
     if validation_codes:
         return _invalid_v2(validation_codes, contract)
 
+    constraint_errors = _argument_constraint_errors(
+        arguments,
+        contract.argument_constraints,
+    )
+    if constraint_errors:
+        return _invalid_v2(constraint_errors, contract)
+
     effect_facts = []
     errors: list[str] = []
     for effect in contract.effects:
@@ -245,6 +256,74 @@ def prepare_tool_request_v2(
         security_contract=contract.model_dump(mode="json"),
         capability_catalog=tuple(capability_catalog.as_policy_data()),
     )
+
+
+def _constraint_values_equal(actual: Any, expected: Any) -> bool:
+    if isinstance(expected, bool):
+        return isinstance(actual, bool) and actual is expected
+    if isinstance(expected, str):
+        return isinstance(actual, str) and actual == expected
+    if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+        return (
+            isinstance(actual, (int, float))
+            and not isinstance(actual, bool)
+            and actual == expected
+        )
+    return False
+
+
+def _argument_constraint_errors(arguments, constraints) -> tuple[str, ...]:
+    errors: list[str] = []
+    for constraint in constraints:
+        values, status = extract_values_at_path(arguments, constraint.path)
+        safe_id = SAFE_CODE_PATTERN.sub("_", constraint.constraint_id)[:80]
+        if status == "missing":
+            if constraint.required:
+                errors.append(f"argument_constraint_missing:{safe_id}")
+            continue
+        if status != "resolved":
+            errors.append(f"argument_constraint_invalid:{safe_id}")
+            continue
+
+        if constraint.operator == "MAX_OCCURRENCES":
+            if len(values) > constraint.value:
+                errors.append(f"argument_constraint_failed:{safe_id}")
+            continue
+
+        passed = True
+        for actual in values:
+            if constraint.operator == "EQ":
+                current = _constraint_values_equal(actual, constraint.value)
+            elif constraint.operator == "NE":
+                current = not _constraint_values_equal(actual, constraint.value)
+            elif constraint.operator in {"LT", "LE", "GT", "GE"}:
+                if (
+                    not isinstance(actual, (int, float))
+                    or isinstance(actual, bool)
+                ):
+                    current = False
+                elif constraint.operator == "LT":
+                    current = actual < constraint.value
+                elif constraint.operator == "LE":
+                    current = actual <= constraint.value
+                elif constraint.operator == "GT":
+                    current = actual > constraint.value
+                else:
+                    current = actual >= constraint.value
+            elif constraint.operator in {"IN", "NOT_IN"}:
+                member = any(
+                    _constraint_values_equal(actual, candidate)
+                    for candidate in constraint.value
+                )
+                current = member if constraint.operator == "IN" else not member
+            else:
+                current = False
+            if not current:
+                passed = False
+                break
+        if not passed:
+            errors.append(f"argument_constraint_failed:{safe_id}")
+    return tuple(errors)
 
 
 def _v2_request_sensitivity(

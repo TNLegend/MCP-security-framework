@@ -21,9 +21,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
   const [templateId, setTemplateId] = useState("");
   const [mappings, setMappings] = useState({});
   const [fixedResources, setFixedResources] = useState({});
-  const [scopeValue, setScopeValue] = useState("");
-  const [scopeMode, setScopeMode] = useState("SELF");
-  const [broadScopeAcknowledged, setBroadScopeAcknowledged] = useState(false);
+  const [scopeDrafts, setScopeDrafts] = useState({});
   const [approveObservations, setApproveObservations] = useState(true);
   const [changeSummary, setChangeSummary] = useState("");
   const [draftRevisionId, setDraftRevisionId] = useState(null);
@@ -40,6 +38,9 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
     [catalog],
   );
   const selectedTemplate = templates.find((template) => template.id === templateId) || null;
+  const selectedBindings = templateBindings(selectedTemplate);
+  const selectedConstraints = selectedTemplate?.constraints || [];
+  const selectedResourceTypes = templateResourceTypes(selectedTemplate);
   const schemaPaths = useMemo(() => schemaLeafPaths(tool?.input_schema), [tool?.input_schema]);
   const hasInputSchema = hasRecordedInputSchema(tool?.input_schema);
 
@@ -89,7 +90,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
     setTemplateId(nextTemplateId);
     setMappings(suggestion?.argument_mappings || {});
     setFixedResources({});
-    setScopeValue("");
+    setScopeDrafts({});
     setError("");
     setMessage("");
   }
@@ -135,12 +136,18 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
     setError("");
     setMessage("");
     try {
-      const scopes = scopeValue.trim() ? [{
-        scope_id: `${selectedTemplate.pack.id}-${tool.id}-scope`,
-        canonical_value: scopeValue.trim(),
-        match_mode: scopeMode,
-        broad_scope_acknowledged: broadScopeAcknowledged,
-      }] : [];
+      const scopes = selectedResourceTypes.flatMap((resourceType) => {
+        const draft = scopeDrafts[resourceType] || {};
+        const canonicalValue = String(draft.value || "").trim();
+        if (!canonicalValue) return [];
+        return [{
+          scope_id: `${selectedTemplate.pack.id}-${tool.id}-${scopeIdPart(resourceType)}`,
+          resource_type: resourceType,
+          canonical_value: canonicalValue,
+          match_mode: draft.mode || "SELF",
+          broad_scope_acknowledged: Boolean(draft.broadScopeAcknowledged),
+        }];
+      });
       const result = await createToolContractDraft(tool.id, {
         template_id: selectedTemplate.id,
         argument_mappings: cleanMappings(mappings),
@@ -180,6 +187,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
       setTemplateId(newTemplateId);
       setMappings(suggestion?.argument_mappings || {});
       setFixedResources({});
+      setScopeDrafts({});
       setPackBuilderOpen(false);
       setMessage(`Security Pack added to draft ${revision.revision_number}. Complete its contract below.`);
     } catch (err) {
@@ -282,11 +290,20 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
           <>
             <dl className="inline-metadata contract-metadata">
               <div><dt>Pack</dt><dd>{selectedTemplate.pack.id} {selectedTemplate.pack.version}</dd></div>
-              <div><dt>Capability</dt><dd>{selectedTemplate.capability}</dd></div>
+              <div><dt>Capabilities</dt><dd>{templateCapabilities(selectedTemplate).join(", ")}</dd></div>
               <div><dt>Adapter</dt><dd>{adapterName(selectedTemplate, selectedTemplate.pack)}</dd></div>
+              <div><dt>Result</dt><dd>{resultControlLabel(selectedTemplate)}</dd></div>
             </dl>
 
-            {(selectedTemplate.bindings || []).map((binding) => {
+            {templateEffects(selectedTemplate).length > 1 && (
+              <div className="contract-effect-summary">
+                {templateEffects(selectedTemplate).map((effect) => (
+                  <span key={effect.key}>{effect.key}: {effect.capability}</span>
+                ))}
+              </div>
+            )}
+
+            {selectedBindings.map((binding) => {
               const mappedPath = (mappings[binding.key] || []).join(".");
               const usesFixed = Object.hasOwn(fixedResources, binding.key);
               return (
@@ -308,6 +325,10 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
                     Resource type
                     <input disabled readOnly value={binding.resource_type} />
                   </label>
+                  <label>
+                    Role
+                    <input disabled readOnly value={binding.role || "RESOURCE"} />
+                  </label>
                   {usesFixed && (
                     <label className="wide-field">
                       Fixed resource
@@ -326,25 +347,73 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
               );
             })}
 
-            {(selectedTemplate.bindings || []).length > 0 && (
-              <div className="contract-scope-row">
-                <label>
-                  Authorized scope
-                  <input disabled={!isAdmin || busy || Boolean(contractDraft)} onChange={(event) => setScopeValue(event.target.value)} value={scopeValue} />
-                </label>
-                <label>
-                  Match
-                  <select disabled={!isAdmin || busy || Boolean(contractDraft)} onChange={(event) => setScopeMode(event.target.value)} value={scopeMode}>
-                    <option value="SELF">Exact</option>
-                    <option value="SUBTREE">Subtree</option>
-                  </select>
-                </label>
-                <label className="checkbox-field">
-                  <input checked={broadScopeAcknowledged} disabled={!isAdmin || busy || Boolean(contractDraft)} onChange={(event) => setBroadScopeAcknowledged(event.target.checked)} type="checkbox" />
-                  Broad scope acknowledged
-                </label>
-              </div>
-            )}
+            {selectedConstraints.map((constraint) => {
+              const mappedPath = (mappings[constraint.key] || []).join(".");
+              return (
+                <div className="contract-binding-row" key={`constraint-${constraint.key}`}>
+                  <label>
+                    Constraint {constraint.key}
+                    <select
+                      disabled={!isAdmin || busy || Boolean(contractDraft)}
+                      onChange={(event) => setMappings({
+                        ...mappings,
+                        [constraint.key]: event.target.value ? event.target.value.split(".") : undefined,
+                      })}
+                      required={constraint.required}
+                      value={mappedPath}
+                    >
+                      <option value="">Select argument</option>
+                      {schemaPaths.map((path) => <option key={path} value={path}>{path}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    Rule
+                    <input disabled readOnly value={`${constraint.operator} ${displayConstraintValue(constraint.value)}`} />
+                  </label>
+                </div>
+              );
+            })}
+
+            {selectedResourceTypes.map((resourceType) => {
+              const draft = scopeDrafts[resourceType] || {};
+              return (
+                <div className="contract-scope-row" key={`scope-${resourceType}`}>
+                  <label>
+                    Authorized scope ({resourceType})
+                    <input
+                      disabled={!isAdmin || busy || Boolean(contractDraft)}
+                      onChange={(event) => updateScopeDraft(setScopeDrafts, resourceType, "value", event.target.value)}
+                      value={draft.value || ""}
+                    />
+                  </label>
+                  <label>
+                    Match
+                    <select
+                      disabled={!isAdmin || busy || Boolean(contractDraft)}
+                      onChange={(event) => updateScopeDraft(setScopeDrafts, resourceType, "mode", event.target.value)}
+                      value={draft.mode || "SELF"}
+                    >
+                      <option value="SELF">Exact</option>
+                      <option value="SUBTREE">Subtree</option>
+                    </select>
+                  </label>
+                  <label className="checkbox-field">
+                    <input
+                      checked={Boolean(draft.broadScopeAcknowledged)}
+                      disabled={!isAdmin || busy || Boolean(contractDraft)}
+                      onChange={(event) => updateScopeDraft(
+                        setScopeDrafts,
+                        resourceType,
+                        "broadScopeAcknowledged",
+                        event.target.checked,
+                      )}
+                      type="checkbox"
+                    />
+                    Broad scope acknowledged
+                  </label>
+                </div>
+              );
+            })}
 
             {isAdmin && !contractDraft && (
               <div className="contract-submit-row">
@@ -385,8 +454,51 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
   );
 }
 
+function templateEffects(template) {
+  if (!template) return [];
+  if (template.effects?.length) return template.effects;
+  return [{
+    key: "primary",
+    capability: template.capability,
+    bindings: template.bindings || [],
+  }];
+}
+
+function templateBindings(template) {
+  return templateEffects(template).flatMap((effect) => effect.bindings || []);
+}
+
+function templateCapabilities(template) {
+  return [...new Set(templateEffects(template).map((effect) => effect.capability).filter(Boolean))];
+}
+
+function templateResourceTypes(template) {
+  return [...new Set(templateBindings(template).map((binding) => binding.resource_type).filter(Boolean))];
+}
+
+function updateScopeDraft(setScopeDrafts, resourceType, field, value) {
+  setScopeDrafts((current) => ({
+    ...current,
+    [resourceType]: { ...(current[resourceType] || {}), [field]: value },
+  }));
+}
+
+function scopeIdPart(value) {
+  return String(value || "resource").replace(/[^a-zA-Z0-9_.:-]/g, "_");
+}
+
+function displayConstraintValue(value) {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function resultControlLabel(template) {
+  const control = template?.result_control || {};
+  const classification = control.classification || "UNSPECIFIED";
+  return control.track_for_exfiltration ? `${classification} / tracked` : classification;
+}
+
 function adapterName(template, pack) {
-  const resourceType = template.bindings?.[0]?.resource_type;
+  const resourceType = templateResourceTypes(template)[0];
   return pack.resource_types?.find((item) => item.id === resourceType)?.adapter_id || "none";
 }
 

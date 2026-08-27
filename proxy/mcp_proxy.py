@@ -52,7 +52,7 @@ from proxy.tool_request_preparation import (
     PreparedToolRequest,
     prepare_tool_request_v2,
 )
-from proxy.tool_result_guard import ToolResultGuard, is_external_effect, is_read_effect
+from proxy.tool_result_guard import ToolResultGuard, is_external_effect, should_track_result
 from common.canonical_json import sha256_canonical_json
 from common.mcp_endpoint import (
     MCPEndpointValidationError,
@@ -1083,7 +1083,7 @@ class MCPProxy:
                     message="Tool result withheld by the security framework.",
                     skip_reason="unsafe_tool_result_blocked",
                 )
-            if is_read_effect(prepared_request):
+            if should_track_result(prepared_request):
                 self.tool_result_guard.remember_read_result(
                     session_reference,
                     tool_result,

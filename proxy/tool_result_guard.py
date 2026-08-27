@@ -106,6 +106,21 @@ def is_external_effect(prepared_request: Any) -> bool:
     }
 
 
+def should_track_result(prepared_request: Any) -> bool:
+    if is_read_effect(prepared_request):
+        return True
+    contract = prepared_request.security_contract or {}
+    result_control = contract.get("result_control") if isinstance(contract, dict) else None
+    if not isinstance(result_control, dict):
+        return False
+    if result_control.get("track_for_exfiltration") is True:
+        return True
+    return str(result_control.get("classification") or "UNSPECIFIED") in {
+        "SENSITIVE",
+        "SECRET",
+    }
+
+
 def is_read_effect(prepared_request: Any) -> bool:
     facts = prepared_request.normalized_facts or {}
     capabilities = {

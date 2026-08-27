@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import math
 import re
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -51,6 +52,7 @@ class PackResourceType(BaseModel):
 class TemplateBinding(BaseModel):
     key: str
     resource_type: str
+    role: Literal["RESOURCE", "SOURCE", "DESTINATION"] = "RESOURCE"
     required: bool = True
     multiple: bool = False
     argument_hints: tuple[str, ...] = ()
@@ -58,17 +60,153 @@ class TemplateBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ToolContractTemplate(BaseModel):
-    id: str
-    title: str
-    description: str
+def _safe_constraint_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _safe_constraint_scalar(value: Any) -> bool:
+    return isinstance(value, (str, bool)) or _safe_constraint_number(value)
+
+
+class TemplateArgumentConstraint(BaseModel):
+    key: str
+    operator: Literal[
+        "EQ",
+        "NE",
+        "LT",
+        "LE",
+        "GT",
+        "GE",
+        "IN",
+        "NOT_IN",
+        "MAX_OCCURRENCES",
+    ]
+    value: Any
+    required: bool = True
+    argument_hints: tuple[str, ...] = ()
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def validate_constraint(self) -> "TemplateArgumentConstraint":
+        if not SECURITY_ID_PATTERN.fullmatch(self.key):
+            raise ValueError("invalid template argument constraint key")
+        if self.operator in {"EQ", "NE"}:
+            if not _safe_constraint_scalar(self.value):
+                raise ValueError("equality constraint requires a scalar value")
+        elif self.operator in {"LT", "LE", "GT", "GE"}:
+            if not _safe_constraint_number(self.value):
+                raise ValueError("ordered constraint requires a finite number")
+        elif self.operator in {"IN", "NOT_IN"}:
+            if (
+                not isinstance(self.value, (list, tuple))
+                or not self.value
+                or len(self.value) > 100
+                or not all(_safe_constraint_scalar(item) for item in self.value)
+            ):
+                raise ValueError("membership constraint requires bounded scalar values")
+        elif self.operator == "MAX_OCCURRENCES":
+            if (
+                not isinstance(self.value, int)
+                or isinstance(self.value, bool)
+                or self.value < 0
+                or self.value > 1000
+            ):
+                raise ValueError("max occurrences constraint requires a bounded integer")
+        return self
+
+
+class TemplateResultControl(BaseModel):
+    classification: Literal["UNSPECIFIED", "INTERNAL", "SENSITIVE", "SECRET"] = "UNSPECIFIED"
+    track_for_exfiltration: bool = False
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class TemplateEffect(BaseModel):
+    key: str
     capability: str
-    keywords: tuple[str, ...] = ()
     bindings: tuple[TemplateBinding, ...] = ()
     max_resource_cardinality: int | None = Field(default=None, ge=1, le=1000)
     declared_reference_precision: Literal["EXPLICIT"] = "EXPLICIT"
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def validate_effect(self) -> "TemplateEffect":
+        if not SECURITY_ID_PATTERN.fullmatch(self.key):
+            raise ValueError("invalid template effect key")
+        if not SECURITY_ID_PATTERN.fullmatch(self.capability):
+            raise ValueError("invalid template effect capability")
+        binding_keys = [binding.key for binding in self.bindings]
+        if len(binding_keys) != len(set(binding_keys)):
+            raise ValueError("duplicate binding key in template effect")
+        return self
+
+
+class ToolContractTemplate(BaseModel):
+    id: str
+    title: str
+    description: str
+    capability: str | None = None
+    keywords: tuple[str, ...] = ()
+    bindings: tuple[TemplateBinding, ...] = ()
+    max_resource_cardinality: int | None = Field(default=None, ge=1, le=1000)
+    declared_reference_precision: Literal["EXPLICIT"] = "EXPLICIT"
+    effects: tuple[TemplateEffect, ...] = ()
+    constraints: tuple[TemplateArgumentConstraint, ...] = ()
+    result_control: TemplateResultControl = TemplateResultControl()
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def validate_template_shape(self) -> "ToolContractTemplate":
+        if self.effects:
+            if (
+                self.capability is not None
+                or self.bindings
+                or self.max_resource_cardinality is not None
+                or self.declared_reference_precision != "EXPLICIT"
+            ):
+                raise ValueError("advanced template cannot mix legacy effect fields")
+            effect_keys = [effect.key for effect in self.effects]
+            if len(effect_keys) != len(set(effect_keys)):
+                raise ValueError("duplicate effect key in tool contract template")
+            binding_keys = [
+                binding.key
+                for effect in self.effects
+                for binding in effect.bindings
+            ]
+            if len(binding_keys) != len(set(binding_keys)):
+                raise ValueError("template binding keys must be unique across effects")
+        elif not self.capability:
+            raise ValueError("template requires a capability or effects")
+        else:
+            binding_keys = [binding.key for binding in self.bindings]
+
+        constraint_keys = [constraint.key for constraint in self.constraints]
+        if len(constraint_keys) != len(set(constraint_keys)):
+            raise ValueError("template constraint keys must be unique")
+        if set(constraint_keys).intersection(binding_keys):
+            raise ValueError("template constraint keys cannot collide with binding keys")
+        return self
+
+    def resolved_effects(self) -> tuple[TemplateEffect, ...]:
+        if self.effects:
+            return self.effects
+        return (
+            TemplateEffect(
+                key="primary",
+                capability=self.capability or "",
+                bindings=self.bindings,
+                max_resource_cardinality=self.max_resource_cardinality,
+                declared_reference_precision=self.declared_reference_precision,
+            ),
+        )
 
 
 class SecurityPackManifest(BaseModel):
@@ -102,14 +240,29 @@ class SecurityPackManifest(BaseModel):
             raise ValueError("duplicate template in security pack")
         known_capabilities = set(capability_ids)
         known_resources = set(resource_ids)
+        capability_map = {item.id: item for item in self.capabilities}
         for capability in self.capabilities:
             if capability.requires_resource and not capability.allowed_resource_types:
                 raise ValueError("resource capability requires allowed resource types")
         for template in self.templates:
-            if template.capability not in known_capabilities:
-                raise ValueError("template references unknown pack capability")
-            if any(binding.resource_type not in known_resources for binding in template.bindings):
-                raise ValueError("template references unknown pack resource type")
+            for effect in template.resolved_effects():
+                if effect.capability not in known_capabilities:
+                    raise ValueError("template references unknown pack capability")
+                capability = capability_map[effect.capability]
+                if any(
+                    binding.resource_type not in known_resources
+                    for binding in effect.bindings
+                ):
+                    raise ValueError("template references unknown pack resource type")
+                if capability.requires_resource and not effect.bindings:
+                    raise ValueError("resource capability template effect requires bindings")
+                if not capability.requires_resource and effect.bindings:
+                    raise ValueError("non-resource capability template effect cannot bind resources")
+                if any(
+                    binding.resource_type not in capability.allowed_resource_types
+                    for binding in effect.bindings
+                ):
+                    raise ValueError("template binding resource type is not allowed by capability")
         return self
 
 

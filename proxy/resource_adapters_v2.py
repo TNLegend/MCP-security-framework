@@ -280,6 +280,7 @@ def _resolve_declaratively(
                     path=(),
                     status="resolved",
                     resource_type=effect.fixed_resource.resource_type,
+                    role=effect.fixed_resource.role,
                     occurrence_count=1,
                     truncated=False,
                     references=references,
@@ -292,13 +293,14 @@ def _resolve_declaratively(
                     path=(),
                     status="invalid",
                     resource_type=effect.fixed_resource.resource_type,
+                    role=effect.fixed_resource.role,
                     occurrence_count=0,
                     truncated=False,
                     references=(),
                 )
             )
     for binding in effect.resource_bindings:
-        values, extraction_status = _extract_values(canonical_args, binding.path)
+        values, extraction_status = extract_values_at_path(canonical_args, binding.path)
         references: list[ClaimedResourceReference] = []
         status = extraction_status
         for value in values:
@@ -332,6 +334,7 @@ def _resolve_declaratively(
                 path=binding.path,
                 status=status,
                 resource_type=binding.resource_type,
+                role=binding.role,
                 occurrence_count=len(values),
                 truncated=False,
                 references=tuple(references),
@@ -390,7 +393,7 @@ def _classify_reference_sensitivity(
     return (), "internal"
 
 
-def _extract_values(
+def extract_values_at_path(
     root: dict[str, Any],
     path: tuple[str, ...],
 ) -> tuple[list[Any], str]:

@@ -1,7 +1,12 @@
 import unittest
 from types import SimpleNamespace
 
-from proxy.tool_result_guard import ToolResultGuard, is_external_effect, is_read_effect
+from proxy.tool_result_guard import (
+    ToolResultGuard,
+    is_external_effect,
+    is_read_effect,
+    should_track_result,
+)
 
 
 class ToolResultGuardTests(unittest.TestCase):
@@ -30,6 +35,44 @@ class ToolResultGuardTests(unittest.TestCase):
         self.assertTrue(guard.matches_prior_result("session-a", {"body": source}))
         self.assertFalse(guard.matches_prior_result("session-b", {"body": source}))
         self.assertFalse(guard.matches_prior_result("session-a", {"body": "Independent text"}))
+
+    def test_result_control_can_only_strengthen_exfiltration_tracking(self):
+        sensitive = SimpleNamespace(
+            normalized_facts={"effects": [{"capability_id": "custom.compute"}]},
+            capability_catalog=(),
+            required_capability="custom.compute",
+            security_contract={
+                "result_control": {
+                    "classification": "SENSITIVE",
+                    "track_for_exfiltration": False,
+                }
+            },
+        )
+        explicit = SimpleNamespace(
+            normalized_facts={"effects": [{"capability_id": "custom.compute"}]},
+            capability_catalog=(),
+            required_capability="custom.compute",
+            security_contract={
+                "result_control": {
+                    "classification": "UNSPECIFIED",
+                    "track_for_exfiltration": True,
+                }
+            },
+        )
+        ordinary = SimpleNamespace(
+            normalized_facts={"effects": [{"capability_id": "custom.compute"}]},
+            capability_catalog=(),
+            required_capability="custom.compute",
+            security_contract={
+                "result_control": {
+                    "classification": "UNSPECIFIED",
+                    "track_for_exfiltration": False,
+                }
+            },
+        )
+        self.assertTrue(should_track_result(sensitive))
+        self.assertTrue(should_track_result(explicit))
+        self.assertFalse(should_track_result(ordinary))
 
     def test_effect_direction_comes_from_capability_catalog(self):
         external = SimpleNamespace(

@@ -12,11 +12,13 @@ from app.models.mcp_server import MCPServer
 from app.db.database import Base
 from app.models.control_plane import ControlPlaneState, ControlPlaneUser
 from app.schemas.control_plane import empty_latest_configuration
-from app.schemas.security_pack import CreateToolContractDraftRequest
+from app.schemas.security_pack import ContractScopeInput, CreateToolContractDraftRequest
 from app.services.control_plane_config import create_revision, publish_revision
 from app.services.security_pack_onboarding import (
     _AIPackSuggestion,
+    _build_contract,
     _contract_resource_types,
+    _merge_scopes,
     _pack_manifest_from_ai_suggestion,
     _resolve_draft,
     create_tool_contract_draft,
@@ -41,7 +43,10 @@ from proxy.security_packs import (
     SecurityPackError,
     SecurityPackManifest,
     SecurityPackRegistry,
+    TemplateArgumentConstraint,
     TemplateBinding,
+    TemplateEffect,
+    TemplateResultControl,
     ToolContractTemplate,
 )
 from proxy.tool_security_v2 import (
@@ -99,6 +104,89 @@ class SecurityPackRegistryTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(SecurityPackError, "capability_resource_type_unavailable"):
             SecurityPackRegistry((invalid,))
+
+
+    def test_advanced_template_projects_multiple_effects_roles_constraints_and_result_control(self):
+        pack = advanced_transfer_pack()
+        registry = SecurityPackRegistry((pack,))
+        _, template = registry.template("lot3.transfer")
+        tool = MCPTool(
+            id=77,
+            server_id=7,
+            name="transfer_payment",
+            input_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "source_account": {"type": "string", "maxLength": 128},
+                    "destination_account": {"type": "string", "maxLength": 128},
+                    "amount": {"type": "number", "minimum": 0, "maximum": 1000000},
+                },
+                "required": ["source_account", "destination_account", "amount"],
+            },
+        )
+        server = MCPServer(
+            id=7,
+            name="Transfer MCP",
+            server_type="third_party",
+            endpoint="https://transfer.example/mcp",
+            transport="streamable_http",
+            status="active",
+        )
+        contract = _build_contract(
+            tool=tool,
+            server=server,
+            template=template,
+            mappings={
+                "source": ("source_account",),
+                "destination": ("destination_account",),
+                "amount_limit": ("amount",),
+            },
+            fixed_resources={},
+            schema_paths={("source_account",), ("destination_account",), ("amount",)},
+        )
+
+        self.assertEqual(
+            [effect.capability for effect in contract.effects],
+            ["lot3_transfer.debit", "lot3_transfer.credit"],
+        )
+        self.assertEqual(contract.effects[0].resource_bindings[0].role, "SOURCE")
+        self.assertEqual(contract.effects[1].resource_bindings[0].role, "DESTINATION")
+        self.assertEqual(contract.argument_constraints[0].operator, "LE")
+        self.assertEqual(contract.argument_constraints[0].value, 500)
+        self.assertEqual(contract.result_control.classification, "SENSITIVE")
+        self.assertTrue(contract.result_control.track_for_exfiltration)
+
+    def test_multi_resource_scope_requires_or_accepts_explicit_resource_type(self):
+        registry = AdapterRegistry()
+        with self.assertRaisesRegex(
+            Exception,
+            "scope_resource_type_ambiguous",
+        ):
+            _merge_scopes(
+                existing=(),
+                requested=(ContractScopeInput(
+                    scope_id="ambiguous",
+                    canonical_value="prod/customers",
+                ),),
+                authority="streamable_http:https://example.test/mcp",
+                resource_types=("database_object", "url"),
+                registry=registry,
+            )
+
+        scopes = _merge_scopes(
+            existing=(),
+            requested=(ContractScopeInput(
+                scope_id="destination",
+                resource_type="url",
+                canonical_value="https://example.com/api",
+            ),),
+            authority="streamable_http:https://example.test/mcp",
+            resource_types=("database_object", "url"),
+            registry=registry,
+        )
+        self.assertEqual(scopes[0].resource_type, "url")
+        self.assertEqual(scopes[0].canonical_value, "https://example.com/api")
 
 
 class SecurityPackOnboardingTests(unittest.TestCase):
@@ -518,6 +606,81 @@ def custom_pack() -> SecurityPackManifest:
                         resource_type="ticket_object",
                         argument_hints=("ticket", "issue", "id"),
                     ),
+                ),
+            ),
+        ),
+    )
+
+
+def advanced_transfer_pack() -> SecurityPackManifest:
+    resource = PackResourceType(
+        id="lot3_account",
+        canonicalizer="hierarchical_name",
+        hierarchy_support=True,
+        allowed_matching_modes=("SELF", "SUBTREE"),
+        adapter_id="generic-declarative",
+    )
+    return SecurityPackManifest(
+        id="lot3-transfer-pack",
+        version="1.0.0",
+        title="Lot 3 Transfer Pack",
+        description="Advanced declarative transfer semantics",
+        origin="DECLARATIVE",
+        capabilities=(
+            PackCapability(
+                id="lot3_transfer.debit",
+                domain="lot3_transfer",
+                verb="debit",
+                destructive=True,
+                external_effect=True,
+                allowed_resource_types=(resource.id,),
+            ),
+            PackCapability(
+                id="lot3_transfer.credit",
+                domain="lot3_transfer",
+                verb="credit",
+                external_effect=True,
+                allowed_resource_types=(resource.id,),
+            ),
+        ),
+        resource_types=(resource,),
+        templates=(
+            ToolContractTemplate(
+                id="lot3.transfer",
+                title="Transfer Payment",
+                description="Debit a source and credit a destination under a bounded amount.",
+                keywords=("transfer", "payment"),
+                effects=(
+                    TemplateEffect(
+                        key="debit",
+                        capability="lot3_transfer.debit",
+                        bindings=(TemplateBinding(
+                            key="source",
+                            resource_type=resource.id,
+                            role="SOURCE",
+                            argument_hints=("source_account", "source"),
+                        ),),
+                    ),
+                    TemplateEffect(
+                        key="credit",
+                        capability="lot3_transfer.credit",
+                        bindings=(TemplateBinding(
+                            key="destination",
+                            resource_type=resource.id,
+                            role="DESTINATION",
+                            argument_hints=("destination_account", "destination"),
+                        ),),
+                    ),
+                ),
+                constraints=(TemplateArgumentConstraint(
+                    key="amount_limit",
+                    operator="LE",
+                    value=500,
+                    argument_hints=("amount",),
+                ),),
+                result_control=TemplateResultControl(
+                    classification="SENSITIVE",
+                    track_for_exfiltration=True,
                 ),
             ),
         ),

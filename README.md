@@ -218,6 +218,18 @@ Safe declarative packs can be added through
 `POST /api/v1/control-plane/security-packs/declarative`; specialized parsing still
 requires a reviewed adapter implementation.
 
+Advanced declarative templates may model multiple conjunctive effects and
+capabilities, multiple resource bindings with `RESOURCE`, `SOURCE`, or
+`DESTINATION` roles, and bounded argument constraints (`EQ`, `NE`, `LT`, `LE`,
+`GT`, `GE`, `IN`, `NOT_IN`, and `MAX_OCCURRENCES`). Multi-resource contracts use
+an explicit resource type for each authority-qualified scope. Result controls may
+classify a result and force exfiltration tracking through the existing Result
+Guard, but a Security Pack cannot disable result inspection, execute arbitrary
+code, grant an agent authorization, approve itself, or bypass OPA/Emergency Deny.
+The Control Center exposes these fields in the Contract workflow and provides an
+Advanced JSON editor whose submitted manifest is still validated by the same
+strict declarative backend schema before it can enter a DRAFT.
+
 The supported schema profile accepts bounded local `$defs`/`$ref`, nullable scalar
 types, and `oneOf`/`anyOf` variants only when every branch exposes the same
 accountable resource paths. External references, recursive references, open
