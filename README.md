@@ -230,6 +230,37 @@ The Control Center exposes these fields in the Contract workflow and provides an
 Advanced JSON editor whose submitted manifest is still validated by the same
 strict declarative backend schema before it can enter a DRAFT.
 
+Security Pack lifecycle management is also governed inside signed v2 configuration.
+Custom packs can be validated and installed as JSON packages, tracked by canonical
+SHA-256 manifest hashes, upgraded across strict semantic versions, enabled or
+disabled, deprecated/restored per version, rolled back to an installed version, and
+removed only when no active contract, authorization, scope, or installed dependency
+still requires them. Optional detached Ed25519 signatures are cryptographically
+verified when supplied and their public-key fingerprint is recorded; verification
+proves integrity relative to that supplied key but does not by itself establish a
+trusted publisher. Dependency version ranges and cycles are checked fail closed,
+and capability/resource/template collisions are rejected. The runtime-facing
+`security_packs` list remains only the projection of ENABLED lifecycle installations,
+so installing or retaining a disabled version never grants runtime semantics by
+itself.
+
+The operator lifecycle is explicit and draft-scoped:
+
+```text
+validate package -> install disabled -> review -> enable
+                 -> install upgrade -> activate or roll back
+                 -> deprecate or restore an installed version
+                 -> disable -> remove when no reference or dependency remains
+```
+
+Every lifecycle mutation requires a change summary and produces a Control Center
+audit event containing the affected pack, revision, version state, and manifest
+hash where applicable. Lot 4 packages are data-only manifests interpreted by the
+built-in declarative adapter. A pack cannot ship or execute Python, JavaScript, or
+another executable payload. Semantics that need a specialized parser or
+canonicalizer belong to the reviewed, signed trusted-adapter SDK planned for Lot 5,
+not to the declarative package import path.
+
 The supported schema profile accepts bounded local `$defs`/`$ref`, nullable scalar
 types, and `oneOf`/`anyOf` variants only when every branch exposes the same
 accountable resource paths. External references, recursive references, open

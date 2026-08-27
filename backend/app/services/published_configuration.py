@@ -22,6 +22,7 @@ from app.services.revision_signing import (
 )
 from proxy.identity_binding import IdentityBindingError, ResolvedIdentityBinding
 from proxy.resource_adapters_v2 import AdapterRegistry
+from proxy.security_packs import validate_security_pack_lifecycle
 from proxy.tool_security_v2 import (
     AdapterResolution,
     AuthorityResourceScope,
@@ -375,6 +376,10 @@ def _validate_latest_cross_references(content: ControlPlaneConfigContent) -> Non
     capability_catalog_version = content.capability_catalog_version
     resource_type_registry_version = content.resource_type_registry_version
     security_packs = content.security_packs
+    validate_security_pack_lifecycle(
+        security_packs,
+        content.security_pack_installations,
+    )
     catalog = CapabilityCatalog(
         version=capability_catalog_version,
         security_packs=security_packs,

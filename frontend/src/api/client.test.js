@@ -172,6 +172,17 @@ test("discoverHttpMcpServer sends exact HTTP payload without argument shift", as
   });
 });
 
+test("initial and registered discovery allow the full analyzer window", async () => {
+  assert.equal(
+    await captureRequestTimeout(() => discoverHttpMcpServer("http://127.0.0.1:9201/mcp")),
+    180_000,
+  );
+  assert.equal(
+    await captureRequestTimeout(() => discoverRegisteredMcpServer(7)),
+    180_000,
+  );
+});
+
 test("runtime logs encode server-side filters and cursor", async () => {
   const captured = await captureRequest(() => fetchRuntimeLogs({
     limit: 50,
@@ -271,6 +282,24 @@ test("Security Pack onboarding uses protected generic endpoints", async () => {
   assert.match(reanalysis.url, /tools\/12\/reanalyze$/);
   assert.equal(reanalysis.options.method, "POST");
 });
+
+async function captureRequestTimeout(operation) {
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
+  let capturedDelay = null;
+  globalThis.setTimeout = (_callback, delay) => {
+    capturedDelay = delay;
+    return 1;
+  };
+  globalThis.clearTimeout = () => {};
+  try {
+    await captureRequest(operation);
+    return capturedDelay;
+  } finally {
+    globalThis.setTimeout = previousSetTimeout;
+    globalThis.clearTimeout = previousClearTimeout;
+  }
+}
 
 async function captureRequest(operation) {
   const previousFetch = globalThis.fetch;

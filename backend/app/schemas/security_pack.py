@@ -4,7 +4,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from proxy.security_packs import SecurityPackManifest
+from proxy.security_packs import (
+    SecurityPackInstallation,
+    SecurityPackManifest,
+)
 
 
 class TemplateSuggestionPublic(BaseModel):
@@ -102,5 +105,78 @@ class ToolReanalysisPublic(BaseModel):
     tool_id: int
     revision_id: str
     analysis_statuses: tuple[str, ...]
+
+    model_config = ConfigDict(extra="forbid")
+
+class SecurityPackDetachedSignature(BaseModel):
+    algorithm: Literal["Ed25519"] = "Ed25519"
+    public_key_pem: str = Field(min_length=32, max_length=8192)
+    signature_base64: str = Field(min_length=40, max_length=512)
+    signer_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SecurityPackPackageInput(BaseModel):
+    package_version: Literal["1"] = "1"
+    manifest: SecurityPackManifest
+    expected_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    signature: SecurityPackDetachedSignature | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ValidateSecurityPackPackageRequest(BaseModel):
+    package: SecurityPackPackageInput
+    draft_revision_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class InstallSecurityPackPackageRequest(BaseModel):
+    package: SecurityPackPackageInput
+    draft_revision_id: str = Field(min_length=1, max_length=64)
+    activate: StrictBool = True
+    enable: StrictBool | None = None
+    change_summary: str = Field(min_length=3, max_length=2000)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SecurityPackLifecycleActionRequest(BaseModel):
+    draft_revision_id: str = Field(min_length=1, max_length=64)
+    change_summary: str = Field(min_length=3, max_length=2000)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SecurityPackActivateVersionRequest(SecurityPackLifecycleActionRequest):
+    version: str = Field(min_length=5, max_length=64)
+    allow_deprecated: StrictBool = False
+
+
+class SecurityPackDeprecateVersionRequest(SecurityPackLifecycleActionRequest):
+    version: str = Field(min_length=5, max_length=64)
+    deprecated: StrictBool = True
+
+
+class SecurityPackPackageValidationPublic(BaseModel):
+    pack_id: str
+    version: str
+    manifest_sha256: str
+    expected_hash_matched: StrictBool
+    signature_present: StrictBool
+    signature_verified: StrictBool
+    signer_key_fingerprint: str | None = None
+    dependencies_satisfied: StrictBool
+    collisions: tuple[str, ...] = ()
+    installable: StrictBool
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SecurityPackLifecycleCatalogPublic(BaseModel):
+    builtin_packs: tuple[SecurityPackManifest, ...]
+    installations: tuple[SecurityPackInstallation, ...]
 
     model_config = ConfigDict(extra="forbid")

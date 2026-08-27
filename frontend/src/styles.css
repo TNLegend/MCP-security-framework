@@ -1650,6 +1650,32 @@ code {
   white-space: nowrap;
 }
 
+.audit-event-detail {
+  margin-top: 16px;
+  border-top: 1px solid #d7deea;
+  padding-top: 16px;
+}
+
+.audit-event-metadata {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.audit-json-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.audit-json-grid h4 {
+  margin: 0 0 6px;
+}
+
+.audit-json-grid .json-block {
+  height: 210px;
+  max-height: 210px;
+}
+
 .table-ellipsis {
   display: block;
   max-width: 190px;
@@ -1806,6 +1832,11 @@ code {
 }
 
 @media (max-width: 900px) {
+  .audit-event-metadata,
+  .audit-json-grid {
+    grid-template-columns: 1fr;
+  }
+
   .contract-binding-row,
   .contract-scope-row,
   .contract-submit-row {
@@ -1904,4 +1935,85 @@ code {
   .runtime-search-field {
     grid-column: auto;
   }
+}
+
+.security-pack-lifecycle-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 14px;
+}
+
+.security-pack-lifecycle-summary span,
+.status-pill {
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.security-pack-installations {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.security-pack-installation-card,
+.security-pack-package-panel,
+.security-pack-quick-builder {
+  border: 1px solid #d7deea;
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+}
+
+.security-pack-installation-card {
+  min-width: 0;
+}
+
+.security-pack-installation-card .compact-dl dd {
+  overflow-wrap: anywhere;
+}
+
+.security-pack-package-panel {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.security-pack-package-panel > label,
+.security-pack-manager > .wide-field {
+  display: grid;
+  gap: 5px;
+  color: #33445b;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.security-pack-package-panel textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.package-validation-result {
+  margin: 0;
+}
+
+.security-pack-quick-builder {
+  margin-top: 14px;
+}
+
+.security-pack-quick-builder > summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.security-pack-quick-builder .security-pack-form {
+  margin-top: 12px;
 }

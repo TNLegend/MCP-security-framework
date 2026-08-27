@@ -13,8 +13,15 @@ from app.schemas.security_pack import (
     AITemplateSuggestionPublic,
     CreateToolContractDraftRequest,
     CreateToolSecurityPackDraftRequest,
+    InstallSecurityPackPackageRequest,
+    SecurityPackActivateVersionRequest,
     SecurityPackCatalogPublic,
+    SecurityPackDeprecateVersionRequest,
+    SecurityPackLifecycleActionRequest,
+    SecurityPackLifecycleCatalogPublic,
+    SecurityPackPackageValidationPublic,
     TemplateSuggestionPublic,
+    ValidateSecurityPackPackageRequest,
     ToolContractDraftPublic,
     ToolReanalysisPublic,
 )
@@ -25,6 +32,17 @@ from app.services.control_plane_auth import (
 )
 from app.services.control_plane_config import active_revision
 from app.services.published_configuration import validate_config_content
+from app.services.security_pack_lifecycle import (
+    SecurityPackLifecycleError,
+    activate_version,
+    configuration_for_validation,
+    install_package,
+    lifecycle_catalog,
+    remove_pack,
+    set_enabled,
+    set_version_deprecated,
+    validate_package,
+)
 from app.services.security_pack_onboarding import (
     SecurityPackOnboardingError,
     add_declarative_security_pack,
@@ -52,6 +70,189 @@ def list_security_packs(
 ):
     content = _configuration_content(db, draft_revision_id)
     return security_pack_catalog(content)
+
+
+@router.get("/lifecycle", response_model=SecurityPackLifecycleCatalogPublic)
+def list_security_pack_lifecycle(
+    draft_revision_id: str | None = None,
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    content = _configuration_content(db, draft_revision_id)
+    if content is None:
+        raise HTTPException(status_code=400, detail="published_configuration_required")
+    return lifecycle_catalog(content)
+
+
+@router.post(
+    "/lifecycle/validate",
+    response_model=SecurityPackPackageValidationPublic,
+)
+def validate_security_pack_package(
+    payload: ValidateSecurityPackPackageRequest,
+    _: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        content = configuration_for_validation(db, payload.draft_revision_id)
+        return validate_package(payload.package, content=content)
+    except SecurityPackLifecycleError as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+
+
+@router.post(
+    "/lifecycle/install",
+    response_model=ConfigRevisionPublic,
+    status_code=201,
+)
+def install_security_pack_package(
+    payload: InstallSecurityPackPackageRequest,
+    current: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        revision = install_package(
+            db,
+            package=payload.package,
+            draft_revision_id=payload.draft_revision_id,
+            activate=payload.activate,
+            enable=payload.enable,
+            actor=current.user,
+            change_summary=payload.change_summary,
+        )
+        db.commit()
+        return ConfigRevisionPublic.model_validate(revision)
+    except SecurityPackLifecycleError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+
+
+@router.post(
+    "/lifecycle/{pack_id}/enable",
+    response_model=ConfigRevisionPublic,
+)
+def enable_security_pack(
+    pack_id: str,
+    payload: SecurityPackLifecycleActionRequest,
+    current: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _set_pack_enabled_route(db, current, pack_id, payload, True)
+
+
+@router.post(
+    "/lifecycle/{pack_id}/disable",
+    response_model=ConfigRevisionPublic,
+)
+def disable_security_pack(
+    pack_id: str,
+    payload: SecurityPackLifecycleActionRequest,
+    current: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _set_pack_enabled_route(db, current, pack_id, payload, False)
+
+
+@router.post(
+    "/lifecycle/{pack_id}/activate-version",
+    response_model=ConfigRevisionPublic,
+)
+def activate_security_pack_version(
+    pack_id: str,
+    payload: SecurityPackActivateVersionRequest,
+    current: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        revision = activate_version(
+            db,
+            pack_id=pack_id,
+            version=payload.version,
+            allow_deprecated=payload.allow_deprecated,
+            draft_revision_id=payload.draft_revision_id,
+            actor=current.user,
+            change_summary=payload.change_summary,
+        )
+        db.commit()
+        return ConfigRevisionPublic.model_validate(revision)
+    except SecurityPackLifecycleError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+
+
+@router.post(
+    "/lifecycle/{pack_id}/deprecate-version",
+    response_model=ConfigRevisionPublic,
+)
+def deprecate_security_pack_version(
+    pack_id: str,
+    payload: SecurityPackDeprecateVersionRequest,
+    current: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        revision = set_version_deprecated(
+            db,
+            pack_id=pack_id,
+            version=payload.version,
+            deprecated=payload.deprecated,
+            draft_revision_id=payload.draft_revision_id,
+            actor=current.user,
+            change_summary=payload.change_summary,
+        )
+        db.commit()
+        return ConfigRevisionPublic.model_validate(revision)
+    except SecurityPackLifecycleError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+
+
+@router.delete(
+    "/lifecycle/{pack_id}",
+    response_model=ConfigRevisionPublic,
+)
+def remove_security_pack_installation(
+    pack_id: str,
+    payload: SecurityPackLifecycleActionRequest,
+    current: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        revision = remove_pack(
+            db,
+            pack_id=pack_id,
+            draft_revision_id=payload.draft_revision_id,
+            actor=current.user,
+            change_summary=payload.change_summary,
+        )
+        db.commit()
+        return ConfigRevisionPublic.model_validate(revision)
+    except SecurityPackLifecycleError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+
+
+def _set_pack_enabled_route(
+    db: Session,
+    current: AuthenticatedControlPlaneUser,
+    pack_id: str,
+    payload: SecurityPackLifecycleActionRequest,
+    enabled: bool,
+):
+    try:
+        revision = set_enabled(
+            db,
+            pack_id=pack_id,
+            enabled=enabled,
+            draft_revision_id=payload.draft_revision_id,
+            actor=current.user,
+            change_summary=payload.change_summary,
+        )
+        db.commit()
+        return ConfigRevisionPublic.model_validate(revision)
+    except SecurityPackLifecycleError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=exc.code) from exc
 
 
 @router.get(

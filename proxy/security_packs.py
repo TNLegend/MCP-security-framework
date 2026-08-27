@@ -6,15 +6,60 @@ from typing import Any, Iterable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from common.canonical_json import sha256_canonical_json
+
 
 PACK_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 SECURITY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
+SEMVER_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 
 class SecurityPackError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+
+
+def parse_security_pack_version(value: str) -> tuple[int, int, int]:
+    match = SEMVER_PATTERN.fullmatch(value)
+    if match is None:
+        raise ValueError("security pack version must be strict semantic version MAJOR.MINOR.PATCH")
+    return tuple(int(part) for part in match.groups())
+
+
+class SecurityPackDependency(BaseModel):
+    pack_id: str
+    min_version: str | None = None
+    max_version_exclusive: str | None = None
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def validate_dependency(self) -> "SecurityPackDependency":
+        if not PACK_ID_PATTERN.fullmatch(self.pack_id):
+            raise ValueError("invalid security pack dependency id")
+        minimum = parse_security_pack_version(self.min_version) if self.min_version else None
+        maximum = (
+            parse_security_pack_version(self.max_version_exclusive)
+            if self.max_version_exclusive
+            else None
+        )
+        if minimum is not None and maximum is not None and minimum >= maximum:
+            raise ValueError("security pack dependency version range is empty")
+        return self
+
+    def accepts(self, version: str) -> bool:
+        parsed = parse_security_pack_version(version)
+        if self.min_version is not None and parsed < parse_security_pack_version(self.min_version):
+            return False
+        if (
+            self.max_version_exclusive is not None
+            and parsed >= parse_security_pack_version(self.max_version_exclusive)
+        ):
+            return False
+        return True
 
 
 class PackCapability(BaseModel):
@@ -215,6 +260,7 @@ class SecurityPackManifest(BaseModel):
     title: str
     description: str
     origin: Literal["BUILTIN", "DECLARATIVE"] = "BUILTIN"
+    dependencies: tuple[SecurityPackDependency, ...] = ()
     capabilities: tuple[PackCapability, ...]
     resource_types: tuple[PackResourceType, ...] = ()
     templates: tuple[ToolContractTemplate, ...] = ()
@@ -226,6 +272,16 @@ class SecurityPackManifest(BaseModel):
     def validate_manifest(self) -> "SecurityPackManifest":
         if not PACK_ID_PATTERN.fullmatch(self.id):
             raise ValueError("invalid security pack id")
+        parse_security_pack_version(self.version)
+        if len(self.capabilities) > 128 or len(self.resource_types) > 128 or len(self.templates) > 128:
+            raise ValueError("security pack manifest exceeds bounded collection limits")
+        if len(self.dependencies) > 32 or len(self.semantic_categories) > 128:
+            raise ValueError("security pack manifest exceeds bounded metadata limits")
+        dependency_ids = [item.pack_id for item in self.dependencies]
+        if len(dependency_ids) != len(set(dependency_ids)):
+            raise ValueError("duplicate security pack dependency")
+        if self.id in dependency_ids:
+            raise ValueError("security pack cannot depend on itself")
         capability_ids = [item.id for item in self.capabilities]
         resource_ids = [item.id for item in self.resource_types]
         template_ids = [item.id for item in self.templates]
@@ -264,6 +320,150 @@ class SecurityPackManifest(BaseModel):
                 ):
                     raise ValueError("template binding resource type is not allowed by capability")
         return self
+
+
+def security_pack_manifest_hash(manifest: SecurityPackManifest) -> str:
+    return sha256_canonical_json(manifest.model_dump(mode="json"))
+
+
+class SecurityPackInstalledVersion(BaseModel):
+    version: str
+    manifest: SecurityPackManifest
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    installed_at: str | None = None
+    signature_verified: bool = False
+    signer_key_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    deprecated: bool = False
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def validate_installed_version(self) -> "SecurityPackInstalledVersion":
+        parse_security_pack_version(self.version)
+        if self.manifest.version != self.version:
+            raise ValueError("installed security pack version does not match manifest")
+        if security_pack_manifest_hash(self.manifest) != self.manifest_sha256:
+            raise ValueError("installed security pack manifest hash mismatch")
+        if self.signer_key_fingerprint is not None and not self.signature_verified:
+            raise ValueError("signer fingerprint requires verified signature")
+        return self
+
+
+class SecurityPackInstallation(BaseModel):
+    pack_id: str
+    active_version: str
+    enabled: bool = False
+    versions: tuple[SecurityPackInstalledVersion, ...] = Field(min_length=1, max_length=64)
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def validate_installation(self) -> "SecurityPackInstallation":
+        if not PACK_ID_PATTERN.fullmatch(self.pack_id):
+            raise ValueError("invalid installed security pack id")
+        version_ids = [item.version for item in self.versions]
+        if len(version_ids) != len(set(version_ids)):
+            raise ValueError("duplicate installed security pack version")
+        if self.active_version not in version_ids:
+            raise ValueError("active security pack version is not installed")
+        if any(item.manifest.id != self.pack_id for item in self.versions):
+            raise ValueError("installed security pack id does not match manifest")
+        return self
+
+    def active(self) -> SecurityPackInstalledVersion:
+        for item in self.versions:
+            if item.version == self.active_version:
+                return item
+        raise SecurityPackError("active_security_pack_version_missing")
+
+
+def active_lifecycle_manifests(
+    installations: Iterable[SecurityPackInstallation],
+) -> tuple[SecurityPackManifest, ...]:
+    return tuple(
+        installation.active().manifest
+        for installation in installations
+        if installation.enabled
+    )
+
+
+def validate_security_pack_lifecycle(
+    security_packs: Iterable[SecurityPackManifest],
+    installations: Iterable[SecurityPackInstallation],
+) -> None:
+    custom = tuple(security_packs)
+    installed = tuple(installations)
+    if not installed:
+        # Backward compatibility for pre-Lot-4 signed revisions.
+        SecurityPackRegistry(custom)
+        return
+    ids = [item.pack_id for item in installed]
+    if len(ids) != len(set(ids)):
+        raise SecurityPackError("duplicate_security_pack_installation")
+    builtin_by_id = {pack.id: pack for pack in builtin_security_packs()}
+    if set(ids).intersection(builtin_by_id):
+        raise SecurityPackError("builtin_security_pack_cannot_be_managed")
+    projected = active_lifecycle_manifests(installed)
+    projected_by_id = {pack.id: pack for pack in projected}
+    custom_by_id = {pack.id: pack for pack in custom}
+    if set(projected_by_id) != set(custom_by_id):
+        raise SecurityPackError("security_pack_lifecycle_projection_mismatch")
+    for pack_id, manifest in projected_by_id.items():
+        if security_pack_manifest_hash(manifest) != security_pack_manifest_hash(custom_by_id[pack_id]):
+            raise SecurityPackError("security_pack_lifecycle_projection_mismatch")
+    SecurityPackRegistry(projected)
+
+    installed_by_id = {item.pack_id: item for item in installed}
+    for installation in installed:
+        for version_record in installation.versions:
+            for dependency in version_record.manifest.dependencies:
+                builtin = builtin_by_id.get(dependency.pack_id)
+                if builtin is not None:
+                    if not dependency.accepts(builtin.version):
+                        raise SecurityPackError("security_pack_dependency_version_unsatisfied")
+                    continue
+                dependency_install = installed_by_id.get(dependency.pack_id)
+                if dependency_install is None:
+                    raise SecurityPackError("security_pack_dependency_missing")
+                if not any(dependency.accepts(item.version) for item in dependency_install.versions):
+                    raise SecurityPackError("security_pack_dependency_version_unsatisfied")
+
+        if not installation.enabled:
+            continue
+        active_manifest = installation.active().manifest
+        for dependency in active_manifest.dependencies:
+            if dependency.pack_id in builtin_by_id:
+                continue
+            dependency_install = installed_by_id[dependency.pack_id]
+            if not dependency_install.enabled:
+                raise SecurityPackError("enabled_security_pack_dependency_disabled")
+            if not dependency.accepts(dependency_install.active_version):
+                raise SecurityPackError("enabled_security_pack_dependency_version_unsatisfied")
+
+    graph: dict[str, set[str]] = {}
+    for installation in installed:
+        active_manifest = installation.active().manifest
+        graph[installation.pack_id] = {
+            dependency.pack_id
+            for dependency in active_manifest.dependencies
+            if dependency.pack_id in installed_by_id
+        }
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(pack_id: str) -> None:
+        if pack_id in visiting:
+            raise SecurityPackError("security_pack_dependency_cycle")
+        if pack_id in visited:
+            return
+        visiting.add(pack_id)
+        for dependency_id in graph.get(pack_id, set()):
+            visit(dependency_id)
+        visiting.remove(pack_id)
+        visited.add(pack_id)
+
+    for pack_id in graph:
+        visit(pack_id)
 
 
 class SecurityPackRegistry:

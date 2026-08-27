@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 function Audit({ events = [], loading = false }) {
   const [query, setQuery] = useState("");
+  const [selectedEvent, setSelectedEvent] = useState(null);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) {
@@ -58,12 +59,13 @@ function Audit({ events = [], loading = false }) {
               <th>Revision</th>
               <th>Result</th>
               <th>Reason</th>
+              <th>Details</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan="7">No audit events.</td>
+                <td colSpan="8">No audit events.</td>
               </tr>
             ) : (
               filtered.map((event) => {
@@ -81,6 +83,11 @@ function Audit({ events = [], loading = false }) {
                     </span>
                   </td>
                   <td>{event.reason || "-"}</td>
+                  <td>
+                    <button onClick={() => setSelectedEvent(event)} type="button">
+                      View
+                    </button>
+                  </td>
                 </tr>
                 );
               })
@@ -88,7 +95,37 @@ function Audit({ events = [], loading = false }) {
           </tbody>
         </table>
       </div>
+      {selectedEvent && (
+        <section className="audit-event-detail" aria-label="Audit event detail">
+          <div className="section-heading compact-heading">
+            <h3>{selectedEvent.action}</h3>
+            <button onClick={() => setSelectedEvent(null)} type="button">Close</button>
+          </div>
+          <dl className="inline-metadata audit-event-metadata">
+            <div><dt>Event ID</dt><dd>{selectedEvent.id}</dd></div>
+            <div><dt>Target</dt><dd>{[selectedEvent.target_type, selectedEvent.target_id].filter(Boolean).join(" / ") || "-"}</dd></div>
+            <div><dt>Revision</dt><dd>{selectedEvent.revision_id || "-"}</dd></div>
+            <div><dt>Result</dt><dd>{selectedEvent.result}</dd></div>
+            <div><dt>Source IP</dt><dd>{selectedEvent.source_ip || "-"}</dd></div>
+            <div><dt>Reason</dt><dd>{selectedEvent.reason || "-"}</dd></div>
+          </dl>
+          <div className="audit-json-grid">
+            <AuditJson title="Before" value={selectedEvent.before_json} />
+            <AuditJson title="After" value={selectedEvent.after_json} />
+            <AuditJson title="Metadata" value={selectedEvent.metadata} />
+          </div>
+        </section>
+      )}
     </section>
+  );
+}
+
+function AuditJson({ title, value }) {
+  return (
+    <div>
+      <h4>{title}</h4>
+      <pre className="json-block">{value ? JSON.stringify(value, null, 2) : "-"}</pre>
+    </div>
   );
 }
 

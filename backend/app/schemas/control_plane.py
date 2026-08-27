@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, 
 
 from app.services.subject_authorization import SubjectAuthorizationDocument
 from proxy.identity_binding import IdentityBindingDocument
-from proxy.security_packs import SecurityPackManifest
+from proxy.security_packs import SecurityPackInstallation, SecurityPackManifest
 from proxy.tool_security_v2 import (
     AdapterResolution,
     AuthorityResourceScope,
@@ -136,6 +136,7 @@ class ControlPlaneConfigContent(BaseModel):
     capability_catalog_version: Literal["2"] = "2"
     resource_type_registry_version: Literal["2"] = "2"
     security_packs: tuple[SecurityPackManifest, ...] = ()
+    security_pack_installations: tuple[SecurityPackInstallation, ...] = ()
     tool_security_contracts: tuple[ToolSecurityContract, ...] = ()
     authority_resource_scopes: tuple[AuthorityResourceScope, ...] = ()
     adapter_resolutions: tuple[AdapterResolution, ...] = ()

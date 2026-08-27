@@ -1,6 +1,7 @@
 const API_BASE_URL =
   import.meta.env?.VITE_API_BASE_URL || "http://127.0.0.1:8000/api/v1";
 const REQUEST_TIMEOUT_MS = 20_000;
+const DISCOVERY_TIMEOUT_MS = 180_000;
 const ERROR_MESSAGES = Object.freeze({
   upstream_oauth_dynamic_registration_unsupported:
     "This MCP does not support automatic OAuth registration. Enter a provider-issued OAuth client ID and try again.",
@@ -303,6 +304,55 @@ export async function fetchSecurityPacks(draftRevisionId = null) {
   return request(withDraftRevision("/control-plane/security-packs", draftRevisionId));
 }
 
+export async function fetchSecurityPackLifecycle(draftRevisionId = null) {
+  return request(withDraftRevision(
+    "/control-plane/security-packs/lifecycle",
+    draftRevisionId,
+  ));
+}
+
+export async function validateSecurityPackPackage(payload) {
+  return request("/control-plane/security-packs/lifecycle/validate", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function installSecurityPackPackage(payload) {
+  return request("/control-plane/security-packs/lifecycle/install", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function setSecurityPackEnabled(packId, enabled, payload) {
+  return request(
+    `/control-plane/security-packs/lifecycle/${encodeURIComponent(packId)}/${enabled ? "enable" : "disable"}`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export async function activateSecurityPackVersion(packId, payload) {
+  return request(
+    `/control-plane/security-packs/lifecycle/${encodeURIComponent(packId)}/activate-version`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export async function deprecateSecurityPackVersion(packId, payload) {
+  return request(
+    `/control-plane/security-packs/lifecycle/${encodeURIComponent(packId)}/deprecate-version`,
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export async function removeSecurityPackInstallation(packId, payload) {
+  return request(
+    `/control-plane/security-packs/lifecycle/${encodeURIComponent(packId)}`,
+    { method: "DELETE", body: JSON.stringify(payload) },
+  );
+}
+
 export async function fetchToolTemplateSuggestions(toolId, draftRevisionId = null) {
   return request(withDraftRevision(
     `/control-plane/security-packs/tools/${toolId}/suggestions`,
@@ -402,13 +452,14 @@ export async function discoverHttpMcpServer(
     body: JSON.stringify(
       buildDiscoveryRequestBody(endpoint, protocolVersion, authMode, credentialRef),
     ),
+    timeoutMs: DISCOVERY_TIMEOUT_MS,
   });
 }
 
 export async function discoverRegisteredMcpServer(serverId) {
   return request(`/inventory/servers/${serverId}/discover`, {
     method: "POST",
-    timeoutMs: 180_000,
+    timeoutMs: DISCOVERY_TIMEOUT_MS,
   });
 }
 

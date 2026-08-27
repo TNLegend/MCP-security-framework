@@ -32,6 +32,10 @@ from app.services.published_configuration import (
     PublishedConfigurationProvider,
     validate_config_content,
 )
+from app.services.security_pack_lifecycle import (
+    SecurityPackLifecycleError,
+    content_with_declarative_manifest,
+)
 from app.services.server_security_metadata import refresh_server_security_status
 from app.services.tool_analysis import (
     ToolAnalysisService,
@@ -692,9 +696,10 @@ def add_declarative_security_pack(
     if draft is None or draft.status != "DRAFT" or draft.schema_version != 2:
         raise SecurityPackOnboardingError("v2_draft_required")
     content = validate_config_content(draft.content)
-    existing = tuple(pack for pack in content.security_packs if pack.id != manifest.id)
-    SecurityPackRegistry((*existing, manifest))
-    next_content = content.model_copy(update={"security_packs": (*existing, manifest)})
+    try:
+        next_content = content_with_declarative_manifest(content, manifest)
+    except SecurityPackLifecycleError as exc:
+        raise SecurityPackOnboardingError(exc.code) from exc
     return patch_draft_revision(
         db,
         draft_id=draft.id,
