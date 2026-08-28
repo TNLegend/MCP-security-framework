@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { approveTool, blockTool, fetchToolAnalysisBundle } from "../api/client";
+import ControlledAIAssistant from "../components/ControlledAIAssistant";
 import ToolContractOnboarding from "../components/ToolContractOnboarding";
 import {
   activateRowOnKeyboard,
@@ -345,6 +346,7 @@ const ANALYSIS_TABS = [
   ["overview", "Overview"],
   ["findings", "Findings"],
   ["semantic", "Semantic"],
+  ["ai", "AI Assist"],
   ["history", "History"],
   ["contract", "Contract"],
   ["raw", "Raw evidence"],
@@ -374,6 +376,9 @@ function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onCompl
         {activeTab === "overview" && <AnalysisOverview bundle={bundle} latestAnalysis={latestAnalysis} tool={tool} />}
         {activeTab === "findings" && <FindingsView error={bundle?.errors?.findings} findings={findings} />}
         {activeTab === "semantic" && <SemanticScores error={bundle?.errors?.analyses} scores={latestAnalysis?.semantic_scores} />}
+        {activeTab === "ai" && (
+          <ControlledAIAssistant bundle={bundle} isAdmin={isAdmin} tool={tool} />
+        )}
         {activeTab === "history" && <AnalysisHistory bundle={bundle} />}
         {activeTab === "contract" && (
           <ToolContractOnboarding isAdmin={isAdmin} onComplete={onComplete} tool={tool} />

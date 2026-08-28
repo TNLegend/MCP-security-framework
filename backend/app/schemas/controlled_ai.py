@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
+
+
+ControlledAIMode = Literal[
+    "EXPLAIN",
+    "RISK_SUMMARY",
+    "SUGGEST_NEXT_STEP",
+    "COMPARE_OPTIONS",
+    "DRAFT_ONBOARDING",
+]
+ControlledAIRecommendedAction = Literal[
+    "NO_CHANGE",
+    "KEEP_BLOCKED",
+    "HUMAN_REVIEW",
+    "CREATE_CONTRACT_DRAFT",
+    "CREATE_SECURITY_PACK_DRAFT",
+    "REVIEW_ADAPTER",
+    "REANALYZE",
+]
+
+
+class ControlledAIAssistanceRequest(BaseModel):
+    mode: ControlledAIMode
+    question: str | None = Field(default=None, max_length=1000)
+    draft_revision_id: str | None = Field(default=None, max_length=64)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ControlledAIOptionPublic(BaseModel):
+    id: str = Field(min_length=1, max_length=128)
+    title: str = Field(min_length=1, max_length=256)
+    reason: str = Field(min_length=1, max_length=1000)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ControlledAIAssistancePublic(BaseModel):
+    mode: ControlledAIMode
+    provider: Literal["gemini", "groq"]
+    fallback_used: StrictBool = False
+    tool_id: int
+    fingerprint: str = Field(min_length=64, max_length=64)
+    analysis_id: int
+    analysis_context_hash: str | None = Field(default=None, max_length=64)
+    summary: str = Field(min_length=1, max_length=2500)
+    risk_factors: tuple[str, ...] = Field(default=(), max_length=12)
+    recommended_action: ControlledAIRecommendedAction
+    rationale: str = Field(min_length=1, max_length=2500)
+    evidence_refs: tuple[str, ...] = Field(default=(), max_length=32)
+    template_options: tuple[ControlledAIOptionPublic, ...] = Field(default=(), max_length=8)
+    adapter_options: tuple[ControlledAIOptionPublic, ...] = Field(default=(), max_length=8)
+    draft_kind: Literal["NONE", "TEMPLATE_MAPPING", "SECURITY_PACK"] = "NONE"
+    draft_preview: dict[str, Any] | None = None
+    uncertainties: tuple[str, ...] = Field(default=(), max_length=12)
+    confidence: float = Field(ge=0, le=1)
+    non_authoritative: Literal[True] = True
+    requires_human_review: Literal[True] = True
+    can_mutate_runtime: Literal[False] = False
+
+    model_config = ConfigDict(extra="forbid")

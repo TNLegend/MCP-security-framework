@@ -22,6 +22,7 @@ import {
   hasControlPlaneSession,
   registerOAuthMcpServer,
   reanalyzeToolContract,
+  requestControlledAIAssistance,
   safeErrorMessage,
   settleNamedRequests,
   startOAuthConnection,
@@ -171,6 +172,27 @@ test("discoverHttpMcpServer sends exact HTTP payload without argument shift", as
     auth_mode: "BEARER",
     credential_ref: "mcp/vendor/service.token",
   });
+});
+
+test("controlled AI assistance uses the protected advisory endpoint and bounded timeout", async () => {
+  const captured = await captureRequest(() =>
+    requestControlledAIAssistance(12, {
+      mode: "EXPLAIN",
+      question: "Why is this under review?",
+    }),
+  );
+  assert.match(captured.url, /\/control-plane\/ai-assistance\/tools\/12$/);
+  assert.equal(captured.options.method, "POST");
+  assert.deepEqual(captured.body, {
+    mode: "EXPLAIN",
+    question: "Why is this under review?",
+  });
+  assert.equal(
+    await captureRequestTimeout(() =>
+      requestControlledAIAssistance(12, { mode: "RISK_SUMMARY", question: null }),
+    ),
+    60_000,
+  );
 });
 
 test("initial and registered discovery allow the full analyzer window", async () => {

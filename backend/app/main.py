@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes_control_plane_audit import router as control_plane_audit_router
 from app.api.routes_control_plane_auth import router as control_plane_auth_router
 from app.api.routes_control_plane_config import router as control_plane_config_router
+from app.api.routes_controlled_ai import router as controlled_ai_router
 from app.api.routes_control_plane_tool_analysis import (
     router as control_plane_tool_analysis_router,
 )
@@ -55,6 +56,7 @@ app.include_router(upstream_oauth_router, prefix=settings.api_prefix)
 app.include_router(security_packs_router, prefix=settings.api_prefix)
 app.include_router(control_plane_users_router, prefix=settings.api_prefix)
 app.include_router(control_plane_config_router, prefix=settings.api_prefix)
+app.include_router(controlled_ai_router, prefix=settings.api_prefix)
 app.include_router(control_plane_tool_analysis_router, prefix=settings.api_prefix)
 app.include_router(control_plane_audit_router, prefix=settings.api_prefix)
 app.include_router(emergency_deny_router, prefix=settings.api_prefix)

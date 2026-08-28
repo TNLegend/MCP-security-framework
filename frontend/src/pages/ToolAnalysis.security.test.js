@@ -38,9 +38,11 @@ test("tool evidence bundle is owned by the selected tool and reloads on same-too
   assert.match(source, /setBundle\(null\)/);
 });
 
-test("tool evidence is organized into findings semantic history and raw tabs", () => {
+test("tool evidence is organized into findings semantic AI history and raw tabs", () => {
   assert.match(source, /\["findings", "Findings"\]/);
   assert.match(source, /\["semantic", "Semantic"\]/);
+  assert.match(source, /\["ai", "AI Assist"\]/);
+  assert.match(source, /ControlledAIAssistant/);
   assert.match(source, /\["history", "History"\]/);
   assert.match(source, /\["contract", "Contract"\]/);
   assert.match(source, /\["raw", "Raw evidence"\]/);

@@ -290,6 +290,23 @@ both the backend and Gateway. Every distribution is bounded, checked for an exac
 archive layout, verified against the explicit signer allowlist, imported only after
 signature verification, and activated by restarting both processes together.
 
+Lot 6 adds Controlled AI Assistance inside Tool Analysis. The assistant is ADMIN-only,
+advisory-only, and evidence-bound: a completed analysis must match the tool's current
+fingerprint before a provider is called. Tool descriptions, schemas, findings, and the
+optional operator question are treated as untrusted data; provider context is bounded
+and sensitive-looking values are redacted.
+
+The AI Assist tab supports Explain, Risk summary, Suggest next step, Compare options,
+and Draft onboarding. Normal advisory modes may reference only evidence, templates,
+and adapters supplied by the framework. Unknown IDs and unsupported actions fail
+closed. Draft onboarding reuses the constrained Security Pack onboarding path and
+returns a non-authoritative preview only.
+
+Controlled AI cannot approve or block a tool, publish a revision, grant capabilities,
+install or sign adapters, modify OPA, execute MCP calls, or disable Emergency Deny.
+Successful and failed assistance requests are audited. See
+`CONTROLLED_AI_ASSISTANCE.md` for the trust boundary and guarantees.
+
 The supported schema profile accepts bounded local `$defs`/`$ref`, nullable scalar
 types, and `oneOf`/`anyOf` variants only when every branch exposes the same
 accountable resource paths. External references, recursive references, open

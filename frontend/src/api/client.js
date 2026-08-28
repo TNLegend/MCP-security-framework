@@ -314,6 +314,14 @@ export async function logoutControlPlane() {
   return payload;
 }
 
+export async function requestControlledAIAssistance(toolId, payload) {
+  return request(`/control-plane/ai-assistance/tools/${toolId}`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    timeoutMs: 60_000,
+  });
+}
+
 export async function fetchToolAnalysisBundle(toolId) {
   const bundle = await settleNamedRequests({
     status: () => request(`/tool-analysis/tools/${toolId}/status`),
