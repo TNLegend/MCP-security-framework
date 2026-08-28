@@ -4,6 +4,7 @@ import {
   addDeclarativeSecurityPack,
   deprecateSecurityPackVersion,
   fetchSecurityPackLifecycle,
+  fetchTrustedAdapters,
   installSecurityPackPackage,
   removeSecurityPackInstallation,
   safeErrorMessage,
@@ -25,12 +26,14 @@ const EMPTY_PACK = {
 };
 
 const EMPTY_CATALOG = { builtin_packs: [], installations: [] };
+const EMPTY_ADAPTER_CATALOG = { sdk_api_version: "1", adapters: [] };
 
 function SecurityPackManager({ onComplete, revision }) {
   const [form, setForm] = useState(EMPTY_PACK);
   const [summary, setSummary] = useState("");
   const [lifecycleSummary, setLifecycleSummary] = useState("");
   const [catalog, setCatalog] = useState(EMPTY_CATALOG);
+  const [adapterCatalog, setAdapterCatalog] = useState(EMPTY_ADAPTER_CATALOG);
   const [packageText, setPackageText] = useState("");
   const [packageValidation, setPackageValidation] = useState(null);
   const [activateOnInstall, setActivateOnInstall] = useState(true);
@@ -48,8 +51,12 @@ function SecurityPackManager({ onComplete, revision }) {
   async function refreshLifecycle() {
     if (!revision || revision.schema_version !== 2) return;
     try {
-      const next = await fetchSecurityPackLifecycle(draftRevisionId);
+      const [next, adapters] = await Promise.all([
+        fetchSecurityPackLifecycle(draftRevisionId),
+        fetchTrustedAdapters(),
+      ]);
       setCatalog(next || EMPTY_CATALOG);
+      setAdapterCatalog(adapters || EMPTY_ADAPTER_CATALOG);
     } catch (err) {
       setError(safeErrorMessage(err));
     }
@@ -217,8 +224,46 @@ function SecurityPackManager({ onComplete, revision }) {
       <div className="security-pack-lifecycle-summary">
         <span>Built-in packs: {builtinCount}</span>
         <span>Managed custom packs: {installations.length}</span>
+        <span>Trusted adapters: {adapterCatalog.adapters?.length || 0}</span>
         <span>{isDraft ? "Lifecycle changes enabled" : "Read-only lifecycle view"}</span>
       </div>
+
+      <section className="trusted-adapter-catalog">
+        <div className="section-heading compact-heading">
+          <h4>Trusted Adapter SDK</h4>
+          <p>API {adapterCatalog.sdk_api_version}</p>
+        </div>
+        <div className="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>Family</th>
+                <th>Adapter</th>
+                <th>Version</th>
+                <th>Trust</th>
+                <th>Validation</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(adapterCatalog.adapters || []).map((adapter) => (
+                <tr key={adapter.adapter_id}>
+                  <td>{adapter.family}</td>
+                  <td>
+                    <strong>{adapter.display_name}</strong>
+                    <small>{adapter.adapter_id}</small>
+                  </td>
+                  <td>API {adapter.adapter_api_version} / {adapter.implementation_version}</td>
+                  <td><span className="status-pill">{adapter.trust_level.replaceAll("_", " ")}</span></td>
+                  <td>{adapter.argument_validation}<small>{adapter.result_validation}</small></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="field-help">
+          Specialized adapters are reviewed framework code. Imported JSON packs cannot execute code.
+        </p>
+      </section>
 
       {installations.length === 0 ? (
         <div className="empty-state">No custom Security Packs installed.</div>

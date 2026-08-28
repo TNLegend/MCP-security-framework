@@ -261,6 +261,35 @@ another executable payload. Semantics that need a specialized parser or
 canonicalizer belong to the reviewed, signed trusted-adapter SDK planned for Lot 5,
 not to the declarative package import path.
 
+The Lot 5 Trusted Adapter SDK now provides a stable, fail-closed extension point
+for reviewed specialized parsers and result validators. Built-in reference
+adapters cover SQL, shell execution, payments, cloud IAM, Git, and messaging in an
+opt-in pack that does not reinterpret existing contracts. External registrations
+require a verified detached Ed25519 signature over the reviewed distribution;
+adapter ID collisions, unsupported API versions, stale implementation snapshots,
+and malformed specialized results are rejected. The Control Center exposes the
+read-only adapter catalog and its validation/trust metadata. See
+`docs/TRUSTED_ADAPTER_SDK.md` for the extension contract.
+
+When no installed template matches a tool, the Contract view now separates the
+direct declarative path from the specialized-adapter path, explains the trust
+boundary, ranks nearby reviewed adapters only as non-authoritative onboarding
+signals, and offers bounded fail-closed starter archives. The operator utility
+creates, signs, validates, and installs reviewed distributions without accepting
+executable uploads through the Control Center:
+
+```powershell
+python scripts/trusted_adapter.py starter blank widget-adapter .runtime/adapter-work/widget
+python scripts/trusted_adapter.py sign .runtime/adapter-work/widget path/to/reviewer-private.pem .runtime/widget-adapter.zip
+python scripts/trusted_adapter.py validate .runtime/widget-adapter.zip --trusted-fingerprint <sha256>
+python scripts/trusted_adapter.py install .runtime/widget-adapter.zip .runtime/trusted-adapters --trusted-fingerprint <sha256>
+```
+
+`TRUSTED_ADAPTER_DIRECTORY` and `TRUSTED_ADAPTER_SIGNER_FINGERPRINTS` are read by
+both the backend and Gateway. Every distribution is bounded, checked for an exact
+archive layout, verified against the explicit signer allowlist, imported only after
+signature verification, and activated by restarting both processes together.
+
 The supported schema profile accepts bounded local `$defs`/`$ref`, nullable scalar
 types, and `oneOf`/`anyOf` variants only when every branch exposes the same
 accountable resource paths. External references, recursive references, open

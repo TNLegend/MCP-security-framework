@@ -535,6 +535,7 @@ def builtin_security_packs() -> tuple[SecurityPackManifest, ...]:
         _calendar_pack(),
         _payments_pack(),
         _process_pack(),
+        _trusted_adapter_examples_pack(),
     )
 
 
@@ -825,4 +826,70 @@ def _process_pack() -> SecurityPackManifest:
             _template("process.execute", "Execute Process", capability.id, resource.id, ("command", "script", "executable", "program"), ("execute", "command", "shell", "script", "process")),
         ),
         semantic_categories=("shell_injection", "privilege_escalation"),
+    )
+
+
+def _trusted_adapter_examples_pack() -> SecurityPackManifest:
+    resources = (
+        _resource("sql_database_object", adapter_id="sql", specialized=True),
+        _resource("shell_executable", adapter_id="shell", specialized=True),
+        _resource("payment_destination", adapter_id="payment", specialized=True),
+        _resource("cloud_iam_resource", adapter_id="cloud-iam", specialized=True),
+        _resource("git_repository_ref", adapter_id="git", specialized=True),
+        _resource("message_destination", adapter_id="messaging", specialized=True),
+    )
+    capabilities = (
+        _capability("database.sql.read", (resources[0].id,)),
+        _capability("database.sql.write", (resources[0].id,), external=True),
+        _capability("database.sql.delete", (resources[0].id,), destructive=True, external=True),
+        _capability("process.shell.execute", (resources[1].id,), destructive=True, external=True),
+        _capability("payment.transfer.execute", (resources[2].id,), destructive=True, external=True),
+        _capability("cloud.iam.mutate", (resources[3].id,), destructive=True, external=True),
+        _capability("git.repository.write", (resources[4].id,), destructive=True, external=True),
+        _capability("message.delivery.send", (resources[5].id,), external=True),
+    )
+    templates = (
+        _template("trusted.sql-read", "Read with SQL", capabilities[0].id, resources[0].id, ("query", "sql", "statement"), ("select", "sql", "query", "database")),
+        _template("trusted.sql-write", "Write with SQL", capabilities[1].id, resources[0].id, ("query", "sql", "statement"), ("insert", "update", "sql", "database")),
+        _template("trusted.sql-delete", "Delete with SQL", capabilities[2].id, resources[0].id, ("query", "sql", "statement"), ("delete", "sql", "database")),
+        _template("trusted.shell", "Execute Shell Command", capabilities[3].id, resources[1].id, ("command", "script"), ("shell", "command", "execute")),
+        ToolContractTemplate(
+            id="trusted.payment",
+            title="Execute Payment Transfer",
+            description="Execute a payment transfer with a positive bounded amount.",
+            capability=capabilities[4].id,
+            keywords=("payment", "transfer", "pay"),
+            bindings=(TemplateBinding(
+                key="resource",
+                resource_type=resources[2].id,
+                argument_hints=("recipient", "beneficiary", "destination"),
+            ),),
+            constraints=(TemplateArgumentConstraint(
+                key="amount",
+                operator="GT",
+                value=0,
+                argument_hints=("amount", "value", "total"),
+            ),),
+            max_resource_cardinality=1,
+        ),
+        _template("trusted.cloud-iam", "Mutate Cloud IAM", capabilities[5].id, resources[3].id, ("arn", "resource", "principal", "role"), ("iam", "policy", "permission", "role")),
+        _template("trusted.git", "Write Git Repository", capabilities[6].id, resources[4].id, ("repository", "repo", "ref", "branch"), ("git", "commit", "branch", "repository")),
+        _template("trusted.messaging", "Send to Messaging Destination", capabilities[7].id, resources[5].id, ("recipient", "channel", "topic", "destination"), ("send", "message", "channel", "topic")),
+    )
+    return SecurityPackManifest(
+        id="trusted-adapter-examples",
+        version="1.0.0",
+        title="Trusted Adapter SDK Examples",
+        description="Reviewed specialized adapters for common high-risk MCP tool families.",
+        capabilities=capabilities,
+        resource_types=resources,
+        templates=templates,
+        semantic_categories=(
+            "sql_injection",
+            "shell_injection",
+            "unauthorized_financial_transaction",
+            "privilege_escalation",
+            "source_control_write",
+            "external_recipient",
+        ),
     )

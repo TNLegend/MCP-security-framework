@@ -421,6 +421,47 @@ class ToolAnalysisUnitTests(unittest.TestCase):
         self.assertNotEqual(result["analysis_status"], "QUARANTINED")
         self.assertEqual(result["semantic_scores"]["unresolved_unknown_reasons"], [])
 
+    def test_exact_reviewed_contract_supplies_new_domain_action_evidence(self) -> None:
+        profile = {
+            "revision": "custom-widget-revision",
+            "schema_version": 2,
+            "contract_hash": "8" * 64,
+            "contract": {
+                "contract_version": "2",
+                "server_ref": "streamable_http:https://widgets.example/mcp",
+                "tool_name": "transmute_widget",
+                "effects": [{
+                    "effect_id": "widget.execute",
+                    "capability": "widget.execute",
+                    "resource_bindings": [{
+                        "path": ["widget"],
+                        "resource_type": "widget_resource",
+                    }],
+                }],
+                "unbound_arguments": [],
+            },
+        }
+        result = analyze_tool_version(
+            tool_snapshot={
+                "name": "transmute_widget",
+                "description": "Apply a proprietary transformation to a widget reference.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"widget": {"type": "string"}},
+                    "required": ["widget"],
+                    "additionalProperties": False,
+                },
+                "output_schema": {},
+                "annotations": {},
+                "execution": {},
+            },
+            profile_snapshot=profile,
+            semantic_model=MockSemanticModel(),
+        )
+
+        self.assertEqual(result["analysis_status"], "APPROVED")
+        self.assertEqual(result["semantic_scores"]["unresolved_unknown_reasons"], [])
+
     def test_corroborated_hidden_action_remains_semantically_flagged(self) -> None:
         result = analyze_tool_version(
             tool_snapshot=tool_snapshot(

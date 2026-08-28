@@ -495,6 +495,7 @@ def analyze_tool_version(
     unresolved_unknown_reasons = _unresolved_semantic_unknown_reasons(
         semantic_facts.unknown_reasons,
         profile_snapshot,
+        tool_name=str(tool_snapshot.get("name") or ""),
     )
     risk_score = _risk_score(findings, semantic_result, drift)
     risk_level = _risk_level(risk_score)
@@ -1527,11 +1528,22 @@ def capabilities_from_profile(profile: dict[str, Any]) -> set[str]:
 def _unresolved_semantic_unknown_reasons(
     reasons: tuple[str, ...],
     profile_snapshot: dict[str, Any] | None,
+    *,
+    tool_name: str,
 ) -> tuple[str, ...]:
     unresolved = list(reasons)
     contract = (profile_snapshot or {}).get("contract")
     effects = contract.get("effects") if isinstance(contract, dict) else None
-    has_bound_resource = isinstance(effects, list) and any(
+    contract_matches_tool = (
+        isinstance(contract, dict)
+        and contract.get("tool_name") == tool_name
+        and isinstance(effects, list)
+    )
+    has_bound_action = contract_matches_tool and any(
+        isinstance(effect, dict) and bool(effect.get("capability"))
+        for effect in effects
+    )
+    has_bound_resource = contract_matches_tool and any(
         isinstance(effect, dict)
         and (
             bool(effect.get("resource_bindings"))
@@ -1539,6 +1551,8 @@ def _unresolved_semantic_unknown_reasons(
         )
         for effect in effects
     )
+    if has_bound_action:
+        unresolved = [reason for reason in unresolved if reason != "action_not_evidenced"]
     if has_bound_resource:
         unresolved = [reason for reason in unresolved if reason != "resource_not_evidenced"]
     return tuple(unresolved)

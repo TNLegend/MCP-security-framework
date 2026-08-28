@@ -7,6 +7,8 @@ const source = readFileSync(new URL("./ToolContractOnboarding.jsx", import.meta.
 test("no-match onboarding does not silently select an unrelated template", () => {
   assert.match(source, /No compatible template/);
   assert.match(source, /Create Security Pack/);
+  assert.match(source, /AdapterGuidancePanel/);
+  assert.match(source, /fetchToolAdapterGuidance/);
   assert.doesNotMatch(source, /fallbackTemplate/);
   assert.match(source, /setTemplateId\(first\?\.template_id \|\| ""\)/);
 });
@@ -17,6 +19,13 @@ test("tool onboarding keeps pack contract publication and reanalysis in one flow
   assert.match(source, /publishConfigRevision/);
   assert.match(source, /reanalyzeToolContract/);
   assert.match(source, /Publish & reanalyse/);
+});
+
+test("tool onboarding resumes only a draft with a novel compatible template", () => {
+  assert.match(source, /fetchConfigRevisions/);
+  assert.match(source, /hasNovelDraftTemplate/);
+  assert.match(source, /Resumed compatible draft/);
+  assert.match(source, /!publishedTemplateIds\.has\(value\.template_id\)/);
 });
 
 test("advanced onboarding exposes effects constraints roles and typed scopes", () => {

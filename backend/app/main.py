@@ -20,6 +20,9 @@ from app.api.routes_tools import router as tools_router
 from app.api.routes_upstream_oauth import router as upstream_oauth_router
 from app.api.routes_security_packs import router as security_packs_router
 from app.core.config import settings
+from proxy.trusted_adapter_packages import load_trusted_adapters_from_environment
+
+load_trusted_adapters_from_environment()
 
 app = FastAPI(
     title=settings.app_name,

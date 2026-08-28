@@ -31,6 +31,8 @@ from proxy.security_packs import (
     security_pack_manifest_hash,
     validate_security_pack_lifecycle,
 )
+from proxy.resource_adapters_v2 import AdapterRegistry
+from proxy.tool_security_v2 import SecurityModelError
 
 
 class SecurityPackLifecycleError(ValueError):
@@ -52,7 +54,7 @@ def validate_package(
     content: ControlPlaneConfigContent,
 ) -> dict[str, Any]:
     manifest = package.manifest
-    _validate_custom_manifest_safety(manifest)
+    validate_custom_manifest_safety(manifest)
     digest = security_pack_manifest_hash(manifest)
     expected_matched = package.expected_sha256 is None or package.expected_sha256 == digest
     if not expected_matched:
@@ -401,7 +403,7 @@ def content_with_declarative_manifest(
     content: ControlPlaneConfigContent,
     manifest: SecurityPackManifest,
 ) -> ControlPlaneConfigContent:
-    _validate_custom_manifest_safety(manifest)
+    validate_custom_manifest_safety(manifest)
     installations = list(bootstrap_installations(content))
     current = _installation_by_id(installations).get(manifest.id)
     digest = security_pack_manifest_hash(manifest)
@@ -511,16 +513,47 @@ def _installation_by_id(
     return {item.pack_id: item for item in installations}
 
 
-def _validate_custom_manifest_safety(manifest: SecurityPackManifest) -> None:
+def validate_custom_manifest_safety(manifest: SecurityPackManifest) -> None:
     if manifest.origin != "DECLARATIVE":
         raise SecurityPackLifecycleError("custom_pack_must_be_declarative")
-    if any(
-        resource.adapter_id != "generic-declarative"
-        or resource.requires_specialized_interpretation
-        or resource.canonicalizer not in {"hierarchical_name", "email_address"}
-        for resource in manifest.resource_types
-    ):
-        raise SecurityPackLifecycleError("declarative_pack_requires_safe_generic_adapter")
+    registry = AdapterRegistry()
+    resources = {resource.id: resource for resource in manifest.resource_types}
+    for resource in manifest.resource_types:
+        if resource.adapter_id == "generic-declarative":
+            if (
+                resource.requires_specialized_interpretation
+                or resource.canonicalizer not in {"hierarchical_name", "email_address"}
+            ):
+                raise SecurityPackLifecycleError(
+                    "declarative_pack_requires_safe_generic_adapter"
+                )
+            continue
+        if not resource.requires_specialized_interpretation:
+            raise SecurityPackLifecycleError("trusted_specialized_adapter_required")
+        try:
+            registry.get(resource.adapter_id)
+        except SecurityModelError as exc:
+            raise SecurityPackLifecycleError(
+                "trusted_specialized_adapter_required"
+            ) from exc
+    for capability in manifest.capabilities:
+        for resource_type in capability.allowed_resource_types:
+            resource = resources[resource_type]
+            if resource.adapter_id == "generic-declarative":
+                continue
+            adapter = registry.get(resource.adapter_id).manifest
+            capability_supported = (
+                "*" in adapter.supported_capabilities
+                or capability.id in adapter.supported_capabilities
+            )
+            resource_supported = (
+                "*" in adapter.supported_resource_types
+                or resource_type in adapter.supported_resource_types
+            )
+            if not capability_supported or not resource_supported:
+                raise SecurityPackLifecycleError(
+                    "trusted_specialized_adapter_incompatible"
+                )
 
 
 def _manifest_collisions(

@@ -74,6 +74,7 @@ class PreparedToolRequest:
     authority_resource_scopes: tuple[dict[str, Any], ...] = ()
     security_contract: dict[str, Any] | None = None
     capability_catalog: tuple[dict[str, Any], ...] = ()
+    adapter_resolutions: tuple[dict[str, Any], ...] = ()
 
 
 def prepare_tool_request_v2(
@@ -255,6 +256,9 @@ def prepare_tool_request_v2(
         ),
         security_contract=contract.model_dump(mode="json"),
         capability_catalog=tuple(capability_catalog.as_policy_data()),
+        adapter_resolutions=tuple(
+            resolution.model_dump(mode="json") for resolution in adapter_resolutions
+        ),
     )
 
 

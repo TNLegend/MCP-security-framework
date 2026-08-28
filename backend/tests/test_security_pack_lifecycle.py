@@ -2,6 +2,7 @@ import base64
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -31,12 +32,20 @@ from app.services.security_pack_lifecycle import (
 )
 from proxy.security_packs import (
     PackCapability,
+    PackResourceType,
     SecurityPackDependency,
     SecurityPackInstallation,
     SecurityPackInstalledVersion,
     SecurityPackManifest,
     security_pack_manifest_hash,
     validate_security_pack_lifecycle,
+)
+from proxy.resource_adapters_v2 import (
+    AdapterManifest,
+    AdapterResultInspection,
+    AdapterRegistry,
+    ResourceAdapter,
+    verify_trusted_adapter_distribution,
 )
 from proxy.tool_security_v2 import ToolEffect, ToolSecurityContract
 
@@ -155,6 +164,37 @@ class SecurityPackPackageValidationTests(unittest.TestCase):
         result = validate_package(SecurityPackPackageInput(manifest=collision), content=self.content)
         self.assertIn("security_pack_capability_collision", result["collisions"])
         self.assertFalse(result["installable"])
+
+    def test_data_only_pack_can_reference_only_a_registered_signed_adapter(self):
+        manifest = specialized_pack("signed-specialized")
+        with self.assertRaisesRegex(
+            SecurityPackLifecycleError,
+            "trusted_specialized_adapter_required",
+        ):
+            validate_package(SecurityPackPackageInput(manifest=manifest), content=self.content)
+
+        adapter = LifecycleSignedAdapter()
+        private = ed25519.Ed25519PrivateKey.generate()
+        public_pem = private.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("ascii")
+        distribution = b"signed lifecycle adapter"
+        registration = verify_trusted_adapter_distribution(
+            adapter,
+            distribution=distribution,
+            public_key_pem=public_pem,
+            signature_base64=base64.b64encode(private.sign(distribution)).decode("ascii"),
+        )
+        with patch(
+            "app.services.security_pack_lifecycle.AdapterRegistry",
+            lambda: AdapterRegistry(trusted_adapters=(registration,)),
+        ):
+            result = validate_package(
+                SecurityPackPackageInput(manifest=manifest),
+                content=self.content,
+            )
+        self.assertTrue(result["installable"])
 
 
 class SecurityPackLifecycleServiceTests(unittest.TestCase):
@@ -400,6 +440,49 @@ def simple_pack(
             ),
         ),
     )
+
+
+def specialized_pack(pack_id: str) -> SecurityPackManifest:
+    return SecurityPackManifest(
+        id=pack_id,
+        version="1.0.0",
+        title="Signed specialized pack",
+        description="Data-only manifest referencing reviewed adapter code.",
+        origin="DECLARATIVE",
+        capabilities=(PackCapability(
+            id="signed_specialized.execute",
+            domain="signed_specialized",
+            verb="execute",
+            destructive=True,
+            external_effect=True,
+            allowed_resource_types=("signed_specialized_resource",),
+        ),),
+        resource_types=(PackResourceType(
+            id="signed_specialized_resource",
+            canonicalizer="hierarchical_name",
+            hierarchy_support=True,
+            allowed_matching_modes=("SELF", "SUBTREE"),
+            adapter_id="lifecycle-signed-adapter",
+            requires_specialized_interpretation=True,
+        ),),
+    )
+
+
+class LifecycleSignedAdapter(ResourceAdapter):
+    manifest = AdapterManifest(
+        adapter_id="lifecycle-signed-adapter",
+        adapter_api_version="1",
+        implementation_version="1.0.0",
+        supported_capabilities=("signed_specialized.execute",),
+        supported_resource_types=("signed_specialized_resource",),
+        trust_level="SIGNED_REVIEWED",
+    )
+
+    def resolve(self, canonical_args, effect, adapter_resolution, trusted_authority_context):
+        raise AssertionError("adapter execution is outside package validation")
+
+    def inspect_result(self, result):
+        return AdapterResultInspection()
 
 
 def installation(manifest: SecurityPackManifest, *, enabled: bool) -> SecurityPackInstallation:

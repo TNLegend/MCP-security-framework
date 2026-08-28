@@ -229,6 +229,9 @@ class MCPEndpointPolicyTests(unittest.TestCase):
     def test_runtime_http_client_does_not_follow_redirects(self) -> None:
         class RedirectHandler(BaseHTTPRequestHandler):
             def do_POST(self):  # noqa: N802
+                content_length = int(self.headers.get("Content-Length", "0"))
+                if content_length:
+                    self.rfile.read(content_length)
                 self.send_response(302)
                 self.send_header("Location", "http://169.254.169.254/latest/meta-data")
                 self.end_headers()

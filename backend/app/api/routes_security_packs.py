@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -21,10 +21,15 @@ from app.schemas.security_pack import (
     SecurityPackLifecycleCatalogPublic,
     SecurityPackPackageValidationPublic,
     TemplateSuggestionPublic,
+    ToolAdapterGuidancePublic,
+    TrustedAdapterCatalogPublic,
     ValidateSecurityPackPackageRequest,
     ToolContractDraftPublic,
     ToolReanalysisPublic,
 )
+from proxy.resource_adapters_v2 import AdapterRegistry
+from proxy.tool_security_v2 import SecurityModelError
+from proxy.trusted_adapter_packages import build_adapter_starter_archive
 from app.services.control_plane_auth import (
     AuthenticatedControlPlaneUser,
     require_admin,
@@ -45,6 +50,7 @@ from app.services.security_pack_lifecycle import (
 )
 from app.services.security_pack_onboarding import (
     SecurityPackOnboardingError,
+    adapter_guidance_for_tool,
     add_declarative_security_pack,
     create_tool_security_pack_draft,
     create_tool_contract_draft,
@@ -82,6 +88,36 @@ def list_security_pack_lifecycle(
     if content is None:
         raise HTTPException(status_code=400, detail="published_configuration_required")
     return lifecycle_catalog(content)
+
+
+@router.get("/adapters", response_model=TrustedAdapterCatalogPublic)
+def list_trusted_adapters(
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+):
+    return {
+        "sdk_api_version": "1",
+        "adapters": AdapterRegistry().catalog(),
+    }
+
+
+@router.get("/adapters/starters/{starter_id}")
+def download_trusted_adapter_starter(
+    starter_id: str,
+    adapter_id: str = Query(pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$"),
+    _: AuthenticatedControlPlaneUser = Depends(require_admin),
+):
+    try:
+        archive = build_adapter_starter_archive(starter_id, adapter_id)
+    except SecurityModelError as exc:
+        raise HTTPException(status_code=400, detail=exc.code) from exc
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{adapter_id}-starter.zip"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post(
@@ -271,6 +307,26 @@ def tool_template_suggestions(
     content = _configuration_content(db, draft_revision_id)
     try:
         return suggest_templates_for_tool(tool, content=content)
+    except SecurityPackOnboardingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get(
+    "/tools/{tool_id}/adapter-guidance",
+    response_model=ToolAdapterGuidancePublic,
+)
+def tool_adapter_guidance(
+    tool_id: int,
+    draft_revision_id: str | None = None,
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    tool = db.get(MCPTool, tool_id)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    content = _configuration_content(db, draft_revision_id)
+    try:
+        return adapter_guidance_for_tool(tool, content=content)
     except SecurityPackOnboardingError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

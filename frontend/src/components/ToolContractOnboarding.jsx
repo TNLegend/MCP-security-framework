@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import {
   createToolContractDraft,
   fetchAIToolTemplateSuggestion,
+  fetchConfigRevisions,
   fetchSecurityPacks,
+  fetchToolAdapterGuidance,
   fetchToolTemplateSuggestions,
   publishConfigRevision,
   reanalyzeToolContract,
@@ -14,10 +16,12 @@ import {
   hasRecordedInputSchema,
   schemaLeafPaths,
 } from "./contractUtils";
+import AdapterGuidancePanel from "./AdapterGuidancePanel";
 
 function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
   const [catalog, setCatalog] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
+  const [adapterGuidance, setAdapterGuidance] = useState(null);
   const [templateId, setTemplateId] = useState("");
   const [mappings, setMappings] = useState({});
   const [fixedResources, setFixedResources] = useState({});
@@ -49,6 +53,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
     if (!hasInputSchema) {
       setCatalog(null);
       setSuggestions([]);
+      setAdapterGuidance(null);
       setTemplateId("");
       setMappings({});
       setFixedResources({});
@@ -65,18 +70,57 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
     setLoading(true);
     setError("");
     setMessage("");
-    Promise.all([fetchSecurityPacks(), fetchToolTemplateSuggestions(tool.id)])
-      .then(([nextCatalog, nextSuggestions]) => {
+    Promise.all([
+      fetchConfigRevisions(),
+      fetchSecurityPacks(),
+      fetchToolTemplateSuggestions(tool.id),
+      fetchToolAdapterGuidance(tool.id),
+    ])
+      .then(async ([revisions, publishedCatalog, publishedSuggestions, publishedGuidance]) => {
         if (cancelled) return;
+
+        let nextCatalog = publishedCatalog;
+        let nextSuggestions = publishedSuggestions;
+        let nextGuidance = publishedGuidance;
+        let resumedDraft = null;
+        const publishedTemplateIds = new Set(
+          publishedSuggestions.map((value) => value.template_id),
+        );
+        const draftCandidates = (revisions || []).filter(
+          (revision) => revision.status === "DRAFT" && revision.schema_version === 2,
+        );
+
+        for (const draft of draftCandidates) {
+          const draftSuggestions = await fetchToolTemplateSuggestions(tool.id, draft.id);
+          if (cancelled) return;
+          const hasNovelDraftTemplate = draftSuggestions.some(
+            (value) => !publishedTemplateIds.has(value.template_id),
+          );
+          if (!hasNovelDraftTemplate) continue;
+
+          [nextCatalog, nextGuidance] = await Promise.all([
+            fetchSecurityPacks(draft.id),
+            fetchToolAdapterGuidance(tool.id, draft.id),
+          ]);
+          if (cancelled) return;
+          nextSuggestions = draftSuggestions;
+          resumedDraft = draft;
+          break;
+        }
+
         setCatalog(nextCatalog);
         setSuggestions(nextSuggestions);
+        setAdapterGuidance(nextGuidance);
         const first = nextSuggestions[0];
         setTemplateId(first?.template_id || "");
         setMappings(first?.argument_mappings || {});
         setFixedResources({});
-        setDraftRevisionId(null);
+        setDraftRevisionId(resumedDraft?.id || null);
         setContractDraft(null);
         setPackBuilderOpen(false);
+        if (resumedDraft) {
+          setMessage(`Resumed compatible draft ${resumedDraft.revision_number}.`);
+        }
       })
       .catch((err) => !cancelled && setError(safeErrorMessage(err)))
       .finally(() => !cancelled && setLoading(false));
@@ -173,9 +217,10 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
     setBusy(true);
     setError("");
     try {
-      const [nextCatalog, nextSuggestions] = await Promise.all([
+      const [nextCatalog, nextSuggestions, nextGuidance] = await Promise.all([
         fetchSecurityPacks(revision.id),
         fetchToolTemplateSuggestions(tool.id, revision.id),
+        fetchToolAdapterGuidance(tool.id, revision.id),
       ]);
       const newTemplateId = manifest.templates[0].id;
       const suggestion = nextSuggestions.find(
@@ -183,6 +228,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
       );
       setCatalog(nextCatalog);
       setSuggestions(nextSuggestions);
+      setAdapterGuidance(nextGuidance);
       setDraftRevisionId(revision.id);
       setTemplateId(newTemplateId);
       setMappings(suggestion?.argument_mappings || {});
@@ -208,12 +254,14 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
       setMessage(`Published and reanalyzed: ${result.analysis_statuses.join(", ")}.`);
       setContractDraft(null);
       setDraftRevisionId(null);
-      const [nextCatalog, nextSuggestions] = await Promise.all([
+      const [nextCatalog, nextSuggestions, nextGuidance] = await Promise.all([
         fetchSecurityPacks(),
         fetchToolTemplateSuggestions(tool.id),
+        fetchToolAdapterGuidance(tool.id),
       ]);
       setCatalog(nextCatalog);
       setSuggestions(nextSuggestions);
+      setAdapterGuidance(nextGuidance);
       await onComplete?.();
     } catch (err) {
       setError(safeErrorMessage(err));
@@ -239,16 +287,19 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
       {message && <div className="success-banner">{message}</div>}
 
       {suggestions.length === 0 && !selectedTemplate && !packBuilderOpen && (
-        <div className="no-template-state">
-          <div>
-            <strong>No compatible template</strong>
-            <p>This tool stays quarantined until an administrator creates or selects a compatible contract.</p>
+        <div className="no-template-workflow">
+          <div className="no-template-state">
+            <div>
+              <strong>No compatible template</strong>
+              <p>This tool stays quarantined until an administrator creates or selects a compatible contract.</p>
+            </div>
+            {isAdmin && (
+              <button className="secondary-action" onClick={() => setPackBuilderOpen(true)} type="button">
+                Create Security Pack
+              </button>
+            )}
           </div>
-          {isAdmin && (
-            <button className="secondary-action" onClick={() => setPackBuilderOpen(true)} type="button">
-              Create Security Pack
-            </button>
-          )}
+          <AdapterGuidancePanel guidance={adapterGuidance} isAdmin={isAdmin} tool={tool} />
         </div>
       )}
 

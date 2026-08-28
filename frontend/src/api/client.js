@@ -91,6 +91,43 @@ async function request(path, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+async function requestBlob(path) {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      credentials: "include",
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      throw new ApiError("Request timed out. Please retry.", {
+        code: "request_timeout",
+        status: 0,
+      });
+    }
+    throw new ApiError("Network request failed.", {
+      code: "network_error",
+      status: 0,
+    });
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    let payload = null;
+    let text = "";
+    try {
+      text = await response.text();
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+    throw apiErrorFromResponse(response.status, payload, text);
+  }
+  return response.blob();
+}
+
 export function apiErrorFromResponse(status, payload, text = "") {
   const formatted = formatApiErrorDetail(payload?.detail ?? payload ?? text);
   return new ApiError(`Backend request failed: ${status}${formatted.message ? `: ${formatted.message}` : ""}`, {
@@ -311,6 +348,17 @@ export async function fetchSecurityPackLifecycle(draftRevisionId = null) {
   ));
 }
 
+export async function fetchTrustedAdapters() {
+  return request("/control-plane/security-packs/adapters");
+}
+
+export async function downloadTrustedAdapterStarter(starterId, adapterId) {
+  return requestBlob(
+    `/control-plane/security-packs/adapters/starters/${encodeURIComponent(starterId)}`
+      + `?adapter_id=${encodeURIComponent(adapterId)}`,
+  );
+}
+
 export async function validateSecurityPackPackage(payload) {
   return request("/control-plane/security-packs/lifecycle/validate", {
     method: "POST",
@@ -360,6 +408,13 @@ export async function fetchToolTemplateSuggestions(toolId, draftRevisionId = nul
   ));
 }
 
+export async function fetchToolAdapterGuidance(toolId, draftRevisionId = null) {
+  return request(withDraftRevision(
+    `/control-plane/security-packs/tools/${toolId}/adapter-guidance`,
+    draftRevisionId,
+  ));
+}
+
 export async function fetchAIToolTemplateSuggestion(toolId, draftRevisionId = null) {
   return request(withDraftRevision(
     `/control-plane/security-packs/tools/${toolId}/ai-suggestion`,
@@ -387,6 +442,7 @@ export async function createToolContractDraft(toolId, payload) {
   return request(`/control-plane/security-packs/tools/${toolId}/contracts/draft`, {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: DISCOVERY_TIMEOUT_MS,
   });
 }
 

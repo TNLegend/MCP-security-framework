@@ -1,9 +1,11 @@
 import os
+import io
 import json
 import sys
 import tempfile
 import threading
 import unittest
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -2187,6 +2189,66 @@ class ControlPlaneToolAnalysisTests(ControlPlaneTestCase):
             headers={"x-csrf-token": csrf},
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_adapter_guidance_and_starter_download_follow_control_plane_roles(self) -> None:
+        self.create_user("admin", "ADMIN")
+        self.create_user("viewer", "VIEWER")
+        with self.Session() as db:
+            server = MCPServer(
+                name="widget-server",
+                server_type="mcp",
+                endpoint="http://127.0.0.1:9399/mcp",
+                transport="streamable_http",
+                status="active",
+            )
+            db.add(server)
+            db.flush()
+            tool = MCPTool(
+                server_id=server.id,
+                name="transmute_widget",
+                title="Transmute Widget",
+                description="Apply a proprietary transformation to a widget reference.",
+                input_schema={
+                    "type": "object",
+                    "properties": {"widget": {"type": "string", "maxLength": 128}},
+                    "required": ["widget"],
+                    "additionalProperties": False,
+                },
+            )
+            db.add(tool)
+            db.commit()
+            tool_id = tool.id
+
+        self.client = TestClient(app)
+        unauthenticated = self.client.get(
+            f"/api/v1/control-plane/security-packs/tools/{tool_id}/adapter-guidance"
+        )
+        self.assertEqual(unauthenticated.status_code, 401)
+
+        self.login("viewer")
+        guidance = self.client.get(
+            f"/api/v1/control-plane/security-packs/tools/{tool_id}/adapter-guidance"
+        )
+        self.assertEqual(guidance.status_code, 200, guidance.text)
+        self.assertEqual(guidance.json()["status"], "NO_COMPATIBLE_TEMPLATE")
+        self.assertEqual(guidance.json()["recommended_starter"], "blank")
+        viewer_download = self.client.get(
+            "/api/v1/control-plane/security-packs/adapters/starters/blank",
+            params={"adapter_id": "widget-adapter"},
+        )
+        self.assertEqual(viewer_download.status_code, 403)
+
+        self.client = TestClient(app)
+        self.login("admin")
+        download = self.client.get(
+            "/api/v1/control-plane/security-packs/adapters/starters/blank",
+            params={"adapter_id": "widget-adapter"},
+        )
+        self.assertEqual(download.status_code, 200, download.text)
+        self.assertEqual(download.headers["content-type"], "application/zip")
+        self.assertIn("widget-adapter-starter.zip", download.headers["content-disposition"])
+        with zipfile.ZipFile(io.BytesIO(download.content)) as package:
+            self.assertIn("adapter.py", package.namelist())
 
 
 if __name__ == "__main__":

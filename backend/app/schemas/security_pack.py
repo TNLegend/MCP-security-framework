@@ -180,3 +180,61 @@ class SecurityPackLifecycleCatalogPublic(BaseModel):
     installations: tuple[SecurityPackInstallation, ...]
 
     model_config = ConfigDict(extra="forbid")
+
+
+class TrustedAdapterPublic(BaseModel):
+    adapter_id: str
+    display_name: str
+    family: str
+    adapter_api_version: str
+    implementation_version: str
+    publisher: str
+    trust_level: Literal["BUILTIN_REVIEWED", "SIGNED_REVIEWED"]
+    distribution_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    signer_key_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    signature_verified: StrictBool = False
+    supported_capabilities: tuple[str, ...]
+    supported_resource_types: tuple[str, ...]
+    argument_validation: str
+    result_validation: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class TrustedAdapterCatalogPublic(BaseModel):
+    sdk_api_version: Literal["1"] = "1"
+    adapters: tuple[TrustedAdapterPublic, ...]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AdapterStarterPublic(BaseModel):
+    starter_id: str
+    title: str
+    family: str
+    description: str
+    recommended_for: tuple[str, ...]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AdapterCandidatePublic(BaseModel):
+    adapter_id: str
+    display_name: str
+    family: str
+    implementation_version: str
+    matching_signals: tuple[str, ...]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ToolAdapterGuidancePublic(BaseModel):
+    status: Literal["TEMPLATE_AVAILABLE", "NO_COMPATIBLE_TEMPLATE"]
+    generic_declarative_available: StrictBool
+    template_matches: int = Field(ge=0)
+    reasons: tuple[str, ...]
+    closest_adapters: tuple[AdapterCandidatePublic, ...]
+    recommended_starter: str
+    starters: tuple[AdapterStarterPublic, ...]
+
+    model_config = ConfigDict(extra="forbid")

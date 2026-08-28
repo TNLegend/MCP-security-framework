@@ -52,6 +52,8 @@ from proxy.tool_request_preparation import (
     PreparedToolRequest,
     prepare_tool_request_v2,
 )
+from proxy.resource_adapters_v2 import inspect_adapter_result
+from proxy.tool_security_v2 import AdapterResolution
 from proxy.tool_result_guard import ToolResultGuard, is_external_effect, should_track_result
 from common.canonical_json import sha256_canonical_json
 from common.mcp_endpoint import (
@@ -1044,44 +1046,33 @@ class MCPProxy:
                 str(tool_call.get("tool_name")),
                 tool_call.get("arguments") or {},
             )
+            adapter_inspection = inspect_adapter_result(
+                tool_result,
+                tuple(
+                    AdapterResolution.model_validate(value)
+                    for value in prepared_request.adapter_resolutions
+                ),
+            )
+            if adapter_inspection.blocked:
+                return self._blocked_tool_result_response(
+                    tool_call=tool_call,
+                    server_id=server["id"],
+                    mcp_called=mcp_called,
+                    finding_codes=adapter_inspection.finding_codes,
+                    rule_id="specialized_adapter_result_blocked",
+                    policy_revision="trusted-adapter-sdk-v1",
+                    message="Tool result failed specialized adapter validation.",
+                )
             inspection = self.tool_result_guard.inspect(tool_result)
             if inspection.blocked:
-                guarded_decision = _fail_closed_proxy_decision(
-                    rule_id="unsafe_tool_result_blocked",
-                    reason="Tool result contains unsafe content and was withheld.",
-                    severity="critical",
-                    evidence={"finding_codes": list(inspection.finding_codes)},
-                    policy_revision="proxy-result-guard-v1",
-                ).model_dump(mode="json")
-                guarded_result = {
-                    "isError": True,
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Tool result withheld by the security framework.",
-                        }
-                    ],
-                }
-                log_payload = build_runtime_log(
-                    tool_call,
-                    guarded_decision,
+                return self._blocked_tool_result_response(
+                    tool_call=tool_call,
                     server_id=server["id"],
-                    executed=True,
-                    execution_status="result_blocked",
-                    tool_result=guarded_result,
-                    status="blocked",
-                )
-                runtime_log = self._send_runtime_log(log_payload)
-                return self._response(
-                    status="blocked",
-                    decision=guarded_decision,
-                    executed=True,
                     mcp_called=mcp_called,
-                    execution_status="result_blocked",
-                    tool_result=guarded_result,
-                    runtime_log=runtime_log,
+                    finding_codes=inspection.finding_codes,
+                    rule_id="unsafe_tool_result_blocked",
+                    policy_revision="proxy-result-guard-v1",
                     message="Tool result withheld by the security framework.",
-                    skip_reason="unsafe_tool_result_blocked",
                 )
             if should_track_result(prepared_request):
                 self.tool_result_guard.remember_read_result(
@@ -1130,6 +1121,55 @@ class MCPProxy:
                 execution_status="protocol_error",
                 error_summary=str(exc),
             )
+
+    def _blocked_tool_result_response(
+        self,
+        *,
+        tool_call: dict[str, Any],
+        server_id: int,
+        mcp_called: bool,
+        finding_codes: tuple[str, ...],
+        rule_id: str,
+        policy_revision: str,
+        message: str,
+    ) -> dict[str, Any]:
+        guarded_decision = _fail_closed_proxy_decision(
+            rule_id=rule_id,
+            reason=message,
+            severity="critical",
+            evidence={"finding_codes": list(finding_codes)},
+            policy_revision=policy_revision,
+        ).model_dump(mode="json")
+        guarded_result = {
+            "isError": True,
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Tool result withheld by the security framework.",
+                }
+            ],
+        }
+        log_payload = build_runtime_log(
+            tool_call,
+            guarded_decision,
+            server_id=server_id,
+            executed=True,
+            execution_status="result_blocked",
+            tool_result=guarded_result,
+            status="blocked",
+        )
+        runtime_log = self._send_runtime_log(log_payload)
+        return self._response(
+            status="blocked",
+            decision=guarded_decision,
+            executed=True,
+            mcp_called=mcp_called,
+            execution_status="result_blocked",
+            tool_result=guarded_result,
+            runtime_log=runtime_log,
+            message=message,
+            skip_reason=rule_id,
+        )
 
     def _skip_response(
         self,

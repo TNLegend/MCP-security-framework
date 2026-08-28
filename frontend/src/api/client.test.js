@@ -16,6 +16,7 @@ import {
   createToolContractDraft,
   createToolSecurityPackDraft,
   fetchAIToolSecurityPackDraft,
+  fetchToolAdapterGuidance,
   fetchToolTemplateSuggestions,
   formatApiErrorDetail,
   hasControlPlaneSession,
@@ -269,6 +270,9 @@ test("Security Pack onboarding uses protected generic endpoints", async () => {
 
   const suggestions = await captureRequest(() => fetchToolTemplateSuggestions(12, "draft-1"));
   assert.match(suggestions.url, /tools\/12\/suggestions\?draft_revision_id=draft-1$/);
+
+  const guidance = await captureRequest(() => fetchToolAdapterGuidance(12, "draft-1"));
+  assert.match(guidance.url, /tools\/12\/adapter-guidance\?draft_revision_id=draft-1$/);
 
   const aiPack = await captureRequest(() => fetchAIToolSecurityPackDraft(12, "draft-1"));
   assert.match(aiPack.url, /tools\/12\/ai-pack-draft\?draft_revision_id=draft-1$/);

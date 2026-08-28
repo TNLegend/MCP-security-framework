@@ -34,6 +34,7 @@ from app.services.published_configuration import (
 )
 from app.services.security_pack_lifecycle import (
     SecurityPackLifecycleError,
+    validate_custom_manifest_safety,
     content_with_declarative_manifest,
 )
 from app.services.server_security_metadata import refresh_server_security_status
@@ -44,6 +45,7 @@ from app.services.tool_analysis import (
 from app.services.tool_observation_approval import approve_tool_observation
 from proxy.protocol_profiles import LEGACY_PROFILE_ID
 from proxy.resource_adapters_v2 import AdapterRegistry
+from proxy.trusted_adapter_packages import adapter_starter_catalog
 from proxy.security_packs import (
     SecurityPackError,
     SecurityPackManifest,
@@ -80,6 +82,17 @@ CAPABILITY_ACTION_KEYWORDS = {
     "execute": ("execute", "run", "launch", "executer", "lancer"),
     "initiate": ("pay", "payment", "transfer", "purchase", "payer", "transferer"),
     "refund": ("refund", "reimburse", "rembourser"),
+}
+
+ADAPTER_FAMILY_SIGNALS = {
+    "cloud-iam": ("iam", "arn", "role", "policy", "permission", "identity"),
+    "database": ("sql", "query", "database", "table", "select", "insert", "update"),
+    "filesystem": ("file", "path", "directory", "folder"),
+    "http-api": ("url", "http", "endpoint", "request", "webhook"),
+    "messaging": ("message", "email", "channel", "recipient", "chat"),
+    "payments": ("payment", "transfer", "refund", "recipient", "merchant"),
+    "process": ("shell", "command", "execute", "argv", "process"),
+    "source-control": ("git", "repository", "branch", "commit", "pull request"),
 }
 
 
@@ -197,6 +210,70 @@ def suggest_templates_for_tool(
         )
     )
     return suggestions[:8]
+
+
+def adapter_guidance_for_tool(
+    tool: MCPTool,
+    *,
+    content: ControlPlaneConfigContent | None = None,
+) -> dict[str, Any]:
+    schema_paths = _schema_paths(tool.input_schema)
+    suggestions = suggest_templates_for_tool(tool, content=content)
+    searchable = " ".join(
+        (
+            tool.name,
+            tool.title or "",
+            tool.description or "",
+            " ".join(path[-1] for path in schema_paths if path),
+        )
+    ).lower()
+    registry = AdapterRegistry(
+        security_packs=content.security_packs if content else (),
+    )
+    closest = []
+    for adapter in registry.catalog():
+        if adapter["adapter_id"] == "generic-declarative":
+            continue
+        signals = tuple(
+            signal
+            for signal in ADAPTER_FAMILY_SIGNALS.get(adapter["family"], ())
+            if _keyword_matches_searchable(signal, searchable)
+        )
+        if not signals:
+            continue
+        closest.append(
+            {
+                "adapter_id": adapter["adapter_id"],
+                "display_name": adapter["display_name"],
+                "family": adapter["family"],
+                "implementation_version": adapter["implementation_version"],
+                "matching_signals": signals,
+            }
+        )
+    closest.sort(key=lambda item: (-len(item["matching_signals"]), item["adapter_id"]))
+    if suggestions:
+        reasons = (
+            "Installed contract templates match the declared tool semantics.",
+            "Review every mapping before creating a contract draft.",
+        )
+        status = "TEMPLATE_AVAILABLE"
+    else:
+        reasons = (
+            "No installed template has corroborated semantic keywords for this tool.",
+            "Generic declarative mapping is suitable only when authority-relevant resources map directly to explicit schema paths.",
+            "Use a reviewed specialized adapter when a value must be parsed or canonicalized before policy evaluation.",
+        )
+        status = "NO_COMPATIBLE_TEMPLATE"
+    recommended = closest[0]["adapter_id"] if closest else "blank"
+    return {
+        "status": status,
+        "generic_declarative_available": True,
+        "template_matches": len(suggestions),
+        "reasons": reasons,
+        "closest_adapters": tuple(closest[:4]),
+        "recommended_starter": recommended,
+        "starters": adapter_starter_catalog(),
+    }
 
 
 def suggest_template_with_ai(
@@ -683,15 +760,10 @@ def add_declarative_security_pack(
     actor: ControlPlaneUser,
     change_summary: str,
 ) -> ControlPlaneConfigRevision:
-    if manifest.origin != "DECLARATIVE":
-        raise SecurityPackOnboardingError("custom_pack_must_be_declarative")
-    if any(
-        resource.adapter_id != "generic-declarative"
-        or resource.requires_specialized_interpretation
-        or resource.canonicalizer not in {"hierarchical_name", "email_address"}
-        for resource in manifest.resource_types
-    ):
-        raise SecurityPackOnboardingError("declarative_pack_requires_safe_generic_adapter")
+    try:
+        validate_custom_manifest_safety(manifest)
+    except SecurityPackLifecycleError as exc:
+        raise SecurityPackOnboardingError(exc.code) from exc
     draft = db.get(ControlPlaneConfigRevision, draft_revision_id)
     if draft is None or draft.status != "DRAFT" or draft.schema_version != 2:
         raise SecurityPackOnboardingError("v2_draft_required")

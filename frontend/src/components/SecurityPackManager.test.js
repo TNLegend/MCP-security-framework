@@ -41,3 +41,12 @@ test("Lot 4 lifecycle API uses protected control-plane endpoints", () => {
   assert.match(apiSource, /method: "DELETE"/);
   assert.match(apiSource, /encodeURIComponent\(packId\)/);
 });
+
+test("Lot 5 exposes the trusted adapter SDK without executable package imports", () => {
+  assert.match(managerSource, /Trusted Adapter SDK/);
+  assert.match(managerSource, /Trusted adapters:/);
+  assert.match(managerSource, /Imported JSON packs cannot execute code/);
+  assert.match(apiSource, /\/control-plane\/security-packs\/adapters/);
+  assert.doesNotMatch(managerSource, /import\s*\(/);
+  assert.doesNotMatch(managerSource, /new Function/);
+});
