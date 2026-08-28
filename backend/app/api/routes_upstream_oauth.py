@@ -64,11 +64,16 @@ def register_oauth_server(
             MCPServer.transport == "streamable_http",
         )
     )
+    restoring_archived = (
+        existing is not None
+        and existing.auth_mode == AUTH_MODE_OAUTH
+        and existing.status == "archived"
+    )
     retrying_configuration = (
         existing is not None
         and existing.auth_mode == AUTH_MODE_OAUTH
         and existing.oauth_status in {"OAUTH_CONFIGURED", "OAUTH_ERROR"}
-        and existing.last_seen_at is None
+        and (existing.last_seen_at is None or restoring_archived)
     )
     if existing is not None and not retrying_configuration:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="mcp_server_already_registered")
@@ -95,6 +100,38 @@ def register_oauth_server(
         }
         server.oauth_status = "OAUTH_CONFIGURED"
         server.oauth_last_error = None
+        if restoring_archived:
+            server.status = "active"
+            server.trust_status = (
+                "lab_trusted"
+                if is_exact_local_lab_endpoint(payload.endpoint)
+                else "unknown"
+            )
+            server.security_status = "not_analyzed"
+            server.credential_ref = f"oauth/tokens/{uuid4().hex}.json"
+            server.oauth_connected_at = None
+            server.last_seen_at = None
+            server.last_scan_at = None
+            server.server_info_name = None
+            server.server_info_title = None
+            server.server_info_version = None
+            server.server_info_description = None
+            server.server_info_icons = None
+            server.server_info_website_url = None
+            server.capabilities = None
+            server.instructions = None
+            server.raw_initialize_result = None
+            server.detected_protocol_era = None
+            server.supported_protocol_versions = None
+            server.preferred_protocol_version = None
+            server.negotiated_protocol_version = None
+            server.protocol_transport_kind = None
+            server.protocol_verdict_expires_at = None
+            server.supported_protocol_profiles = None
+            server.preferred_upstream_profile = None
+            server.last_protocol_probe_at = None
+            server.protocol_probe_status = None
+            server.protocol_probe_error = None
     else:
         server = MCPServer(
             name=payload.endpoint,
@@ -127,7 +164,9 @@ def register_oauth_server(
             db,
             actor=current.user,
             action=(
-                "UPSTREAM_OAUTH_SERVER_RECONFIGURED"
+                "UPSTREAM_OAUTH_SERVER_RESTORED"
+                if restoring_archived
+                else "UPSTREAM_OAUTH_SERVER_RECONFIGURED"
                 if retrying_configuration
                 else "UPSTREAM_OAUTH_SERVER_REGISTERED"
             ),
@@ -139,7 +178,8 @@ def register_oauth_server(
                 "auth_mode": server.auth_mode,
                 "requested_scopes": server.oauth_config.get("requested_scopes", []),
                 "has_client_secret": client_secret_ref is not None,
-                "reconfigured": retrying_configuration,
+                "reconfigured": retrying_configuration and not restoring_archived,
+                "restored": restoring_archived,
             },
         )
         db.commit()

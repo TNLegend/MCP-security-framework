@@ -295,6 +295,17 @@ export async function fetchLocalRuntimeStatus() {
   return request("/control-plane/local-runtime/status");
 }
 
+export async function fetchOperationsSummary() {
+  return request("/control-plane/operations/summary");
+}
+
+export async function cleanupRuntimeLogs(payload) {
+  return request("/control-plane/operations/runtime-logs/cleanup", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function loginControlPlane(username, password) {
   const payload = await request("/control-plane/auth/login", {
     method: "POST",

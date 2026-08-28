@@ -8,6 +8,7 @@ import {
   fetchEmergencyDenies,
   fetchHealth,
   fetchLocalRuntimeStatus,
+  fetchOperationsSummary,
   fetchControlPlaneMe,
   hasControlPlaneSession,
   loginControlPlane,
@@ -22,6 +23,7 @@ import Dashboard from "./pages/Dashboard";
 import Audit from "./pages/Audit";
 import EmergencyDeny from "./pages/EmergencyDeny";
 import Inventory from "./pages/Inventory";
+import Operations from "./pages/Operations";
 import RuntimeLogs from "./pages/RuntimeLogs";
 import SecurityConfiguration from "./pages/SecurityConfiguration";
 import ToolAnalysis from "./pages/ToolAnalysis";
@@ -35,6 +37,7 @@ const pages = [
   { id: "config", label: "Security Configuration" },
   { id: "emergency", label: "Emergency Deny" },
   { id: "runtime", label: "Runtime Calls" },
+  { id: "operations", label: "Operations" },
   { id: "audit", label: "Audit" },
   { id: "users", label: "Users", adminOnly: true },
 ];
@@ -53,6 +56,7 @@ function App() {
   const [loginError, setLoginError] = useState("");
   const [health, setHealth] = useState(null);
   const [runtimeStatus, setRuntimeStatus] = useState(null);
+  const [operationsSummary, setOperationsSummary] = useState(null);
   const [servers, setServers] = useState([]);
   const [tools, setTools] = useState([]);
   const [policies, setPolicies] = useState([]);
@@ -153,6 +157,7 @@ function App() {
       const requests = {
         health: ["Health", fetchHealth, setHealth],
         runtimeStatus: ["Local runtime", fetchLocalRuntimeStatus, setRuntimeStatus],
+        operations: ["Operations", fetchOperationsSummary, setOperationsSummary],
         servers: ["Servers", fetchServers, setServers],
         tools: ["Tools", fetchTools, setTools],
         policies: ["Policies", fetchPolicies, setPolicies],
@@ -270,6 +275,17 @@ function App() {
       return <RuntimeLogs initialPage={runtimeLogPage} loading={loading} />;
     }
 
+    if (activePage === "operations") {
+      return (
+        <Operations
+          isAdmin={isAdmin}
+          loading={loading}
+          onRefresh={loadData}
+          summary={operationsSummary}
+        />
+      );
+    }
+
     if (activePage === "audit") {
       return <Audit events={auditEvents} loading={loading} />;
     }
@@ -305,6 +321,7 @@ function App() {
     health,
     isAdmin,
     loading,
+    operationsSummary,
     policies,
     runtimeLogPage,
     runtimeStatus,

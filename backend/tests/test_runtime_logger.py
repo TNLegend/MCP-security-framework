@@ -1,5 +1,6 @@
 import json
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -10,7 +11,7 @@ BACKEND_DIR = REPO_ROOT / "backend"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(BACKEND_DIR))
 
-from proxy.runtime_logger import summarize_arguments  # noqa: E402
+from proxy.runtime_logger import build_runtime_log, summarize_arguments  # noqa: E402
 
 
 class RuntimeLoggerArgumentSummaryTests(unittest.TestCase):
@@ -121,6 +122,53 @@ class RuntimeLoggerArgumentSummaryTests(unittest.TestCase):
         self.assertLessEqual(len(summary["validation_error_codes"]), 20)
         self.assertEqual(summary["validation_error_codes"], ["bad_code_with_spaces"])
         self.assertTrue(all("/" not in name for name in summary["argument_names"]))
+
+
+
+    def test_runtime_timings_are_internal_bounded_and_do_not_log_markers(self) -> None:
+        tool_call = {
+            "agent_id": "agent-demo",
+            "session_id": "session-demo",
+            "tool_name": "list_files",
+            "arguments": {},
+            "arguments_valid": True,
+            "_runtime_started_monotonic": time.perf_counter() - 0.01,
+            "_runtime_policy_duration_ms": 2.34567,
+            "_runtime_upstream_duration_ms": 5.67891,
+            "_runtime_result_guard_duration_ms": 1.23456,
+        }
+        payload = build_runtime_log(
+            tool_call,
+            {"decision": "ALLOW", "rule_id": "allow"},
+            executed=True,
+            execution_status="success",
+        )
+        serialized = json.dumps(payload, sort_keys=True)
+
+        self.assertGreaterEqual(payload["total_duration_ms"], 0)
+        self.assertEqual(payload["policy_duration_ms"], 2.346)
+        self.assertEqual(payload["upstream_duration_ms"], 5.679)
+        self.assertEqual(payload["result_guard_duration_ms"], 1.235)
+        self.assertNotIn("_runtime_", serialized)
+
+    def test_invalid_or_untrusted_timing_shapes_are_ignored(self) -> None:
+        payload = build_runtime_log(
+            {
+                "tool_name": "list_files",
+                "arguments": {},
+                "_runtime_started_monotonic": "spoofed",
+                "_runtime_policy_duration_ms": -1,
+                "_runtime_upstream_duration_ms": float("inf"),
+                "_runtime_result_guard_duration_ms": True,
+            },
+            {"decision": "BLOCK"},
+            executed=False,
+            execution_status="blocked",
+        )
+        self.assertIsNone(payload["total_duration_ms"])
+        self.assertIsNone(payload["policy_duration_ms"])
+        self.assertIsNone(payload["upstream_duration_ms"])
+        self.assertIsNone(payload["result_guard_duration_ms"])
 
 
 if __name__ == "__main__":

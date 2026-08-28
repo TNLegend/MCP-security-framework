@@ -85,6 +85,22 @@ def main() -> int:
                     ),
                     file=sys.stderr,
                 )
+                recover = getattr(manager, "recover_required_child", None)
+                if callable(recover) and recover(failure):
+                    print(
+                        json.dumps(
+                            {
+                                "ready": True,
+                                "recovered_component": failure.get("component"),
+                                "restart_attempt": manager.restart_counts.get(
+                                    str(failure.get("component") or ""),
+                                    0,
+                                ),
+                            },
+                            indent=2,
+                        )
+                    )
+                    continue
                 return 1
             time.sleep(1)
     except KeyboardInterrupt:

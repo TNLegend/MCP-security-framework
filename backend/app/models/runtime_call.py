@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -42,4 +42,8 @@ class RuntimeCall(Base):
     execution_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
     result_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    total_duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    policy_duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    upstream_duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    result_guard_duration_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

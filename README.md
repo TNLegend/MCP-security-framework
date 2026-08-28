@@ -307,6 +307,22 @@ install or sign adapters, modify OPA, execute MCP calls, or disable Emergency De
 Successful and failed assistance requests are audited. See
 `CONTROLLED_AI_ASSISTANCE.md` for the trust boundary and guarantees.
 
+Lot 7 adds Runtime Operations. Governed calls persist bounded mediation, policy,
+upstream MCP, and result-guard timings. The authenticated Operations page exposes
+service readiness, exact recent call counters, sampled p50/p95/p99 latency evidence,
+PostgreSQL pool state, bounded Runtime Call storage, and process-log rotation policy.
+
+Runtime Calls are indexed for the filters used by the Control Center. Retention is
+bounded by age and maximum row count, batch-limited, protects calls referenced by
+policy-decision evidence, and supports both audited ADMIN preview/apply and bounded
+automatic maintenance. Framework-owned process logs rotate actively by size.
+
+The local supervisor uses bounded restart attempts and backoff for Backend, OPA,
+Gateway, and the local identity provider. Exhausted or failed recovery stops the
+framework instead of continuing partially. The concurrent benchmark harness can assert
+EXECUTED or BLOCKED outcomes under load so performance testing also detects fail-open
+behavior. See `RUNTIME_OPERATIONS.md` for the operational boundary and benchmark flow.
+
 The supported schema profile accepts bounded local `$defs`/`$ref`, nullable scalar
 types, and `oneOf`/`anyOf` variants only when every branch exposes the same
 accountable resource paths. External references, recursive references, open
@@ -609,8 +625,10 @@ it started. If PostgreSQL is unavailable and
 local argv array, the launcher starts it and waits for readiness. Without that
 configuration startup fails clearly. A PostgreSQL process started this way is
 left running on framework shutdown because it is stateful infrastructure.
-Backend, OPA, and Gateway children are monitored; an unexpected exit stops the
-remaining framework-owned children and makes the launcher exit non-zero:
+Backend, OPA, Gateway, and local identity-provider children are monitored. An
+unexpected exit triggers only the configured number of controlled restart attempts
+with bounded backoff. If recovery is disabled, fails, or is exhausted, the remaining
+framework-owned children are stopped and the launcher exits non-zero:
 
 ```powershell
 .\backend\.venv\Scripts\python.exe scripts\start_framework.py

@@ -680,6 +680,124 @@ class ToolAnalysisUnitTests(unittest.TestCase):
             {"filesystem.list"},
         )
 
+    def test_read_only_custom_contract_covers_polymorphic_selector_descriptions(self) -> None:
+        profile = {
+            "revision": "notion-read-revision",
+            "schema_version": 2,
+            "contract_hash": "9" * 64,
+            "contract": {
+                "contract_version": "2",
+                "server_ref": "streamable_http:https://mcp.notion.com/mcp",
+                "tool_name": "notion-fetch",
+                "effects": [{
+                    "effect_id": "notion.read",
+                    "capability": "notion.read",
+                    "resource_bindings": [{
+                        "path": ["id"],
+                        "resource_type": "notion_entity",
+                    }],
+                }],
+                "result_control": {
+                    "classification": "SENSITIVE",
+                    "track_for_exfiltration": True,
+                },
+                "unbound_arguments": [],
+            },
+            "security_pack": {
+                "id": "notion-read",
+                "version": "1.0.0",
+                "semantic_categories": ["notion", "read-only"],
+            },
+        }
+        snapshot = {
+            "name": "notion-fetch",
+            "description": "Fetch one Notion entity by identifier.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": (
+                            "The ID or URL of the Notion page, database, data source, "
+                            "user identity, meeting note, or discussion to fetch."
+                        ),
+                    },
+                },
+                "required": ["id"],
+                "additionalProperties": {},
+            },
+            "output_schema": {},
+            "annotations": {},
+            "execution": {},
+        }
+
+        result = analyze_tool_version(
+            tool_snapshot=snapshot,
+            profile_snapshot=profile,
+            semantic_model=MockSemanticModel(),
+        )
+
+        self.assertEqual(result["analysis_status"], "APPROVED")
+        self.assertNotIn("schema_profile_mismatch", finding_codes(result))
+
+    def test_read_only_custom_contract_does_not_cover_process_execution(self) -> None:
+        profile = {
+            "revision": "custom-read-revision",
+            "schema_version": 2,
+            "contract_hash": "7" * 64,
+            "contract": {
+                "contract_version": "2",
+                "server_ref": "streamable_http:https://custom.example/mcp",
+                "tool_name": "custom-fetch",
+                "effects": [{
+                    "effect_id": "custom.read",
+                    "capability": "custom.read",
+                    "resource_bindings": [{
+                        "path": ["id"],
+                        "resource_type": "custom_entity",
+                    }],
+                }],
+                "result_control": {
+                    "classification": "SENSITIVE",
+                    "track_for_exfiltration": True,
+                },
+                "unbound_arguments": [["script"]],
+            },
+            "security_pack": {
+                "id": "custom-read",
+                "version": "1.0.0",
+                "semantic_categories": ["custom", "read-only"],
+            },
+        }
+        snapshot = {
+            "name": "custom-fetch",
+            "description": "Fetch one custom entity.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "script": {
+                        "type": "string",
+                        "description": "Shell script to execute after fetching the entity.",
+                    },
+                },
+                "required": ["id"],
+                "additionalProperties": False,
+            },
+            "output_schema": {},
+            "annotations": {},
+            "execution": {},
+        }
+
+        result = analyze_tool_version(
+            tool_snapshot=snapshot,
+            profile_snapshot=profile,
+            semantic_model=MockSemanticModel(),
+        )
+
+        self.assertEqual(result["analysis_status"], "BLOCKED")
+        self.assertIn("unexpected_process_execution", finding_codes(result))
+
     def test_annotation_key_names_do_not_create_fake_capabilities(self) -> None:
         snapshot = tool_snapshot()
         snapshot["annotations"] = {

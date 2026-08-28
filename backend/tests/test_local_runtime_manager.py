@@ -60,7 +60,11 @@ class LocalRuntimeManagerTests(unittest.TestCase):
         self.original_gateway_host = settings.mcp_gateway_host
         self.original_gateway_port = settings.mcp_gateway_port
         self.original_identity_jwks_url = settings.agent_identity_jwks_url
+        self.original_restart_attempts = settings.local_runtime_restart_attempts
+        self.original_restart_backoff = settings.local_runtime_restart_backoff_seconds
         settings.local_runtime_start_timeout_seconds = 0.01
+        settings.local_runtime_restart_attempts = 2
+        settings.local_runtime_restart_backoff_seconds = 0
         settings.local_runtime_managed_postgres_command_json = ""
         self.temp_dir = tempfile.TemporaryDirectory()
 
@@ -70,6 +74,8 @@ class LocalRuntimeManagerTests(unittest.TestCase):
         settings.mcp_gateway_host = self.original_gateway_host
         settings.mcp_gateway_port = self.original_gateway_port
         settings.agent_identity_jwks_url = self.original_identity_jwks_url
+        settings.local_runtime_restart_attempts = self.original_restart_attempts
+        settings.local_runtime_restart_backoff_seconds = self.original_restart_backoff
         self.temp_dir.cleanup()
 
     def test_existing_healthy_opa_is_reused_without_duplicate_process(self) -> None:
@@ -341,6 +347,96 @@ class LocalRuntimeManagerTests(unittest.TestCase):
 
         for component in ("backend", "database", "opa", "gateway"):
             self.assertNotIn("managed_by_framework", payload[component])
+
+
+    def test_failed_child_recovery_is_bounded(self) -> None:
+        failed = FakeProcess()
+        failed.exit(7)
+        manager = LocalRuntimeManager(
+            started_children=[
+                ManagedChildProcess(component="gateway", process=failed),
+            ],
+            sleeper=lambda _: None,
+        )
+        healthy = LocalRuntimeComponentStatus(component="gateway", status="healthy")
+
+        with patch.object(manager, "ensure_gateway", return_value=healthy) as restart:
+            self.assertTrue(
+                manager.recover_required_child(
+                    {"component": "gateway", "return_code": 7}
+                )
+            )
+            self.assertTrue(
+                manager.recover_required_child(
+                    {"component": "gateway", "return_code": 7}
+                )
+            )
+            self.assertFalse(
+                manager.recover_required_child(
+                    {"component": "gateway", "return_code": 7}
+                )
+            )
+
+        self.assertEqual(restart.call_count, 2)
+        self.assertEqual(manager.restart_counts["gateway"], 2)
+        self.assertNotIn(failed, [child.process for child in manager.started_children])
+
+    def test_unknown_or_disabled_recovery_fails_closed(self) -> None:
+        manager = LocalRuntimeManager(sleeper=lambda _: None)
+        self.assertFalse(
+            manager.recover_required_child(
+                {"component": "unknown", "return_code": 1}
+            )
+        )
+        settings.local_runtime_restart_attempts = 0
+        self.assertFalse(
+            manager.recover_required_child(
+                {"component": "backend", "return_code": 1}
+            )
+        )
+
+    def test_process_log_stream_rotates_actively_and_is_bounded(self) -> None:
+        class ChunkStream:
+            def __init__(self):
+                self.chunks = [b"a" * 8, b"b" * 8, b"c" * 8, b""]
+                self.closed = False
+
+            def read1(self, size):
+                return self.chunks.pop(0)
+
+            def close(self):
+                self.closed = True
+
+        stream = ChunkStream()
+        log_path = Path(self.temp_dir.name) / "gateway.log"
+        runtime_manager._drain_process_output(
+            stream,
+            log_path,
+            max_bytes=10,
+            backup_count=2,
+        )
+
+        self.assertTrue(stream.closed)
+        self.assertEqual(log_path.read_bytes(), b"c" * 8)
+        self.assertEqual(
+            log_path.with_name("gateway.log.1").read_bytes(),
+            b"b" * 8,
+        )
+        self.assertEqual(
+            log_path.with_name("gateway.log.2").read_bytes(),
+            b"a" * 8,
+        )
+        self.assertFalse(log_path.with_name("gateway.log.3").exists())
+        self.assertTrue(
+            all(
+                path.stat().st_size <= 10
+                for path in (
+                    log_path,
+                    log_path.with_name("gateway.log.1"),
+                    log_path.with_name("gateway.log.2"),
+                )
+            )
+        )
 
     def test_gateway_status_exposes_configured_endpoint(self) -> None:
         settings.mcp_gateway_host = "127.0.0.1"

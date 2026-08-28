@@ -18,6 +18,8 @@ from app.services.signed_service_request import (
     require_internal_service_permission,
 )
 from app.services.emergency_deny import check_emergency_deny
+from proxy.tool_security_v2 import security_schema_projection
+
 from app.services.tool_analysis import (
     STATUS_ADMIN_ALLOWED,
     STATUS_APPROVED,
@@ -106,7 +108,9 @@ def get_internal_inventory_tool_observation(
         "title": tool.title,
         "description": definition.get("description") or tool.description,
         "icons": tool.icons,
-        "input_schema": definition.get("input_schema") or {},
+        "input_schema": security_schema_projection(
+            definition.get("input_schema") or {}
+        ),
         "output_schema": definition.get("output_schema") or {},
         "annotations": definition.get("annotations") or {},
         "execution": definition.get("execution") or {},

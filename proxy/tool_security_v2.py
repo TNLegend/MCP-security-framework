@@ -591,6 +591,62 @@ class ResourceTypeRegistry:
         raise SecurityModelError("unknown_resource_type")
 
 
+def security_schema_projection(schema: Any) -> dict[str, Any]:
+    """Return a closed, non-authority-broadening security view of an MCP input schema.
+
+    The upstream schema remains the evidence/fingerprint source. This projection is
+    used only for contracts and runtime validation. Explicit object properties are
+    preserved, while arbitrary additional object properties are denied.
+    """
+    if not isinstance(schema, dict):
+        raise SecurityModelError("schema_not_object")
+    return _project_security_schema_node(schema)
+
+
+def _project_security_schema_node(node: dict[str, Any]) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    node_type = node.get("type")
+    object_node = node_type == "object" or (
+        isinstance(node_type, list) and "object" in node_type
+    )
+    for key, value in node.items():
+        if key == "additionalProperties" and object_node:
+            continue
+        if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
+            projected[key] = {
+                name: (
+                    _project_security_schema_node(child)
+                    if isinstance(child, dict)
+                    else _clone_json_value(child)
+                )
+                for name, child in value.items()
+            }
+        elif key == "items" and isinstance(value, dict):
+            projected[key] = _project_security_schema_node(value)
+        elif key in {"oneOf", "anyOf", "allOf"} and isinstance(value, list):
+            projected[key] = [
+                (
+                    _project_security_schema_node(child)
+                    if isinstance(child, dict)
+                    else _clone_json_value(child)
+                )
+                for child in value
+            ]
+        else:
+            projected[key] = _clone_json_value(value)
+    if object_node:
+        projected["additionalProperties"] = False
+    return projected
+
+
+def _clone_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _clone_json_value(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_clone_json_value(child) for child in value]
+    return value
+
+
 class SupportedSchemaProfileV1:
     profile_id = SUPPORTED_SCHEMA_PROFILE_ID
 

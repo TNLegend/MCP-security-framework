@@ -84,6 +84,10 @@ PHASE2_INVENTORY_COLUMNS = {
         "ADD COLUMN IF NOT EXISTS upstream_protocol_era VARCHAR(50)",
         "ADD COLUMN IF NOT EXISTS upstream_protocol_version VARCHAR(50)",
         "ADD COLUMN IF NOT EXISTS upstream_transport_kind VARCHAR(50)",
+        "ADD COLUMN IF NOT EXISTS total_duration_ms DOUBLE PRECISION",
+        "ADD COLUMN IF NOT EXISTS policy_duration_ms DOUBLE PRECISION",
+        "ADD COLUMN IF NOT EXISTS upstream_duration_ms DOUBLE PRECISION",
+        "ADD COLUMN IF NOT EXISTS result_guard_duration_ms DOUBLE PRECISION",
     ],
     "control_plane_config_revisions": [
         "ADD COLUMN IF NOT EXISTS previous_revision_hash VARCHAR(64)",
@@ -120,6 +124,15 @@ IDENTITY_REPLAY_INDEXES = [
     ),
 ]
 
+RUNTIME_CALL_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS ix_runtime_calls_created_at ON runtime_calls (created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_runtime_calls_decision_id ON runtime_calls (decision, id DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_runtime_calls_server_id_id ON runtime_calls (server_id, id DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_runtime_calls_tool_name_id ON runtime_calls (tool_name, id DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_runtime_calls_agent_id_id ON runtime_calls (agent_id, id DESC)",
+]
+
+
 TRUSTED_SESSION_INDEXES = [
     (
         "CREATE UNIQUE INDEX IF NOT EXISTS "
@@ -154,6 +167,9 @@ def ensure_phase2_inventory_columns() -> None:
             connection.execute(text(statement))
         for statement in TRUSTED_SESSION_INDEXES:
             connection.execute(text(statement))
+        if "runtime_calls" in existing_tables:
+            for statement in RUNTIME_CALL_INDEXES:
+                connection.execute(text(statement))
 
 
 def _deactivate_orphaned_observation_reviews(connection) -> None:

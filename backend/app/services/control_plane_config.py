@@ -29,6 +29,7 @@ from proxy.resource_adapters_v2 import AdapterRegistry
 from proxy.tool_security_v2 import (
     CapabilityCatalog,
     ResourceTypeRegistry,
+    security_schema_projection,
     validate_contract_for_schema,
 )
 
@@ -721,7 +722,7 @@ def _validate_v2_database_artifacts(
         try:
             derived = validate_contract_for_schema(
                 contract,
-                input_schema,
+                security_schema_projection(input_schema),
                 capability_catalog=capability_catalog,
                 resource_type_registry=resource_type_registry,
                 adapter_resolver=adapter_registry,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -16,7 +18,9 @@ for path in (str(ROOT), str(BACKEND), str(TESTS)):
         sys.path.insert(0, path)
 
 from proxy.agent_identity import VerifiedExternalIdentity  # noqa: E402
+from proxy.backend_client import BackendClientError  # noqa: E402
 from proxy.gateway import MCPGateway  # noqa: E402
+from proxy.identity_binding import IdentityBindingError  # noqa: E402
 from proxy.mcp_proxy import MCPProxy  # noqa: E402
 from proxy.protocol_profiles import (  # noqa: E402
     MODERN_META_CLIENT_CAPABILITIES,
@@ -258,6 +262,104 @@ class GovernedGatewayMediationTests(unittest.TestCase):
             GovernedPrimaryMCPHandler.invocation_count - before_block
         )
         self.assertEqual(blocked_calls_reaching_mcp, 0)
+
+
+    def test_concurrent_allowed_calls_remain_mediated(self) -> None:
+        before = GovernedPrimaryMCPHandler.invocation_count
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(
+                executor.map(
+                    lambda _: self.proxy.handle_tool_call(self._runtime_call()),
+                    range(24),
+                )
+            )
+
+        self.assertTrue(all(result["executed"] for result in results))
+        self.assertTrue(all(result["mcp_called"] for result in results))
+        self.assertEqual(
+            GovernedPrimaryMCPHandler.invocation_count - before,
+            24,
+        )
+        self.assertEqual(GovernedAttackerMCPHandler.invocation_count, 0)
+
+
+    def test_concurrent_identity_failures_are_logged_without_secret_leakage(self) -> None:
+        class MissingBindingSnapshot(V2Snapshot):
+            def resolve(self, *, issuer: str, subject: str):
+                raise IdentityBindingError("agent_identity_binding_not_found")
+
+        snapshot = MissingBindingSnapshot()
+        backend = GovernedBackend(endpoint=self.upstream.endpoint)
+        proxy = MCPProxy(
+            backend_client=backend,
+            identity_verifier=IdentityVerifier(),
+            assertion_signer=AssertionSigner(),
+            trusted_session_manager=SessionManager(),
+            config_snapshot_resolver=SnapshotResolver(snapshot),
+        )
+        before = GovernedPrimaryMCPHandler.invocation_count
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(
+                executor.map(
+                    lambda _: proxy.handle_tool_call(self._runtime_call()),
+                    range(16),
+                )
+            )
+
+        self.assertTrue(all(not result["executed"] for result in results))
+        self.assertTrue(all(not result["mcp_called"] for result in results))
+        self.assertTrue(
+            all(
+                result["skip_reason"] == "agent_identity_binding_not_found"
+                for result in results
+            )
+        )
+        self.assertTrue(all(result["runtime_log_created"] for result in results))
+        self.assertEqual(GovernedPrimaryMCPHandler.invocation_count, before)
+        self.assertEqual(len(backend.logs), 16)
+        for payload in backend.logs:
+            self.assertEqual(payload["agent_id"], "unverified")
+            self.assertEqual(payload["session_id"], "unverified")
+            self.assertEqual(payload["decision"], "BLOCK")
+            self.assertEqual(payload["rule_id"], "trusted_identity_required")
+            self.assertEqual(
+                payload["error_summary"],
+                "agent_identity_binding_not_found",
+            )
+            serialized = json.dumps(payload, sort_keys=True)
+            self.assertNotIn("access_token", serialized)
+            self.assertNotIn("Bearer ", serialized)
+            self.assertNotIn('"token"', serialized)
+
+    def test_concurrent_policy_failure_never_fails_open(self) -> None:
+        class FailingPolicyBackend(GovernedBackend):
+            def request_policy_decision(self, context, *, identity_assertion=None):
+                raise BackendClientError("simulated_policy_timeout")
+
+        backend = FailingPolicyBackend(endpoint=self.upstream.endpoint)
+        proxy = MCPProxy(
+            backend_client=backend,
+            identity_verifier=IdentityVerifier(),
+            assertion_signer=AssertionSigner(),
+            trusted_session_manager=SessionManager(),
+            config_snapshot_resolver=SnapshotResolver(self.snapshot),
+        )
+        before = GovernedPrimaryMCPHandler.invocation_count
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(
+                executor.map(
+                    lambda _: proxy.handle_tool_call(self._runtime_call()),
+                    range(32),
+                )
+            )
+
+        self.assertTrue(all(not result["executed"] for result in results))
+        self.assertTrue(all(not result["mcp_called"] for result in results))
+        self.assertTrue(all(result["rule_id"] == "policy_error" for result in results))
+        self.assertEqual(GovernedPrimaryMCPHandler.invocation_count, before)
+        self.assertEqual(GovernedAttackerMCPHandler.invocation_count, 0)
+        self.assertEqual(len(backend.logs), 32)
 
     def test_runtime_rejects_client_endpoint_injection(self) -> None:
         before_primary = GovernedPrimaryMCPHandler.invocation_count

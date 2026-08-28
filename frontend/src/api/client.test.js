@@ -12,6 +12,8 @@ import {
   discoverRegisteredMcpServer,
   discoverHttpMcpServer,
   fetchRuntimeLogs,
+  fetchOperationsSummary,
+  cleanupRuntimeLogs,
   fetchSecurityPacks,
   createToolContractDraft,
   createToolSecurityPackDraft,
@@ -171,6 +173,26 @@ test("discoverHttpMcpServer sends exact HTTP payload without argument shift", as
     protocol_version: "2025-11-25",
     auth_mode: "BEARER",
     credential_ref: "mcp/vendor/service.token",
+  });
+});
+
+
+test("operations API exposes protected summary and bounded cleanup", async () => {
+  const summary = await captureRequest(() => fetchOperationsSummary());
+  assert.match(summary.url, /\/control-plane\/operations\/summary$/);
+  assert.equal(summary.options.method || "GET", "GET");
+
+  const cleanup = await captureRequest(() =>
+    cleanupRuntimeLogs({
+      dry_run: true,
+      reason: "Preview bounded runtime retention safely.",
+    }),
+  );
+  assert.match(cleanup.url, /\/control-plane\/operations\/runtime-logs\/cleanup$/);
+  assert.equal(cleanup.options.method, "POST");
+  assert.deepEqual(cleanup.body, {
+    dry_run: true,
+    reason: "Preview bounded runtime retention safely.",
   });
 });
 

@@ -13,6 +13,7 @@ from app.schemas.policy_context import RuntimePolicyInput
 from app.schemas.runtime import RuntimeCallCreate, RuntimeCallPage, RuntimeCallRead, RuntimeCallSummary
 from app.services.control_plane_auth import AuthenticatedControlPlaneUser, require_authenticated_user
 from app.services.policy_runtime import evaluate_runtime_policy
+from app.services.runtime_operations import maybe_auto_cleanup_runtime_logs
 from app.services.signed_service_request import (
     PERMISSION_RUNTIME_LOGS_WRITE,
     VerifiedServiceRequest,
@@ -192,6 +193,12 @@ def create_runtime_log(
     db.add(db_log)
     db.commit()
     db.refresh(db_log)
+    maintenance = maybe_auto_cleanup_runtime_logs(
+        db,
+        runtime_log_id=db_log.id,
+    )
+    if maintenance is not None and maintenance.deleted > 0:
+        db.commit()
     return db_log
 
 

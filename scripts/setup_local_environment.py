@@ -49,6 +49,10 @@ REQUIRED_RUNTIME_CALL_COLUMNS = {
     "upstream_protocol_era",
     "upstream_protocol_version",
     "upstream_transport_kind",
+    "total_duration_ms",
+    "policy_duration_ms",
+    "upstream_duration_ms",
+    "result_guard_duration_ms",
 }
 
 

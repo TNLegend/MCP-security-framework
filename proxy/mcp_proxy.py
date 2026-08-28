@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import time
 from typing import Any
 from datetime import datetime, timezone
 
@@ -193,6 +194,7 @@ class MCPProxy:
         self._requires_config_snapshot = True
 
     def handle_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+        runtime_started = time.perf_counter()
         claimed_agent_id = tool_call.get("agent_id")
         safe_input_tool_call = {
             key: value
@@ -204,7 +206,9 @@ class MCPProxy:
                 "identity_assertion",
                 "session_token",
             }
+            and not str(key).startswith("_runtime_")
         }
+        safe_input_tool_call["_runtime_started_monotonic"] = runtime_started
 
         try:
             config_snapshot = self._load_config_snapshot()
@@ -512,12 +516,21 @@ class MCPProxy:
                 skip_reason="identity_verification_unexpected_error",
             )
 
+        policy_started = time.perf_counter()
         try:
             raw_decision = self.backend_client.request_policy_decision(
                 context,
                 identity_assertion=identity_assertion,
             )
+            prepared_tool_call = {
+                **prepared_tool_call,
+                "_runtime_policy_duration_ms": (time.perf_counter() - policy_started) * 1000,
+            }
         except BackendClientError as exc:
+            prepared_tool_call = {
+                **prepared_tool_call,
+                "_runtime_policy_duration_ms": (time.perf_counter() - policy_started) * 1000,
+            }
             decision = _fail_closed_proxy_decision(
                 rule_id="policy_error",
                 reason=f"Policy decision failed: {exc}",
@@ -1040,12 +1053,18 @@ class MCPProxy:
             )
 
         mcp_called = False
+        upstream_started = time.perf_counter()
         try:
             mcp_called = True
             tool_result = mcp_client.call_tool(
                 str(tool_call.get("tool_name")),
                 tool_call.get("arguments") or {},
             )
+            tool_call = {
+                **tool_call,
+                "_runtime_upstream_duration_ms": (time.perf_counter() - upstream_started) * 1000,
+            }
+            result_guard_started = time.perf_counter()
             adapter_inspection = inspect_adapter_result(
                 tool_result,
                 tuple(
@@ -1054,6 +1073,12 @@ class MCPProxy:
                 ),
             )
             if adapter_inspection.blocked:
+                tool_call = {
+                    **tool_call,
+                    "_runtime_result_guard_duration_ms": (
+                        time.perf_counter() - result_guard_started
+                    ) * 1000,
+                }
                 return self._blocked_tool_result_response(
                     tool_call=tool_call,
                     server_id=server["id"],
@@ -1064,6 +1089,12 @@ class MCPProxy:
                     message="Tool result failed specialized adapter validation.",
                 )
             inspection = self.tool_result_guard.inspect(tool_result)
+            tool_call = {
+                **tool_call,
+                "_runtime_result_guard_duration_ms": (
+                    time.perf_counter() - result_guard_started
+                ) * 1000,
+            }
             if inspection.blocked:
                 return self._blocked_tool_result_response(
                     tool_call=tool_call,
@@ -1104,6 +1135,10 @@ class MCPProxy:
                 message="Tool call executed through the MCP HTTP server.",
             )
         except MCPHttpError as exc:
+            tool_call = {
+                **tool_call,
+                "_runtime_upstream_duration_ms": (time.perf_counter() - upstream_started) * 1000,
+            }
             return self._execution_error_response(
                 tool_call=tool_call,
                 server_id=server["id"],
@@ -1113,6 +1148,10 @@ class MCPProxy:
                 error_summary=str(exc),
             )
         except MCPProtocolError as exc:
+            tool_call = {
+                **tool_call,
+                "_runtime_upstream_duration_ms": (time.perf_counter() - upstream_started) * 1000,
+            }
             return self._execution_error_response(
                 tool_call=tool_call,
                 server_id=server["id"],
@@ -1465,14 +1504,29 @@ class MCPProxy:
         error_code: str,
     ) -> dict[str, Any]:
         decision = _trusted_identity_fail_closed_proxy_decision(error_code)
+        decision_data = decision.model_dump(mode="json")
+        log_tool_call = {
+            **tool_call,
+            "agent_id": "unverified",
+            "session_id": "unverified",
+        }
+        log_payload = build_runtime_log(
+            log_tool_call,
+            decision_data,
+            executed=False,
+            execution_status="blocked",
+            error_summary=error_code,
+            status="blocked",
+        )
+        runtime_log = self._send_runtime_log(log_payload)
         return self._response(
             status="blocked",
-            decision=decision.model_dump(mode="json"),
+            decision=decision_data,
             executed=False,
             mcp_called=False,
             execution_status="blocked",
             tool_result=None,
-            runtime_log={"created": False, "id": None, "payload": None},
+            runtime_log=runtime_log,
             message="Tool call skipped because trusted identity verification failed.",
             skip_reason=error_code,
         )

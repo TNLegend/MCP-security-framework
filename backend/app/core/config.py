@@ -84,6 +84,21 @@ class Settings(BaseSettings):
     local_runtime_autostart_gateway: bool = True
     local_runtime_autostart_identity_provider: bool = True
     local_runtime_managed_postgres_command_json: str = ""
+    local_runtime_restart_attempts: int = Field(default=2, ge=0, le=10)
+    local_runtime_restart_backoff_seconds: float = Field(default=1.0, ge=0, le=30)
+    local_runtime_log_max_bytes: int = Field(default=5_000_000, ge=100_000, le=1_000_000_000)
+    local_runtime_log_backup_count: int = Field(default=3, ge=1, le=20)
+
+    database_pool_size: int = Field(default=10, ge=1, le=100)
+    database_max_overflow: int = Field(default=20, ge=0, le=200)
+    database_pool_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    database_pool_recycle_seconds: int = Field(default=1800, ge=60, le=86400)
+
+    runtime_log_retention_days: int = Field(default=30, ge=1, le=3650)
+    runtime_log_max_rows: int = Field(default=250_000, ge=1_000, le=10_000_000)
+    runtime_log_cleanup_batch_size: int = Field(default=5_000, ge=100, le=100_000)
+    runtime_log_auto_cleanup_interval_rows: int = Field(default=1_000, ge=1, le=100_000)
+    operations_metrics_window_minutes: int = Field(default=15, ge=1, le=1440)
 
     @field_validator(
         "backend_assertion_jwks_path",

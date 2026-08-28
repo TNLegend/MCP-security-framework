@@ -34,7 +34,7 @@ from proxy.protocol_profiles import LEGACY_PROFILE_ID, ProtocolProfileError, Pro
 from proxy.security_packs import SecurityPackRegistry
 
 
-ANALYZER_REVISION = "tool-description-analyzer-v7"
+ANALYZER_REVISION = "tool-description-analyzer-v8"
 SEMANTIC_MODEL_NAME = "MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli"
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
 SEMANTIC_MODEL_VERSION = "local-cache"
@@ -184,6 +184,19 @@ CRITICAL_DETERMINISTIC_CODES = {
     "unexpected_destructive_operation",
     "suspicious_base64_payload",
 }
+
+PASSIVE_READ_SCHEMA_CAPABILITIES = frozenset({
+    "calendar.read",
+    "cloud.object.read",
+    "database.read",
+    "database.select",
+    "filesystem.list",
+    "filesystem.read",
+    "identity.read",
+    "message.read",
+    "network.request",
+    "payment.read",
+})
 
 SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -693,12 +706,21 @@ def consistency_result(
             "findings": findings,
         }
 
-    technical_caps = schema_caps | annotation_caps | execution_caps
     extra_schema_caps = {
         capability
-        for capability in technical_caps
+        for capability in schema_caps
         if not _capability_covered_by_contract(capability, profile_caps)
+        and not _passive_custom_read_contract_covers_schema_capability(
+            capability,
+            tool_name=str(tool_snapshot.get("name") or ""),
+            profile_snapshot=profile_snapshot,
+        )
     }
+    extra_schema_caps.update(
+        capability
+        for capability in annotation_caps | execution_caps
+        if not _capability_covered_by_contract(capability, profile_caps)
+    )
     extra_description_caps = set()
     if _description_capability_inference_reliable(facts):
         extra_description_caps = {
@@ -770,6 +792,49 @@ def _capability_covered_by_contract(
     if observed == "filesystem.delete":
         return any(capability.endswith(".delete") for capability in declared)
     return False
+
+
+def _passive_custom_read_contract_covers_schema_capability(
+    observed: str,
+    *,
+    tool_name: str,
+    profile_snapshot: dict[str, Any],
+) -> bool:
+    if observed not in PASSIVE_READ_SCHEMA_CAPABILITIES:
+        return False
+    contract = profile_snapshot.get("contract")
+    security_pack = profile_snapshot.get("security_pack")
+    if not isinstance(contract, dict) or not isinstance(security_pack, dict):
+        return False
+    if contract.get("tool_name") != tool_name:
+        return False
+    categories = {
+        str(value).strip().lower()
+        for value in security_pack.get("semantic_categories") or ()
+        if str(value).strip()
+    }
+    if "read-only" not in categories:
+        return False
+    effects = contract.get("effects")
+    if not isinstance(effects, list) or not effects:
+        return False
+    capabilities = {
+        str(effect.get("capability") or "")
+        for effect in effects
+        if isinstance(effect, dict)
+    }
+    passive_verbs = {"fetch", "get", "list", "query", "read", "search", "select"}
+    if not capabilities or any(
+        "." not in capability
+        or capability.rsplit(".", 1)[-1] not in passive_verbs
+        for capability in capabilities
+    ):
+        return False
+    result_control = contract.get("result_control")
+    return (
+        isinstance(result_control, dict)
+        and result_control.get("track_for_exfiltration") is True
+    )
 
 
 def _description_capability_inference_reliable(

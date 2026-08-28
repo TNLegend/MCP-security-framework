@@ -63,6 +63,7 @@ from proxy.tool_security_v2 import (
     ScopeMatchMode,
     SupportedSchemaProfileV1,
     ToolEffect,
+    security_schema_projection,
     ToolSecurityContract,
     validate_contract_for_schema,
 )
@@ -600,7 +601,7 @@ def create_tool_contract_draft(
     try:
         resolutions = validate_contract_for_schema(
             contract,
-            tool.input_schema or {},
+            security_schema_projection(tool.input_schema or {}),
             capability_catalog=adapter_registry.capabilities,
             resource_type_registry=adapter_registry.resource_types,
             adapter_resolver=adapter_registry,
@@ -1079,7 +1080,9 @@ def _contract_resource_types(contract: ToolSecurityContract) -> tuple[str, ...]:
 
 def _schema_paths(schema: dict[str, Any] | None) -> tuple[tuple[str, ...], ...]:
     try:
-        return SupportedSchemaProfileV1.validate(schema or {})
+        return SupportedSchemaProfileV1.validate(
+            security_schema_projection(schema or {})
+        )
     except Exception as exc:
         code = getattr(exc, "code", "schema_construct_unsupported")
         raise SecurityPackOnboardingError(code) from exc

@@ -18,6 +18,7 @@ for path in (str(ROOT), str(BACKEND)):
 
 from common.upstream_auth import (  # noqa: E402
     AUTH_MODE_OAUTH,
+    read_upstream_token_bundle,
     write_upstream_token_bundle,
 )
 from common.upstream_oauth import (  # noqa: E402
@@ -35,6 +36,7 @@ from app.schemas.server import MCPServerInternalRead, MCPServerRead  # noqa: E40
 class _OAuthProviderHandler(BaseHTTPRequestHandler):
     requests: list[dict] = []
     port = 0
+    reject_refresh = False
 
     def do_GET(self):  # noqa: N802
         base = f"http://127.0.0.1:{type(self).port}"
@@ -110,6 +112,10 @@ class _OAuthProviderHandler(BaseHTTPRequestHandler):
             )
             return
         if payload.get("grant_type") == ["refresh_token"]:
+            if type(self).reject_refresh:
+                self.send_response(401)
+                self.end_headers()
+                return
             self._write_json(
                 {
                     "access_token": "access-token-refreshed",
@@ -154,6 +160,7 @@ class UpstreamOAuthTests(unittest.TestCase):
         self.secret_patch = patch("common.upstream_auth.UPSTREAM_SECRET_DIR", self.secret_root)
         self.secret_patch.start()
         _OAuthProviderHandler.requests = []
+        _OAuthProviderHandler.reject_refresh = False
 
     def tearDown(self) -> None:
         self.secret_patch.stop()
@@ -221,6 +228,64 @@ class UpstreamOAuthTests(unittest.TestCase):
         self.assertIn("code_verifier", _OAuthProviderHandler.requests[0])
         self.assertEqual(_OAuthProviderHandler.requests[1]["resource"], [self.endpoint])
         self.assertNotIn("authorization-code", authorization_url)
+        self.assertEqual(
+            read_upstream_token_bundle("oauth/tokens/test.json")["refresh_token"],
+            "refresh-token-next",
+        )
+
+    def test_expired_token_without_refresh_requires_reauthorization(self) -> None:
+        configuration = discover_oauth_configuration(
+            mcp_endpoint=self.endpoint,
+            client_id="framework-client",
+            requested_scopes=[],
+        )
+        write_upstream_token_bundle(
+            "oauth/tokens/test.json",
+            {
+                "access_token": "expired-token",
+                "expires_at": (datetime.now(UTC) - timedelta(minutes=1)).replace(tzinfo=None).isoformat(),
+                "resource": self.endpoint,
+                "scopes": ["files:read"],
+            },
+        )
+
+        with self.assertRaisesRegex(
+            UpstreamOAuthError,
+            "upstream_oauth_reauthorization_required",
+        ):
+            resolve_oauth_access_token(
+                credential_ref="oauth/tokens/test.json",
+                oauth_config=configuration,
+            )
+
+        self.assertEqual(_OAuthProviderHandler.requests, [])
+
+    def test_refresh_failure_does_not_overwrite_existing_bundle(self) -> None:
+        configuration = discover_oauth_configuration(
+            mcp_endpoint=self.endpoint,
+            client_id="framework-client",
+            requested_scopes=[],
+        )
+        original = {
+            "access_token": "expired-token",
+            "refresh_token": "refresh-token-revoked",
+            "expires_at": (datetime.now(UTC) - timedelta(minutes=1)).replace(tzinfo=None).isoformat(),
+            "resource": self.endpoint,
+            "scopes": ["files:read"],
+        }
+        write_upstream_token_bundle("oauth/tokens/test.json", original)
+        _OAuthProviderHandler.reject_refresh = True
+
+        with self.assertRaisesRegex(
+            UpstreamOAuthError,
+            "upstream_oauth_token_exchange_failed",
+        ):
+            resolve_oauth_access_token(
+                credential_ref="oauth/tokens/test.json",
+                oauth_config=configuration,
+            )
+
+        self.assertEqual(read_upstream_token_bundle("oauth/tokens/test.json"), original)
 
     def test_dynamic_client_registration_uses_discovered_endpoint(self) -> None:
         configuration = discover_oauth_configuration(

@@ -1,3 +1,5 @@
+import math
+import time
 from typing import Any
 
 from proxy.backend_client import BackendClient
@@ -152,6 +154,12 @@ def build_runtime_log(
         "execution_status": execution_status,
         "result_summary": summarize_tool_result(tool_result),
         "error_summary": shorten(error_summary, 500) if error_summary else None,
+        "total_duration_ms": _runtime_total_duration_ms(tool_call),
+        "policy_duration_ms": _safe_duration_ms(tool_call.get("_runtime_policy_duration_ms")),
+        "upstream_duration_ms": _safe_duration_ms(tool_call.get("_runtime_upstream_duration_ms")),
+        "result_guard_duration_ms": _safe_duration_ms(
+            tool_call.get("_runtime_result_guard_duration_ms")
+        ),
     }
 
 
@@ -161,6 +169,24 @@ def send_runtime_log(
 ) -> dict[str, Any]:
     client = backend_client or BackendClient()
     return client.create_runtime_log(log_payload)
+
+
+
+
+def _runtime_total_duration_ms(tool_call: dict[str, Any]) -> float | None:
+    started = tool_call.get("_runtime_started_monotonic")
+    if isinstance(started, bool) or not isinstance(started, (int, float)):
+        return None
+    return _safe_duration_ms((time.perf_counter() - float(started)) * 1000)
+
+
+def _safe_duration_ms(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    numeric = float(value)
+    if not math.isfinite(numeric) or numeric < 0:
+        return None
+    return round(min(numeric, 3_600_000.0), 3)
 
 
 def shorten(value: str, max_length: int) -> str:

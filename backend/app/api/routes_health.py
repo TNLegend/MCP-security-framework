@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -18,6 +19,30 @@ def health_check():
         "version": settings.app_version,
         "environment": settings.environment,
     }
+
+
+
+
+@router.get("/readiness")
+def readiness_check(db: Session = Depends(get_db)):
+    manager = LocalRuntimeManager()
+    runtime = manager.status(db=db, backend_current_process=True)
+    identity = manager.identity_provider_status()
+    ready = runtime.ready and identity.status == "healthy"
+    component_statuses = {
+        "backend": runtime.backend.status,
+        "database": runtime.database.status,
+        "opa": runtime.opa.status,
+        "gateway": runtime.gateway.status,
+        "identity_provider": identity.status,
+    }
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "ready" if ready else "not_ready",
+            "components": component_statuses,
+        },
+    )
 
 
 @router.get("/status")

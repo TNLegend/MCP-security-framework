@@ -30,6 +30,10 @@ class RuntimeCallCreate(BaseModel):
     execution_status: str | None = None
     result_summary: str | None = None
     error_summary: str | None = None
+    total_duration_ms: float | None = None
+    policy_duration_ms: float | None = None
+    upstream_duration_ms: float | None = None
+    result_guard_duration_ms: float | None = None
 
 
 class RuntimeCallRead(BaseModel):
@@ -59,6 +63,10 @@ class RuntimeCallRead(BaseModel):
     execution_status: str | None = None
     result_summary: str | None = None
     error_summary: str | None = None
+    total_duration_ms: float | None = None
+    policy_duration_ms: float | None = None
+    upstream_duration_ms: float | None = None
+    result_guard_duration_ms: float | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

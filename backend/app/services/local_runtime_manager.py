@@ -6,8 +6,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
-from typing import Any, Callable
+from typing import Any, BinaryIO, Callable
 from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import urlopen
@@ -49,6 +50,7 @@ class ManagedChildProcess:
     component: str
     process: subprocess.Popen
     log_handle: Any | None = None
+    log_thread: threading.Thread | None = None
     started_by_framework: bool = True
     terminate_on_shutdown: bool = True
 
@@ -88,6 +90,7 @@ class LocalRuntimeManager:
     sleeper: Sleeper = time.sleep
     python_executable: Path | None = None
     started_children: list[ManagedChildProcess] = field(default_factory=list)
+    restart_counts: dict[str, int] = field(default_factory=dict)
 
     def status(
         self,
@@ -332,6 +335,14 @@ class LocalRuntimeManager:
                 except subprocess.TimeoutExpired:
                     child.process.kill()
                     child.process.wait(timeout=5)
+            stdout = getattr(child.process, "stdout", None)
+            if stdout is not None:
+                try:
+                    stdout.close()
+                except Exception:
+                    pass
+            if child.log_thread is not None and child.log_thread.is_alive():
+                child.log_thread.join(timeout=2)
             if child.log_handle is not None:
                 child.log_handle.close()
         self.started_children.clear()
@@ -353,6 +364,54 @@ class LocalRuntimeManager:
                 }
         return None
 
+    def recover_required_child(self, failure: dict[str, Any]) -> bool:
+        component = str(failure.get("component") or "")
+        if component not in {"backend", "opa", "gateway", "identity_provider"}:
+            return False
+        attempts = settings.local_runtime_restart_attempts
+        used = self.restart_counts.get(component, 0)
+        if used >= attempts:
+            return False
+        self.restart_counts[component] = used + 1
+        self._discard_failed_children(component)
+        backoff = settings.local_runtime_restart_backoff_seconds * (used + 1)
+        if backoff > 0:
+            self.sleeper(backoff)
+        try:
+            if component == "backend":
+                status = self.start_backend()
+            elif component == "opa":
+                status = self.ensure_opa(auto_start=True)
+            elif component == "gateway":
+                status = self.ensure_gateway(auto_start=True)
+            else:
+                status = self.ensure_identity_provider(auto_start=True)
+        except Exception:
+            return False
+        return status.status == "healthy"
+
+    def _discard_failed_children(self, component: str) -> None:
+        survivors: list[ManagedChildProcess] = []
+        for child in self.started_children:
+            if (
+                child.component == component
+                and child.started_by_framework
+                and child.process.poll() is not None
+            ):
+                stdout = getattr(child.process, "stdout", None)
+                if stdout is not None:
+                    try:
+                        stdout.close()
+                    except Exception:
+                        pass
+                if child.log_thread is not None and child.log_thread.is_alive():
+                    child.log_thread.join(timeout=2)
+                if child.log_handle is not None:
+                    child.log_handle.close()
+                continue
+            survivors.append(child)
+        self.started_children = survivors
+
     def _check_url(self, url: str) -> bool:
         if self.readiness_checker is not None:
             return self.readiness_checker(url)
@@ -372,20 +431,35 @@ class LocalRuntimeManager:
         if not command or any(not isinstance(part, str) or not part for part in command):
             raise ValueError("local_runtime_command_invalid")
         RUNTIME_TMP_DIR.mkdir(parents=True, exist_ok=True)
-        log_handle = (RUNTIME_TMP_DIR / f"{component}.log").open("ab")
+        log_path = RUNTIME_TMP_DIR / f"{component}.log"
         env = {**os.environ, **runtime_environment()}
         process = self.process_starter(
             command,
             cwd=str(PROJECT_ROOT),
             env=env,
-            stdout=log_handle,
+            stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             shell=False,
         )
+        log_thread = None
+        stdout = getattr(process, "stdout", None)
+        if stdout is not None:
+            log_thread = threading.Thread(
+                target=_drain_process_output,
+                args=(
+                    stdout,
+                    log_path,
+                    settings.local_runtime_log_max_bytes,
+                    settings.local_runtime_log_backup_count,
+                ),
+                name=f"mcp-log-{component}",
+                daemon=True,
+            )
+            log_thread.start()
         child = ManagedChildProcess(
             component=component,
             process=process,
-            log_handle=log_handle,
+            log_thread=log_thread,
             terminate_on_shutdown=terminate_on_shutdown,
         )
         self.started_children.append(child)
@@ -409,6 +483,67 @@ class LocalRuntimeManager:
             and child.process.poll() is None
             for child in self.started_children
         )
+
+
+def _drain_process_output(
+    stream: BinaryIO,
+    log_path: Path,
+    max_bytes: int,
+    backup_count: int,
+) -> None:
+    max_bytes = max(1, int(max_bytes))
+    backup_count = max(1, int(backup_count))
+    handle = None
+    current_size = 0
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        current_size = log_path.stat().st_size if log_path.exists() else 0
+        handle = log_path.open("ab")
+        while True:
+            reader = getattr(stream, "read1", None)
+            chunk = reader(8192) if callable(reader) else stream.read(8192)
+            if not chunk:
+                break
+            if not isinstance(chunk, (bytes, bytearray)):
+                chunk = str(chunk).encode("utf-8", errors="replace")
+            data = bytes(chunk)
+            if len(data) > max_bytes:
+                data = data[-max_bytes:]
+            if current_size + len(data) > max_bytes:
+                handle.close()
+                handle = None
+                _rotate_process_log(log_path, backup_count)
+                handle = log_path.open("ab")
+                current_size = 0
+            handle.write(data)
+            handle.flush()
+            current_size += len(data)
+    except Exception:
+        return
+    finally:
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
+def _rotate_process_log(log_path: Path, backup_count: int) -> None:
+    for index in range(backup_count, 0, -1):
+        target = log_path.with_name(f"{log_path.name}.{index}")
+        source = (
+            log_path
+            if index == 1
+            else log_path.with_name(f"{log_path.name}.{index - 1}")
+        )
+        if target.exists():
+            target.unlink()
+        if source.exists():
+            source.replace(target)
 
 
 def backend_base_url() -> str:

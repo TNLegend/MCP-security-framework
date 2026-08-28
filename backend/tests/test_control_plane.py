@@ -1215,6 +1215,49 @@ class ControlPlaneConfigTests(ControlPlaneTestCase):
 
 
 class ControlPlaneToolAnalysisTests(ControlPlaneTestCase):
+    def test_admin_can_disconnect_oauth_and_secret_removal_is_audited(self) -> None:
+        self.create_user("admin", "ADMIN")
+        csrf = self.login("admin")
+        with self.Session() as db:
+            server = MCPServer(
+                name="connected-oauth-mcp",
+                server_type="mcp",
+                endpoint="https://example.test/mcp",
+                transport="streamable_http",
+                auth_mode="OAUTH",
+                credential_ref="oauth/tokens/connected.json",
+                oauth_config={"client_id": "provider-client"},
+                oauth_status="CONNECTED",
+                oauth_connected_at=datetime.utcnow(),
+                status="active",
+            )
+            db.add(server)
+            db.commit()
+            server_id = server.id
+
+        with patch(
+            "app.api.routes_upstream_oauth.delete_upstream_secret"
+        ) as delete_secret:
+            response = self.client.post(
+                f"/api/v1/control-plane/upstream-oauth/servers/{server_id}/disconnect",
+                headers={"x-csrf-token": csrf},
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["oauth_status"], "OAUTH_CONFIGURED")
+        delete_secret.assert_called_once_with("oauth/tokens/connected.json")
+        with self.Session() as db:
+            stored = db.get(MCPServer, server_id)
+            self.assertEqual(stored.oauth_status, "OAUTH_CONFIGURED")
+            self.assertIsNone(stored.oauth_connected_at)
+            event = db.scalar(
+                select(ControlPlaneAuditEvent).where(
+                    ControlPlaneAuditEvent.action == "UPSTREAM_OAUTH_DISCONNECTED"
+                )
+            )
+            self.assertIsNotNone(event)
+            self.assertEqual(event.target_id, str(server_id))
+
     def test_oauth_error_configuration_can_be_reconfigured_without_duplicate_server(self) -> None:
         self.create_user("admin", "ADMIN")
         csrf = self.login("admin")
@@ -1262,6 +1305,81 @@ class ControlPlaneToolAnalysisTests(ControlPlaneTestCase):
                 ).target_id,
                 str(server_id),
             )
+
+
+    def test_archived_oauth_server_registration_restores_clean_state(self) -> None:
+        self.create_user("admin", "ADMIN")
+        csrf = self.login("admin")
+        with self.Session() as db:
+            server = MCPServer(
+                name="archived-notion",
+                server_type="mcp",
+                endpoint="https://mcp.notion.com/mcp",
+                transport="streamable_http",
+                auth_mode="OAUTH",
+                credential_ref=None,
+                oauth_config={
+                    "client_id": "previous-dynamic-client",
+                    "requested_scopes": ["old"],
+                },
+                oauth_status="OAUTH_CONFIGURED",
+                status="archived",
+                trust_status="archived",
+                security_status="archived",
+                server_info_name="stale-server",
+                negotiated_protocol_version="2025-11-25",
+                preferred_upstream_profile="stale-profile",
+                protocol_probe_status="compatible",
+                last_seen_at=datetime.utcnow(),
+                last_scan_at=datetime.utcnow(),
+            )
+            db.add(server)
+            db.commit()
+            server_id = server.id
+
+        response = self.client.post(
+            "/api/v1/control-plane/upstream-oauth/servers",
+            json={
+                "endpoint": "https://mcp.notion.com/mcp",
+                "protocol_version": "2026-07-28",
+                "requested_scopes": "",
+            },
+            headers={"x-csrf-token": csrf},
+        )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        body = response.json()
+        self.assertEqual(body["id"], server_id)
+        self.assertEqual(body["status"], "active")
+        self.assertEqual(body["trust_status"], "unknown")
+        self.assertEqual(body["security_status"], "not_analyzed")
+        self.assertEqual(body["oauth_status"], "OAUTH_CONFIGURED")
+        self.assertNotIn("credential_ref", body)
+
+        with self.Session() as db:
+            stored = db.get(MCPServer, server_id)
+            self.assertIsNotNone(stored.credential_ref)
+            self.assertEqual(
+                stored.oauth_config["client_id"],
+                "previous-dynamic-client",
+            )
+            self.assertEqual(stored.oauth_config["requested_scopes"], [])
+            self.assertIsNone(stored.server_info_name)
+            self.assertIsNone(stored.negotiated_protocol_version)
+            self.assertIsNone(stored.preferred_upstream_profile)
+            self.assertIsNone(stored.protocol_probe_status)
+            self.assertIsNone(stored.last_seen_at)
+            self.assertIsNone(stored.last_scan_at)
+            event = db.scalar(
+                select(ControlPlaneAuditEvent).where(
+                    ControlPlaneAuditEvent.action
+                    == "UPSTREAM_OAUTH_SERVER_RESTORED"
+                )
+            )
+            self.assertIsNotNone(event)
+            self.assertEqual(event.target_id, str(server_id))
+            self.assertTrue(event.after_json["restored"])
+            self.assertFalse(event.after_json["reconfigured"])
 
     def _seed_tool_analysis_fixture(self) -> tuple[int, int]:
         with self.Session() as db:

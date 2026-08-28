@@ -20,6 +20,7 @@ from proxy.tool_security_v2 import (
     ToolEffect,
     ToolObservationApproval,
     ToolSecurityContract,
+    security_schema_projection,
     validate_contract_for_schema,
     validate_scope,
 )
@@ -161,6 +162,84 @@ class SupportedSchemaProfileTests(unittest.TestCase):
             SupportedSchemaProfileV1.validate(send_email_schema()),
             (("body",), ("recipient",), ("subject",)),
         )
+
+
+    def test_security_projection_closes_open_objects_without_mutating_evidence(self):
+        raw = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "additionalProperties": {},
+            "properties": {
+                "id": {"type": "string", "maxLength": 512},
+                "options": {
+                    "type": "object",
+                    "properties": {
+                        "include": {"type": "boolean"},
+                    },
+                },
+            },
+            "required": ["id"],
+        }
+
+        projected = security_schema_projection(raw)
+
+        self.assertEqual(raw["additionalProperties"], {})
+        self.assertNotIn("additionalProperties", raw["properties"]["options"])
+        self.assertIs(projected["additionalProperties"], False)
+        self.assertIs(
+            projected["properties"]["options"]["additionalProperties"],
+            False,
+        )
+        self.assertEqual(
+            SupportedSchemaProfileV1.validate(projected),
+            (("id",), ("options", "include")),
+        )
+
+    def test_security_projection_keeps_unknown_runtime_arguments_fail_closed(self):
+        raw = {
+            "type": "object",
+            "additionalProperties": {},
+            "properties": {
+                "recipient": {"type": "string", "maxLength": 254},
+                "subject": {"type": "string", "maxLength": 200},
+                "body": {"type": "string", "maxLength": 10000},
+            },
+            "required": ["recipient", "subject", "body"],
+        }
+        schema = security_schema_projection(raw)
+        contract = send_email_contract()
+        resolutions = validate_contract_for_schema(contract, schema)
+        approval = ToolObservationApproval(
+            tool_observation_id=1,
+            server_ref=contract.server_ref,
+            upstream_protocol_profile_id="modern",
+            tool_fingerprint="a" * 64,
+            contract_hash=contract.contract_hash,
+            evidence_bundle_hash="b" * 64,
+            admin_id="admin",
+            approved_at="2026-01-01T00:00:00Z",
+            revision_id="revision-1",
+        )
+
+        prepared = prepare_tool_request_v2(
+            raw_arguments={
+                "recipient": "alice@example.com",
+                "subject": "hello",
+                "body": "safe",
+                "admin_override": True,
+            },
+            input_schema=schema,
+            contract=contract,
+            adapter_resolutions=resolutions,
+            approval=approval,
+            authority_scopes=(),
+            authority_context={},
+            client_protocol_profile_id="modern",
+            upstream_protocol_profile_id="modern",
+        )
+
+        self.assertFalse(prepared.arguments_valid)
+        self.assertIn("unexpected_argument:admin_override", prepared.validation_error_codes)
 
     def test_offline_evaluation_harness_reports_genericity_and_rejections(self):
         report = evaluate_inventory(

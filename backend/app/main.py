@@ -13,6 +13,7 @@ from app.api.routes_emergency_deny import router as emergency_deny_router
 from app.api.routes_health import router as health_router
 from app.api.routes_internal import router as internal_router
 from app.api.routes_inventory import router as inventory_router
+from app.api.routes_operations import router as operations_router
 from app.api.routes_policies import router as policies_router
 from app.api.routes_runtime import router as runtime_router
 from app.api.routes_servers import router as servers_router
@@ -50,6 +51,7 @@ app.include_router(policies_router, prefix=settings.api_prefix)
 app.include_router(runtime_router, prefix=settings.api_prefix)
 app.include_router(internal_router, prefix=settings.api_prefix)
 app.include_router(inventory_router, prefix=settings.api_prefix)
+app.include_router(operations_router, prefix=settings.api_prefix)
 app.include_router(tool_analysis_router, prefix=settings.api_prefix)
 app.include_router(control_plane_auth_router, prefix=settings.api_prefix)
 app.include_router(upstream_oauth_router, prefix=settings.api_prefix)
