@@ -360,6 +360,7 @@ function Inventory({
         {selectedServer ? (
           <ServerDetailPanel
             canArchive={isAdmin && selectedServer.status !== "archived"}
+            canManageServer={isAdmin && selectedServer.status !== "archived"}
             canManageTrust={isAdmin && selectedServer.status !== "archived"}
             connecting={discovering}
             discovering={discovering}
@@ -742,6 +743,7 @@ function ToolsTable({ tools, selectedToolId, onSelectTool }) {
 
 function ServerDetailPanel({
   canArchive,
+  canManageServer,
   canManageTrust,
   connecting,
   discovering,
@@ -757,7 +759,7 @@ function ServerDetailPanel({
 }) {
   const governedEndpoint = buildGovernedEndpoint(gatewayStatus, server.id);
   const isOAuth = server.auth_mode === "OAUTH";
-  const canDiscover = server.status !== "archived" && (!isOAuth || server.oauth_status === "CONNECTED");
+  const canDiscover = canManageServer && server.status !== "archived" && (!isOAuth || server.oauth_status === "CONNECTED");
   return (
     <div className="detail-panel">
       <div className="detail-heading">
@@ -768,12 +770,12 @@ function ServerDetailPanel({
               {discovering ? "Discovering..." : "Discover tools"}
             </button>
           )}
-          {isOAuth && server.oauth_status !== "CONNECTED" && (
+          {canManageServer && isOAuth && server.oauth_status !== "CONNECTED" && (
             <button className="secondary-action" disabled={connecting} onClick={onConnectOAuth} type="button">
               {connecting ? "Connecting..." : "Connect OAuth"}
             </button>
           )}
-          {isOAuth && server.oauth_status === "CONNECTED" && (
+          {canManageServer && isOAuth && server.oauth_status === "CONNECTED" && (
             <button className="tiny-action" disabled={connecting} onClick={onDisconnectOAuth} type="button">
               Disconnect OAuth
             </button>

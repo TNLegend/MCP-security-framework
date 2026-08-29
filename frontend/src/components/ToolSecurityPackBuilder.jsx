@@ -152,7 +152,7 @@ function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool })
             <label>Resource type<input disabled={busy} maxLength="128" onChange={(event) => update("resourceTypeId", event.target.value)} pattern="[a-z0-9][a-z0-9._:-]*" required value={form.resourceTypeId} /></label>
             <label>Template ID<input disabled={busy} maxLength="128" onChange={(event) => update("templateId", event.target.value)} pattern="[a-z0-9][a-z0-9._:-]*" required value={form.templateId} /></label>
             <label>Keywords<input disabled={busy} maxLength="500" onChange={(event) => update("keywords", event.target.value)} required value={form.keywords} /></label>
-            <label>Argument hints<input disabled={busy} maxLength="500" onChange={(event) => update("hints", event.target.value)} required value={form.hints} /></label>
+            <label>Argument hints<input disabled={busy} maxLength="500" onChange={(event) => update("hints", event.target.value)} value={form.hints} /></label>
             <label className="checkbox-field"><input checked={form.destructive} disabled={busy} onChange={(event) => update("destructive", event.target.checked)} type="checkbox" />Destructive</label>
             <label className="checkbox-field"><input checked={form.externalEffect} disabled={busy} onChange={(event) => update("externalEffect", event.target.checked)} type="checkbox" />External effect</label>
           </>

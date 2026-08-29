@@ -40,6 +40,8 @@ class _AuthenticatedMCPHandler(BaseHTTPRequestHandler):
     tool_calls = 0
 
     def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length", "0"))
+        request_body = self.rfile.read(length) if length else b""
         if self.headers.get("Authorization") != f"Bearer {TEST_TOKEN}":
             body = TEST_TOKEN.encode("utf-8")
             self.send_response(401)
@@ -49,8 +51,7 @@ class _AuthenticatedMCPHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         type(self).authorized_requests += 1
-        length = int(self.headers.get("Content-Length", "0"))
-        message = json.loads(self.rfile.read(length).decode("utf-8"))
+        message = json.loads(request_body.decode("utf-8"))
         method = message.get("method")
         if method == "server/discover":
             self._write_json(
@@ -215,6 +216,22 @@ class UpstreamBearerAuthTests(unittest.TestCase):
 
         self.assertNotIn(TEST_TOKEN, str(context.exception))
         self.assertEqual(str(context.exception), "MCP HTTP error 401")
+
+    def test_raw_socket_abort_is_normalized_without_details(self) -> None:
+        client = MCPHttpClient(
+            self.endpoint,
+            protocol_profile_id=MODERN_PROFILE_ID,
+        )
+        with patch.object(
+            client._opener,
+            "open",
+            side_effect=ConnectionAbortedError("sensitive-network-detail"),
+        ):
+            with self.assertRaises(MCPHttpError) as context:
+                client.list_tools()
+
+        self.assertEqual(str(context.exception), "MCP HTTP request failed.")
+        self.assertNotIn("sensitive-network-detail", str(context.exception))
 
     def test_secret_reference_cannot_escape_runtime_secret_root(self) -> None:
         with self.assertRaises(UpstreamAuthError):

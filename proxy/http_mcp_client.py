@@ -248,6 +248,8 @@ class MCPHttpClient:
             raise MCPHttpError(f"MCP HTTP request failed: {exc.reason}") from exc
         except TimeoutError as exc:
             raise MCPHttpError("MCP HTTP request timed out.") from exc
+        except OSError as exc:
+            raise MCPHttpError("MCP HTTP request failed.") from exc
         except TransportProtocolError as exc:
             raise MCPProtocolError(str(exc)) from exc
 

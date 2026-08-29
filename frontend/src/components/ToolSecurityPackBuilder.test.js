@@ -13,3 +13,9 @@ test("advanced Security Pack mode remains declarative and backend validated", ()
   assert.doesNotMatch(source, /eval\(/);
   assert.doesNotMatch(source, /new Function/);
 });
+
+test("argument hints stay optional for zero-argument tools", () => {
+  const match = source.match(/<label>Argument hints<input[^>]+>/);
+  assert.ok(match, "Argument hints input must exist");
+  assert.doesNotMatch(match[0], /\brequired\b/);
+});

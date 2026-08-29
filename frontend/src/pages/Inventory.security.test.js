@@ -42,3 +42,10 @@ test("inventory hides archived servers by default and archives with a validated 
   assert.match(source, /validateReason\(archiveDialog\.reason\)/);
   assert.match(source, /Include archived/);
 });
+
+test("inventory hides mutating server controls from VIEWER", () => {
+  assert.match(source, /canManageServer=\{isAdmin && selectedServer\.status !== "archived"\}/);
+  assert.match(source, /const canDiscover = canManageServer &&/);
+  assert.match(source, /\{canManageServer && isOAuth && server\.oauth_status !== "CONNECTED" && \(/);
+  assert.match(source, /\{canManageServer && isOAuth && server\.oauth_status === "CONNECTED" && \(/);
+});
