@@ -5,8 +5,10 @@ import json
 import os
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -26,12 +28,15 @@ for import_path in (REPO_ROOT, BACKEND_DIR):
 from app.core.runtime_paths import (  # noqa: E402
     MODEL_CACHE_DIR,
     OPA_EXE,
+    RUNTIME_POSTGRES_DIR,
     RUNTIME_SECRETS_DIR,
+    RUNTIME_TMP_DIR,
     configure_runtime_environment,
     ensure_runtime_directories,
     runtime_directories,
     runtime_environment,
 )
+from scripts.check_dependencies import assert_system_prerequisites, find_postgres_tool  # noqa: E402
 
 
 SEMANTIC_MODEL_REPOSITORY = "MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli"
@@ -90,6 +95,10 @@ def ensure_environment_file(
         raise RuntimeError(f"Environment template is missing: {env_example}")
     env_file.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(env_example, env_file)
+    try:
+        os.chmod(env_file, 0o600)
+    except OSError:
+        pass
     return True
 
 
@@ -115,17 +124,62 @@ def ensure_trusted_session_pepper(*, env_file: Path = ENV_FILE) -> bool:
         changed = True
     if changed:
         env_file.write_text("\n".join(updated) + "\n", encoding="utf-8")
+        try:
+            os.chmod(env_file, 0o600)
+        except OSError:
+            pass
     return changed
+
+
+LOCAL_POSTGRES_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _set_env_value(env_file: Path, name: str, value: str) -> None:
+    lines = env_file.read_text(encoding="utf-8").splitlines()
+    updated: list[str] = []
+    found = False
+    for line in lines:
+        if line.lstrip().startswith(f"{name}="):
+            updated.append(f"{name}={value}")
+            found = True
+        else:
+            updated.append(line)
+    if not found:
+        updated.append(f"{name}={value}")
+    env_file.write_text("\n".join(updated) + "\n", encoding="utf-8")
+    try:
+        os.chmod(env_file, 0o600)
+    except OSError:
+        pass
+
+
+def _setup_value(env_file: Path, values: dict[str, str], name: str, default: str = "") -> str:
+    if env_file.resolve(strict=False) == ENV_FILE.resolve(strict=False):
+        explicit = os.environ.get(name)
+        if explicit is not None and not _is_placeholder(explicit):
+            return explicit
+    return values.get(name, default)
+
+
+def ensure_postgres_password(*, env_file: Path = ENV_FILE) -> bool:
+    values = _read_env_file(env_file)
+    host = _setup_value(env_file, values, "POSTGRES_HOST", "127.0.0.1").strip()
+    password = _setup_value(env_file, values, "POSTGRES_PASSWORD")
+    if not _is_placeholder(password):
+        return False
+    if host not in LOCAL_POSTGRES_HOSTS:
+        return False
+    _set_env_value(env_file, "POSTGRES_PASSWORD", secrets.token_urlsafe(32))
+    return True
 
 
 def missing_external_configuration(*, env_file: Path = ENV_FILE) -> list[str]:
     file_values = _read_env_file(env_file)
-    missing = []
-    for name in ("POSTGRES_PASSWORD",):
-        value = os.environ.get(name, file_values.get(name, ""))
-        if _is_placeholder(value):
-            missing.append(name)
-    return missing
+    host = _setup_value(env_file, file_values, "POSTGRES_HOST", "127.0.0.1").strip()
+    password = _setup_value(env_file, file_values, "POSTGRES_PASSWORD")
+    if host not in LOCAL_POSTGRES_HOSTS and _is_placeholder(password):
+        return ["POSTGRES_PASSWORD"]
+    return []
 
 
 def prepare_source_only_environment(
@@ -136,6 +190,7 @@ def prepare_source_only_environment(
 ) -> dict[str, bool]:
     created = ensure_environment_file(env_file=env_file, env_example=env_example)
     pepper_generated = ensure_trusted_session_pepper(env_file=env_file)
+    postgres_password_generated = ensure_postgres_password(env_file=env_file)
     if project_root.resolve(strict=False) == REPO_ROOT.resolve(strict=False):
         configure_runtime_environment()
     else:
@@ -143,7 +198,276 @@ def prepare_source_only_environment(
     return {
         "env_created": created,
         "trusted_session_pepper_generated": pepper_generated,
+        "postgres_password_generated": postgres_password_generated,
     }
+
+
+def _database_connectable(
+    *,
+    host: str,
+    port: int,
+    database: str,
+    user: str,
+    password: str,
+) -> bool:
+    try:
+        import psycopg
+
+        with psycopg.connect(
+            host=host,
+            port=port,
+            dbname=database,
+            user=user,
+            password=password,
+            connect_timeout=2,
+        ):
+            return True
+    except Exception:
+        return False
+
+
+def _tcp_port_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def _initialize_postgres_cluster(
+    *,
+    data_dir: Path,
+    user: str,
+    password: str,
+    env: dict[str, str],
+) -> None:
+    if (data_dir / "PG_VERSION").is_file():
+        return
+    initdb = find_postgres_tool("initdb")
+    if not initdb:
+        raise RuntimeError(
+            "PostgreSQL initdb is unavailable. Install PostgreSQL 15+ server binaries."
+        )
+    data_dir.parent.mkdir(parents=True, exist_ok=True)
+    password_file = RUNTIME_TMP_DIR / "postgres-init-password.txt"
+    password_file.write_text(password, encoding="utf-8")
+    try:
+        os.chmod(password_file, 0o600)
+    except OSError:
+        pass
+    try:
+        _run(
+            [
+                initdb,
+                "-D",
+                data_dir,
+                "-U",
+                user,
+                f"--pwfile={password_file}",
+                "--encoding=UTF8",
+                "--auth-host=scram-sha-256",
+                "--auth-local=trust",
+            ],
+            env=env,
+        )
+    finally:
+        password_file.unlink(missing_ok=True)
+
+
+def _managed_postgres_command(*, data_dir: Path, host: str, port: int) -> list[str]:
+    postgres = find_postgres_tool("postgres")
+    if not postgres:
+        raise RuntimeError(
+            "PostgreSQL server binary is unavailable. Install PostgreSQL 15+."
+        )
+    bind_host = "127.0.0.1" if host in LOCAL_POSTGRES_HOSTS else host
+    return [
+        postgres,
+        "-D",
+        str(data_dir),
+        "-h",
+        bind_host,
+        "-p",
+        str(port),
+    ]
+
+
+def _configure_managed_postgres_launcher(
+    command: list[str],
+    *,
+    env_file: Path = ENV_FILE,
+) -> None:
+    encoded = json.dumps(command, separators=(",", ":"))
+    _set_env_value(env_file, "LOCAL_RUNTIME_MANAGED_POSTGRES_COMMAND_JSON", encoded)
+    os.environ["LOCAL_RUNTIME_MANAGED_POSTGRES_COMMAND_JSON"] = encoded
+
+
+def _start_project_postgres(
+    command: list[str],
+    *,
+    env: dict[str, str],
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+) -> None:
+    log_path = RUNTIME_POSTGRES_DIR / "postgres.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = log_path.open("ab")
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=REPO_ROOT,
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            shell=False,
+        )
+    finally:
+        log_handle.close()
+
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(
+                "Project-local PostgreSQL exited during startup. "
+                f"See {log_path} for details."
+            )
+        if _database_connectable(
+            host=host,
+            port=port,
+            database="postgres",
+            user=user,
+            password=password,
+        ):
+            return
+        time.sleep(0.5)
+    raise RuntimeError(
+        "Project-local PostgreSQL did not become ready within 20 seconds. "
+        f"See {log_path} for details."
+    )
+
+
+def _ensure_database_exists(
+    *,
+    host: str,
+    port: int,
+    database: str,
+    user: str,
+    password: str,
+) -> None:
+    import psycopg
+    from psycopg import sql
+
+    with psycopg.connect(
+        host=host,
+        port=port,
+        dbname="postgres",
+        user=user,
+        password=password,
+        connect_timeout=3,
+        autocommit=True,
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database,))
+            if cursor.fetchone() is None:
+                cursor.execute(
+                    sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database))
+                )
+
+
+def ensure_database_ready_for_clone(*, env_file: Path = ENV_FILE) -> str:
+    values = _read_env_file(env_file)
+    host = os.environ.get("POSTGRES_HOST", values.get("POSTGRES_HOST", "127.0.0.1")).strip()
+    raw_port = os.environ.get("POSTGRES_PORT", values.get("POSTGRES_PORT", "55432"))
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise RuntimeError("POSTGRES_PORT must be an integer.") from exc
+    database = os.environ.get("POSTGRES_DB", values.get("POSTGRES_DB", "mcp_security")).strip()
+    user = os.environ.get("POSTGRES_USER", values.get("POSTGRES_USER", "mcp_user")).strip()
+    password = os.environ.get("POSTGRES_PASSWORD", values.get("POSTGRES_PASSWORD", ""))
+
+    if not host or not database or not user:
+        raise RuntimeError("POSTGRES_HOST, POSTGRES_DB and POSTGRES_USER must not be empty.")
+    if not 1 <= port <= 65535:
+        raise RuntimeError("POSTGRES_PORT must be between 1 and 65535.")
+    if _is_placeholder(password):
+        raise RuntimeError("POSTGRES_PASSWORD is not configured.")
+
+    if _database_connectable(
+        host=host,
+        port=port,
+        database=database,
+        user=user,
+        password=password,
+    ):
+        return "existing"
+
+    if host not in LOCAL_POSTGRES_HOSTS:
+        raise RuntimeError(
+            "Configured PostgreSQL is unavailable. Verify POSTGRES_HOST/PORT/DB/USER/PASSWORD."
+        )
+
+    if _tcp_port_open(host, port):
+        try:
+            _ensure_database_exists(
+                host=host,
+                port=port,
+                database=database,
+                user=user,
+                password=password,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "A service is already listening on the configured PostgreSQL port, "
+                "but the configured credentials cannot bootstrap the database. "
+                "Use valid external PostgreSQL credentials or choose another local port."
+            ) from exc
+        if _database_connectable(
+            host=host,
+            port=port,
+            database=database,
+            user=user,
+            password=password,
+        ):
+            return "existing"
+        raise RuntimeError("PostgreSQL database bootstrap did not become usable.")
+
+    data_dir = RUNTIME_POSTGRES_DIR / "data"
+    runtime_env = {**os.environ, **runtime_environment()}
+    _initialize_postgres_cluster(
+        data_dir=data_dir,
+        user=user,
+        password=password,
+        env=runtime_env,
+    )
+    command = _managed_postgres_command(data_dir=data_dir, host=host, port=port)
+    _configure_managed_postgres_launcher(command, env_file=env_file)
+    _start_project_postgres(
+        command,
+        env=runtime_env,
+        host=host,
+        port=port,
+        user=user,
+        password=password,
+    )
+    _ensure_database_exists(
+        host=host,
+        port=port,
+        database=database,
+        user=user,
+        password=password,
+    )
+    if not _database_connectable(
+        host=host,
+        port=port,
+        database=database,
+        user=user,
+        password=password,
+    ):
+        raise RuntimeError("Project-local PostgreSQL database is still unavailable.")
+    return "project_local"
 
 
 def run_post_dependency_setup(
@@ -157,6 +481,10 @@ def run_post_dependency_setup(
     configure_runtime_environment()
     env = {**os.environ, **runtime_environment()}
     completed: list[str] = []
+
+    if not options.skip_database:
+        database_mode = ensure_database_ready_for_clone()
+        completed.append(f"database_ready:{database_mode}")
 
     if not options.skip_frontend:
         npm = _required_npm_command()
@@ -283,6 +611,8 @@ def installation_self_check(*, check_database: bool = True) -> list[Installation
     checks = [
         InstallationCheck("Environment", ENV_FILE.is_file()),
         InstallationCheck("Python venv", venv_python().is_file()),
+        InstallationCheck("Python dependencies", _python_dependencies_healthy()),
+        InstallationCheck("Frontend lockfile", (FRONTEND_DIR / "package-lock.json").is_file()),
         InstallationCheck("Frontend dependencies", (FRONTEND_DIR / "node_modules").is_dir()),
         InstallationCheck("OPA", OPA_EXE.is_file()),
         InstallationCheck("Analyzer models", _analyzer_models_available()),
@@ -412,6 +742,8 @@ def validate_internal_artifacts(*, secret_dir: Path = RUNTIME_SECRETS_DIR) -> No
 
 def main(argv: Sequence[str] | None = None) -> int:
     options = _parse_options(argv)
+    if not options.post_deps:
+        assert_system_prerequisites()
     source_state = prepare_source_only_environment()
     missing = missing_external_configuration()
     if missing:
@@ -465,6 +797,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "env_created": source_state["env_created"],
                 "trusted_session_pepper_generated": source_state[
                     "trusted_session_pepper_generated"
+                ],
+                "postgres_password_generated": source_state[
+                    "postgres_password_generated"
                 ],
                 "python": str(python),
                 "opa": str(OPA_EXE),
@@ -548,6 +883,24 @@ def _is_placeholder(value: str) -> bool:
     return stripped in PLACEHOLDER_VALUES or (
         stripped.startswith("<") and stripped.endswith(">")
     )
+
+
+def _python_dependencies_healthy() -> bool:
+    python = venv_python()
+    if not python.is_file():
+        return False
+    try:
+        result = subprocess.run(
+            [str(python), "-m", "pip", "check"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
 
 
 def _analyzer_models_available() -> bool:

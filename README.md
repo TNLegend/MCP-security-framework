@@ -101,21 +101,21 @@ For an upstream that accepts a static Bearer credential, Inventory stores only
 from `.runtime/secrets/upstream/<credential_ref>` by discovery and the Gateway;
 it is not returned by Inventory APIs or supplied by the agent.
 
-For an HTTP MCP protected by OAuth, an ADMIN can select `OAuth 2.1 (PKCE)` in
-Inventory, register a pre-configured client ID (and optional client secret),
-then complete the provider consent flow. The framework discovers MCP Protected
-Resource Metadata and Authorization Server Metadata, requires PKCE `S256`,
-uses the MCP endpoint as the OAuth `resource` indicator, stores the resulting
-access/refresh-token bundle under `.runtime/secrets/upstream/`, and refreshes it
-only when the Gateway needs to call that same registered MCP. Tokens and client
-secrets are never returned by Inventory APIs, audited, or accepted from agents.
+For an HTTP MCP protected by OAuth, an ADMIN can select `OAuth 2.1 (PKCE)`
+in Inventory and complete the provider consent flow. The framework discovers MCP
+Protected Resource Metadata and Authorization Server Metadata, requires PKCE
+`S256`, uses the MCP endpoint as the OAuth `resource` indicator, and stores the
+resulting access/refresh-token bundle under `.runtime/secrets/upstream/`.
+A pre-registered client ID (and optional client secret) can be supplied, or the
+framework can use Dynamic Client Registration when the authorization metadata
+advertises a valid registration endpoint. Tokens and client secrets are never
+returned by Inventory APIs, audited, or accepted from agents.
 
 Set `UPSTREAM_OAUTH_CALLBACK_URL` and `CONTROL_CENTER_PUBLIC_URL` for a
 deployed Control Plane. In local development the callback defaults to
 `http://127.0.0.1:8000/api/v1/control-plane/upstream-oauth/callback`; the
-Inventory form exposes the effective value to register with the OAuth provider.
-The current implementation intentionally supports pre-registered OAuth clients;
-dynamic client registration and OAuth client-credentials grants are not enabled.
+Inventory form exposes the effective callback value. OAuth client-credentials
+grants are intentionally not supported.
 
 For the included LLM demo, the forbidden architecture is:
 
@@ -366,7 +366,7 @@ mcp-security-framework/
 |-- proxy/        Runtime enforcement layer
 |-- agent/        Provider-agnostic LLM agent demo
 |-- policies/     Rego runtime policy and administrative YAML data
-|-- scanners/     Reserved for future scanning modules
+|-- scanners/     Build/Deploy scanner integration modules
 |-- docs/         Ignored local documentation workspace
 |-- reports/      Ignored local report output
 |-- .env.example
@@ -471,114 +471,109 @@ The other YAML files under `policies/` are administrative data for identity bind
 
 ## Environment Variables
 
-Example local configuration:
+The tracked `.env.example` is the source of truth for local configuration. The
+default local database uses a project-specific loopback port so it does not
+collide with a normal PostgreSQL service:
 
 ```env
-PROJECT_NAME=mcp-security-framework
-ENVIRONMENT=local
-
 BACKEND_HOST=127.0.0.1
 BACKEND_PORT=8000
-
 FRONTEND_HOST=127.0.0.1
 FRONTEND_PORT=5173
-VITE_API_BASE_URL=http://127.0.0.1:8000/api/v1
-MCP_SECURITY_API_BASE_URL=http://127.0.0.1:8000/api/v1
-
 MCP_GATEWAY_HOST=127.0.0.1
 MCP_GATEWAY_PORT=9001
 
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=55432
 POSTGRES_DB=mcp_security
 POSTGRES_USER=mcp_user
-POSTGRES_PASSWORD=change_me
+POSTGRES_PASSWORD=<generate-local>
 
 LLM_PROVIDER=mock
-LLM_FALLBACK_PROVIDER=mock
-
 GEMINI_API_KEY=
-GEMINI_MODEL=
-
 GROQ_API_KEY=
-GROQ_MODEL=openai/gpt-oss-20b
-
-LLM_TEMPERATURE=0
-LLM_TIMEOUT_SECONDS=20
-
 ```
 
 Important:
 
 - `.env` must never be committed.
-- API keys must never be printed or exposed.
-- `.env.example` must contain placeholders only.
-- Local Backend, Gateway, and Frontend host/port values are configured from the
-  repository-root `.env`. Vite also reads this root `.env`, so no
-  `frontend/.env` is required; only `VITE_*` variables are exposed to browser
-  code.
+- `.env.example` contains placeholders only.
+- for the default local database, setup replaces `<generate-local>` with a
+  random installation-specific password without printing it;
+- if an external PostgreSQL host is configured, its credentials remain an
+  explicit operator responsibility and setup never invents them;
+- optional Gemini/Groq keys and third-party MCP credentials are not required by
+  the core framework;
+- Vite reads the repository-root `.env`; no `frontend/.env` is required and
+  only `VITE_*` values are exposed to browser code.
 
 ## Local Setup
 
-The supported stage-MVP bootstrap target is a clean Windows installation. It
-requires:
+The supported clone-ready target is a clean Windows source clone with these
+system prerequisites installed:
 
-- Python 3.11+
-- Node.js 20+
-- npm
-- PostgreSQL 15+
-- Git
+- Python >=3.11 and <3.14;
+- Node.js `^20.19.0` or `>=22.12.0` and npm;
+- PostgreSQL 15+ server binaries;
+- Git;
+- Internet access for the first dependency/model/tool provisioning run.
 
-Create the local configuration from the tracked template and edit its external
-PostgreSQL value(s). If `.env` is absent, setup creates it from the template and
-stops with the names of values that still require operator input:
+Check them with:
 
 ```powershell
-Copy-Item .env.example .env
-# Edit POSTGRES_* for the target PostgreSQL installation.
+python scripts/check_dependencies.py
+```
+
+Then run one bootstrap command from the repository root:
+
+```powershell
 python scripts/setup_local_environment.py
 ```
 
-The idempotent bootstrap performs the complete local provisioning flow:
+No manual `pip install`, `npm install`, OPA installation, model download,
+key generation, database/user creation, schema initialization, or initial
+configuration import is required for the default local path.
 
-- creates `backend/.venv`, installs `backend/requirements.txt`, and runs
-  `npm ci` from the existing frontend lockfile;
-- creates `.runtime` and provisions the pinned local OPA `1.18.2` binary;
-- provisions the local Analyzer model snapshots
-  `MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli@0a71e92a985b6e1ad1828cf67ce9c459639c1dca`
-  and `intfloat/multilingual-e5-small@614241f622f53c4eeff9890bdc4f31cfecc418b3`;
-- generates installation-specific local IDP, Proxy assertion, MCP Proxy,
-  Discovery, and revision-signing material under `.runtime/secrets`;
-- generates the trusted-session pepper in ignored `.env` when it still has the
-  template placeholder;
-- checks PostgreSQL, runs the existing idempotent schema initialization, and
-  interactively creates the first ADMIN when no active ADMIN exists;
-- validates the installation without printing credentials or key material.
+The idempotent bootstrap:
 
-Existing valid private keys and an existing active ADMIN are retained. Invalid
-private-key material fails setup instead of being silently overwritten. In a
-non-interactive environment, setup reports the exact command needed to create
-the initial ADMIN.
+- creates `backend/.venv` and installs the single pinned
+  `backend/requirements.txt` used by runtime and validation;
+- runs `npm ci` from the tracked frontend lockfile;
+- downloads the pinned OPA `1.18.2` binary and verifies its SHA-256;
+- downloads the two pinned local Tool Analyzer model snapshots;
+- generates installation-specific service, assertion, revision-signing, and
+  local-IDP key material under ignored `.runtime/secrets`;
+- generates the trusted-session pepper and default local PostgreSQL password
+  inside ignored `.env`;
+- reuses a correctly configured reachable PostgreSQL database when available,
+  otherwise initializes a project-local PostgreSQL cluster under
+  `.runtime/postgres`, creates `mcp_security`, and records the managed local
+  launcher in ignored `.env`;
+- initializes/upgrades the schema, creates the initial PUBLISHED Control Plane
+  configuration, and interactively creates the first ADMIN if needed;
+- runs an installation self-check without printing credentials or private key
+  material.
 
-The operator or provider remains responsible for PostgreSQL credentials,
-optional Gemini/Groq demo keys, third-party MCP Bearer credentials, and future
-cloud credentials. Third-party MCP credentials are stored through governed
-onboarding; the framework does not fabricate them. Optional LLM demo keys are
-not required by the core framework.
+Existing valid local identities, database state, configuration and ADMIN users
+are preserved on repeated setup runs. Invalid security material fails closed
+instead of being silently replaced.
 
-After setup, start the Backend, local OPA, and Gateway supervisor:
+After setup, start the framework supervisor:
 
 ```powershell
 .\backend\.venv\Scripts\python.exe scripts\start_framework.py
 ```
 
-Then start the already-provisioned frontend with `npm.cmd run dev` from
-`frontend/`. The dev server reads `FRONTEND_HOST`, `FRONTEND_PORT`, and
-`VITE_API_BASE_URL` from the repository-root `.env`. No separate `frontend/.env`,
-key generation, OPA/Gateway startup, model download, or schema command is
-required in the normal flow. Project-owned relative paths are resolved from the
-repository root, independently of the current directory; intentionally absolute
-external paths remain supported.
+Then start the already-provisioned frontend in a second terminal:
+
+```powershell
+cd frontend
+npm.cmd run dev
+```
+
+The supervisor starts or reuses PostgreSQL, OPA, the local identity provider,
+Backend and Gateway. The frontend reads its host, port and API base URL from the
+repository-root `.env`.
 
 On a pristine Control Plane configuration database, setup also imports the
 tracked administrative bootstrap YAML into PostgreSQL as the initial published
@@ -622,9 +617,11 @@ An external JWKS provider is checked but never launched by the framework. It onl
 fixed framework commands with `shell=False` and only terminates child processes
 it started. If PostgreSQL is unavailable and
 `LOCAL_RUNTIME_MANAGED_POSTGRES_COMMAND_JSON` contains an explicitly trusted
-local argv array, the launcher starts it and waits for readiness. Without that
-configuration startup fails clearly. A PostgreSQL process started this way is
-left running on framework shutdown because it is stateful infrastructure.
+local argv array, the launcher starts it and waits for readiness. The normal
+local setup writes this launcher automatically for the project-local cluster;
+custom/external database deployments may leave it empty. A PostgreSQL process
+started this way is left running on framework shutdown because it is stateful
+infrastructure.
 Backend, OPA, Gateway, and local identity-provider children are monitored. An
 unexpected exit triggers only the configured number of controlled restart attempts
 with bounded backoff. If recovery is disabled, fails, or is exhausted, the remaining
@@ -700,10 +697,33 @@ http://127.0.0.1:5173
 
 ## Validation Commands
 
-Compile Python code:
+Run the complete Python suite from the repository root:
 
 ```powershell
-.\backend\.venv\Scripts\python.exe -m compileall backend/app proxy agent scripts mcp-lab/http_server
+.\backend\.venv\Scripts\python.exe -m pytest -q
+```
+
+Validate the frontend and its lockfile:
+
+```powershell
+cd frontend
+npm.cmd test
+npm.cmd run build
+npm.cmd audit
+cd ..
+```
+
+Validate OPA/Rego policies:
+
+```powershell
+.\.runtime\tools\opa\opa.exe test policies\opa
+```
+
+Check Python dependency consistency and bytecode compilation:
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pip check
+.\backend\.venv\Scripts\python.exe -m compileall -q backend proxy agent common scripts mcp-lab
 ```
 
 Check runtime logs:
@@ -788,9 +808,10 @@ The runtime path enforces these rules:
 - Governance applies to MCP connections configured through the framework
   endpoint. Direct client reconfiguration or unrelated clients directly
   accessing a third-party MCP are outside the base framework boundary.
-- Upstream authentication supports no-auth, framework-held Bearer references, and
-  interactive OAuth 2.1 Authorization Code with PKCE for pre-registered clients.
-  Dynamic client registration and client-credentials grants remain unsupported.
+- Upstream authentication supports no-auth, framework-held Bearer references,
+  and interactive OAuth 2.1 Authorization Code with PKCE. OAuth clients may be
+  pre-registered or dynamically registered when the provider advertises a valid
+  registration endpoint. Client-credentials grants remain unsupported.
 - DNS answers are screened for special destinations before outbound requests,
   but transport-level DNS pinning is not yet implemented.
 - Runtime policy depends on OPA availability and fails closed when OPA is unavailable.
@@ -801,12 +822,10 @@ The runtime path enforces these rules:
 
 ## Next Phases
 
-Planned work:
+The Runtime Security core is now the validated baseline. The next planned work is:
 
-- MCP security scanner expansion;
-- policy enrichment;
-- Control Plane approval UX hardening;
-- DevSecOps scanning integration;
-- audit and reporting;
-- AWS/cloud integration later;
-- production hardening for authentication, authorization, and deployment.
+- Phase 6 - Build Security / DevSecOps with Semgrep, Trivy, and GitLeaks;
+- Phase 7 - Deploy Security / AWS-IAM with Checkov, Prowler, and boto3;
+- controlled adversarial validation across Build, Deploy, and Runtime evidence;
+- audit/report generation and governance mappings;
+- optional SOC/Wazuh/Sigma integration if time permits.

@@ -1,226 +1,147 @@
 # Backend - MCP Security Framework
 
-Backend FastAPI du projet **MCP Security Framework**.
+Backend FastAPI du **MCP Security Framework**.
 
-Ce backend sert de base applicative pour centraliser progressivement les composants de sécurité et de gouvernance du framework MCP : inventaire, outils, politiques, décisions runtime, journaux d’exécution, événements d’audit et futurs résultats de scans.
-
-## Objectif
-
-Le backend a pour rôle de centraliser progressivement :
-
-* l’inventaire des serveurs MCP ;
-* les outils MCP exposés ;
-* les politiques de sécurité ;
-* les décisions runtime ;
-* les journaux d’exécution ;
-* les événements d’audit ;
-* les futurs résultats de scans Build et Deploy ;
-* les futurs rapports d’audit.
-
-Dans la Phase 1, le backend ne couvre pas encore toutes les fonctionnalités finales du framework. Il fournit une base propre avec FastAPI, PostgreSQL, des routes API minimales et un premier squelette de moteur de décision runtime.
+Le backend constitue le plan de contrôle applicatif du framework. Il centralise
+l'inventaire MCP, l'analyse des tools, les identités et autorisations, la
+configuration de sécurité publiée, les décisions Runtime, les traces, l'audit et
+les opérations d'administration.
 
 ## État actuel
 
-Phase 1 en cours de finalisation.
+Le cœur Runtime Security est implémenté et validé. Le backend couvre notamment :
 
-Éléments déjà en place :
+- inventaire des serveurs et tools MCP ;
+- découverte/import MCP gouverné ;
+- Tool Description Analyzer avec fingerprint, drift et workflow de revue ;
+- Control Plane avec rôles `ADMIN` et `VIEWER` ;
+- révisions de configuration `DRAFT -> VALIDATE -> PUBLISH -> ROLLBACK` ;
+- Security Contracts, Security Packs et Trusted Adapter SDK ;
+- identités agent, trusted sessions, capabilities et authority-qualified scopes ;
+- construction du contexte Runtime et décision via OPA/Rego ;
+- Emergency Deny ;
+- Runtime Calls, Audit et Operations ;
+- Controlled AI Assistance, strictement advisory-only ;
+- support d'authentification upstream NONE, Bearer et OAuth ;
+- Result Guard.
 
-* backend FastAPI minimal ;
-* configuration centralisée ;
-* connexion PostgreSQL ;
-* modèles SQLAlchemy initiaux ;
-* tables PostgreSQL minimales ;
-* routes API minimales pour serveurs, outils, politiques et logs runtime ;
-* route de vérification de la base de données ;
-* route de test du Policy Engine skeleton ;
-* documentation Swagger automatique.
+Les modules Build Security (Semgrep, Trivy, GitLeaks) et Deploy Security
+(AWS/IAM) constituent les phases suivantes.
 
-Ce backend prépare les prochaines étapes : intégration plus complète de l’inventaire MCP, du moteur de décision, du proxy MCP, des modules de scan, de validation et d’audit.
+## Installation locale
 
-## Lancement local
+La procédure supportée part de la racine du dépôt et utilise le bootstrap
+principal :
 
-Depuis le dossier `backend/` :
-
-```bash
-python -m venv .venv
+```powershell
+python scripts/check_dependencies.py
+python scripts/setup_local_environment.py
 ```
 
-Windows :
+Le bootstrap crée `backend/.venv`, installe le fichier unique
+`backend/requirements.txt`, provisionne OPA et les modèles locaux, génère les
+identités internes, prépare PostgreSQL, initialise le schéma et crée la
+configuration publiée initiale.
 
-```bash
-.venv\Scripts\activate
+Pour le chemin local par défaut, aucune création manuelle du user ou de la base
+PostgreSQL n'est requise : le setup peut initialiser un cluster propre au projet
+sous `.runtime/postgres`.
+
+## Lancement
+
+Depuis la racine du dépôt :
+
+```powershell
+.\backend\.venv\Scripts\python.exe scripts\start_framework.py
 ```
 
-Linux/macOS :
+Le superviseur démarre ou réutilise PostgreSQL, OPA, le fournisseur d'identité
+local, le backend FastAPI et la Gateway MCP.
 
-```bash
-source .venv/bin/activate
+Le frontend est lancé séparément :
+
+```powershell
+cd frontend
+npm.cmd run dev
 ```
 
-Installer les dépendances :
-
-```bash
-pip install -r requirements.txt
-```
-
-Lancer le backend :
-
-```bash
-uvicorn app.main:app --reload
-```
-
-Le backend est alors accessible par défaut sur :
+Backend par défaut :
 
 ```text
 http://127.0.0.1:8000
 ```
 
-## Configuration
-
-Le backend lit sa configuration depuis le fichier `.env` situé à la racine du projet.
-
-Variables PostgreSQL attendues :
-
-```env
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=mcp_security
-POSTGRES_USER=mcp_user
-POSTGRES_PASSWORD=change_me
-```
-
-Le vrai mot de passe doit rester uniquement dans le fichier local `.env`.
-
-Ne jamais committer `.env` dans Git.
-
-## Initialisation de la base de données
-
-Depuis le dossier `backend/` :
-
-```bash
-python -m app.db.init_db
-```
-
-Tables créées :
-
-* `mcp_servers`
-* `mcp_tools`
-* `policy_rules`
-* `runtime_calls`
-* `policy_decisions`
-* `audit_events`
-
-## Routes disponibles
-
-Routes générales :
-
-```text
-GET /                      
-GET /api/v1/health         
-GET /api/v1/status         
-GET /api/v1/db-check       
-```
-
-Routes d’inventaire MCP :
-
-```text
-GET  /api/v1/servers
-POST /api/v1/servers
-
-GET  /api/v1/tools
-POST /api/v1/tools
-```
-
-Routes de politiques :
-
-```text
-GET  /api/v1/policies
-POST /api/v1/policies
-```
-
-Routes runtime :
-
-```text
-GET  /api/v1/runtime/logs
-POST /api/v1/runtime/logs
-POST /api/v1/runtime/decision
-```
-
-## Policy Engine skeleton
-
-Le backend contient un premier squelette de moteur de décision runtime.
-
-Il permet de tester la logique centrale du framework :
-
-```text
-contexte d’appel MCP → évaluation des règles → décision structurée
-```
-
-Route de test :
-
-```text
-POST /api/v1/runtime/decision
-```
-
-Décisions supportées :
-
-```text
-ALLOW, BLOCK, WARN, LIMIT, ASK_APPROVAL, LOG_ONLY
-```
-
-Exemple de contexte bloqué :
-
-```json
-{
-  "agent_id": "agent-demo",
-  "server_id": "filesystem-mcp",
-  "server_status": "trusted",
-  "tool_name": "read_file",
-  "tool_risk_score": 10,
-  "tool_sensitivity": "medium",
-  "arguments": {
-    "path": ".env"
-  }
-}
-```
-
-Exemple de réponse attendue :
-
-```json
-{
-  "decision": "BLOCK",
-  "rule_id": "deny_sensitive_paths",
-  "reason": "Access to sensitive path is forbidden.",
-  "severity": "high"
-}
-```
-
-## Documentation automatique
-
-Une fois le backend lancé, la documentation Swagger est disponible ici :
+Swagger :
 
 ```text
 http://127.0.0.1:8000/docs
 ```
 
-## Limites actuelles
+## PostgreSQL
 
-Cette version reste une base Phase 1.
+La configuration locale par défaut provient de `.env.example` :
 
-Elle ne contient pas encore :
+```env
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=55432
+POSTGRES_DB=mcp_security
+POSTGRES_USER=mcp_user
+POSTGRES_PASSWORD=<generate-local>
+```
 
-* authentification ;
-* gestion avancée des permissions ;
-* proxy MCP complet ;
-* intégration réelle avec des serveurs MCP ;
-* intégration Gemini/Groq réelle ;
-* intégration Semgrep, Trivy, GitLeaks ;
-* intégration AWS/IAM avec Prowler, Checkov ou boto3 ;
-* génération de rapports avancés ;
-* validation adversariale complète.
+Le mot de passe local est généré dans le fichier ignoré `.env` lors du premier
+setup et n'est jamais affiché. Pour un PostgreSQL externe, l'opérateur renseigne
+explicitement les paramètres `POSTGRES_*`.
 
-Ces éléments seront ajoutés progressivement dans les phases suivantes.
+PostgreSQL reste la source de vérité administrative du Runtime. Les fichiers
+YAML suivis dans Git servent uniquement au bootstrap/import, aux exemples et aux
+tests ; ils ne constituent pas un fallback silencieux de la configuration
+Runtime publiée.
 
-## Statut
+## Policy Engine
 
-Phase 1 — Backend FastAPI, PostgreSQL, routes API minimales et Policy Engine skeleton en place.
+OPA/Rego est le moteur de politique Runtime autoritatif.
+
+Le flux principal est :
+
+```text
+Gateway
+  -> identité / session / autorisations
+  -> Tool Analyzer / Security Contract
+  -> ressources canoniques / scopes
+  -> contexte signé
+  -> OPA/Rego
+  -> ALLOW ou BLOCK
+  -> exécution MCP uniquement si autorisée
+```
+
+Le framework applique une logique fail-closed : une identité invalide, un
+contexte incomplet, une configuration publiée invalide, une ressource non
+résolue ou une décision OPA indisponible ne devient jamais une autorisation
+implicite.
+
+## Tests
+
+Toutes les dépendances Python nécessaires au Runtime et aux validations,
+y compris `pytest`, sont épinglées dans le même fichier :
+
+```powershell
+backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+backend\.venv\Scripts\python.exe -m pytest -q
+```
+
+Les politiques OPA disposent également de leurs propres tests sous
+`policies/opa/`.
+
+## Sécurité des secrets
+
+Ne jamais committer :
+
+- `.env` ;
+- `.runtime` ;
+- les clés privées ;
+- les tokens OAuth/Bearer ;
+- les caches ou modèles locaux.
+
+Chaque installation génère son propre matériel cryptographique. Un clone ne doit
+jamais réutiliser le dossier `.runtime` d'une autre machine.

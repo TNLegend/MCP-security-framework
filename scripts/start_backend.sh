@@ -1,13 +1,13 @@
-#!/bin/bash
+#!/bin/sh
+set -eu
 
-cd "$(dirname "$0")/../backend" || exit 1
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+VENV="$ROOT/backend/.venv"
 
-if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
+if [ ! -x "$VENV/bin/python" ]; then
+    python3 -m venv "$VENV"
+    "$VENV/bin/python" -m pip install -r "$ROOT/backend/requirements.txt"
 fi
 
-source .venv/bin/activate
-
-pip install -r requirements.txt
-
-uvicorn app.main:app --reload
+cd "$ROOT"
+"$VENV/bin/python" -m uvicorn app.main:app --app-dir backend --reload

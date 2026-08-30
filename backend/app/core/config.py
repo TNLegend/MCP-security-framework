@@ -25,11 +25,11 @@ class Settings(BaseSettings):
     mcp_gateway_port: int = 9001
     agent_identity_jwks_url: str = "<configure>"
 
-    postgres_host: str = "localhost"
-    postgres_port: int = 5432
+    postgres_host: str = "127.0.0.1"
+    postgres_port: int = Field(default=55432, ge=1, le=65535)
     postgres_db: str = "mcp_security"
     postgres_user: str = "mcp_user"
-    postgres_password: str = "change_me"
+    postgres_password: str = "<generate-local>"
 
     opa_base_url: str = "http://127.0.0.1:8181"
     opa_decision_path: str = "/v1/data/mcp/security/runtime/decision"

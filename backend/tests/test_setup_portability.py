@@ -51,6 +51,7 @@ from proxy.internal_identity_assertion import (  # noqa: E402
     validate_private_key_path,
 )
 from scripts import create_control_plane_user, local_identity_provider  # noqa: E402
+from scripts.check_dependencies import node_supported, postgres_supported  # noqa: E402
 from scripts.provision_service_identities import (  # noqa: E402
     provision_service_identities,
 )
@@ -59,7 +60,9 @@ from scripts.setup_local_environment import (  # noqa: E402
     REQUIRED_RUNTIME_CALL_COLUMNS,
     SetupOptions,
     ensure_environment_file,
+    ensure_postgres_password,
     ensure_trusted_session_pepper,
+    missing_external_configuration,
     _runtime_calls_schema_ok,
     published_configuration_installation_check,
     prepare_source_only_environment,
@@ -133,11 +136,14 @@ class ProjectPortabilityTests(unittest.TestCase):
                 )
 
     def test_default_local_ports_match_env_example(self) -> None:
-        configured = Settings(_env_file=None)
+        with patch.dict(os.environ, {}, clear=True):
+            configured = Settings(_env_file=None)
 
         self.assertEqual(configured.backend_port, 8000)
         self.assertEqual(configured.mcp_gateway_port, 9001)
         self.assertEqual(configured.frontend_port, 5173)
+        self.assertEqual(configured.postgres_host, "127.0.0.1")
+        self.assertEqual(configured.postgres_port, 55432)
         self.assertIn("http://127.0.0.1:5173", configured.control_center_cors_origins)
 
     def test_non_default_local_ports_are_configurable_from_environment(self) -> None:
@@ -206,6 +212,10 @@ class ProjectPortabilityTests(unittest.TestCase):
     def test_invalid_frontend_port_fails_configuration(self) -> None:
         with self.assertRaises(ValidationError):
             Settings(_env_file=None, frontend_port=70000)
+
+    def test_invalid_postgres_port_fails_configuration(self) -> None:
+        with self.assertRaises(ValidationError):
+            Settings(_env_file=None, postgres_port=70000)
 
     def test_runtime_calls_self_check_requires_current_runtime_columns(self) -> None:
         engine = create_engine("sqlite:///:memory:")
@@ -561,6 +571,34 @@ class ProjectPortabilityTests(unittest.TestCase):
             }
             self.assertTrue(expected.issubset({path.name for path in secret_dir.iterdir()}))
 
+    def test_local_postgres_password_is_generated_once_and_external_hosts_stay_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            local_env = root / ".env"
+            local_env.write_text(
+                "POSTGRES_HOST=127.0.0.1\n"
+                "POSTGRES_PASSWORD=<generate-local>\n",
+                encoding="utf-8",
+            )
+            self.assertTrue(ensure_postgres_password(env_file=local_env))
+            first = local_env.read_text(encoding="utf-8")
+            self.assertNotIn("<generate-local>", first)
+            self.assertFalse(ensure_postgres_password(env_file=local_env))
+            self.assertEqual(first, local_env.read_text(encoding="utf-8"))
+            self.assertEqual(missing_external_configuration(env_file=local_env), [])
+
+            external_env = root / ".external.env"
+            external_env.write_text(
+                "POSTGRES_HOST=db.example.internal\n"
+                "POSTGRES_PASSWORD=<required>\n",
+                encoding="utf-8",
+            )
+            self.assertFalse(ensure_postgres_password(env_file=external_env))
+            self.assertEqual(
+                missing_external_configuration(env_file=external_env),
+                ["POSTGRES_PASSWORD"],
+            )
+
     def test_env_and_internal_pepper_are_not_overwritten_on_second_setup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -580,14 +618,30 @@ class ProjectPortabilityTests(unittest.TestCase):
             self.assertEqual(first, env_file.read_bytes())
 
     def test_no_developer_absolute_project_path_is_tracked(self) -> None:
+        former_developer_root = "D:" + r"\cours\M2FSI\mon_stage"
         result = subprocess.run(
-            ["git", "grep", "-n", r"D:\cours\M2FSI\mon_stage"],
+            ["git", "grep", "-n", former_developer_root],
             cwd=ROOT,
             capture_output=True,
             text=True,
             check=False,
         )
         self.assertEqual(result.returncode, 1, result.stdout)
+
+
+class DependencyVersionTests(unittest.TestCase):
+    def test_node_version_matches_vite_engine_requirement(self) -> None:
+        self.assertFalse(node_supported("v20.18.1"))
+        self.assertTrue(node_supported("v20.19.0"))
+        self.assertFalse(node_supported("v21.7.3"))
+        self.assertFalse(node_supported("v22.11.0"))
+        self.assertTrue(node_supported("v22.12.0"))
+        self.assertTrue(node_supported("v24.12.0"))
+
+    def test_postgres_minimum_version(self) -> None:
+        self.assertFalse(postgres_supported("postgres (PostgreSQL) 14.13"))
+        self.assertTrue(postgres_supported("postgres (PostgreSQL) 15.0"))
+        self.assertTrue(postgres_supported("postgres (PostgreSQL) 18.4"))
 
 
 class PrivateKeyLocationTests(unittest.TestCase):
@@ -746,6 +800,82 @@ class IdentityProvisioningTests(unittest.TestCase):
 
 
 class SetupOrchestrationTests(unittest.TestCase):
+    def test_clone_database_reuses_healthy_configured_database(self) -> None:
+        from scripts import setup_local_environment
+
+        with tempfile.TemporaryDirectory() as temporary:
+            env_file = Path(temporary) / ".env"
+            env_file.write_text(
+                "POSTGRES_HOST=127.0.0.1\n"
+                "POSTGRES_PORT=55432\n"
+                "POSTGRES_DB=mcp_security\n"
+                "POSTGRES_USER=mcp_user\n"
+                "POSTGRES_PASSWORD=already-configured\n",
+                encoding="utf-8",
+            )
+            with patch(
+                "scripts.setup_local_environment._database_connectable",
+                return_value=True,
+            ) as connectable, patch(
+                "scripts.setup_local_environment._initialize_postgres_cluster"
+            ) as initialize_cluster:
+                result = setup_local_environment.ensure_database_ready_for_clone(
+                    env_file=env_file
+                )
+
+        self.assertEqual(result, "existing")
+        connectable.assert_called_once()
+        initialize_cluster.assert_not_called()
+
+    def test_clone_database_provisions_project_local_cluster_when_port_is_free(self) -> None:
+        from scripts import setup_local_environment
+
+        with tempfile.TemporaryDirectory() as temporary:
+            env_file = Path(temporary) / ".env"
+            env_file.write_text(
+                "POSTGRES_HOST=127.0.0.1\n"
+                "POSTGRES_PORT=55432\n"
+                "POSTGRES_DB=mcp_security\n"
+                "POSTGRES_USER=mcp_user\n"
+                "POSTGRES_PASSWORD=generated-secret\n",
+                encoding="utf-8",
+            )
+            with (
+                patch(
+                    "scripts.setup_local_environment._database_connectable",
+                    side_effect=[False, True],
+                ),
+                patch(
+                    "scripts.setup_local_environment._tcp_port_open",
+                    return_value=False,
+                ),
+                patch(
+                    "scripts.setup_local_environment._initialize_postgres_cluster"
+                ) as initialize_cluster,
+                patch(
+                    "scripts.setup_local_environment._managed_postgres_command",
+                    return_value=["postgres", "-D", "data"],
+                ),
+                patch(
+                    "scripts.setup_local_environment._configure_managed_postgres_launcher"
+                ) as configure_launcher,
+                patch(
+                    "scripts.setup_local_environment._start_project_postgres"
+                ) as start_database,
+                patch(
+                    "scripts.setup_local_environment._ensure_database_exists"
+                ) as ensure_database,
+            ):
+                result = setup_local_environment.ensure_database_ready_for_clone(
+                    env_file=env_file
+                )
+
+        self.assertEqual(result, "project_local")
+        initialize_cluster.assert_called_once()
+        configure_launcher.assert_called_once()
+        start_database.assert_called_once()
+        ensure_database.assert_called_once()
+
     def test_post_dependency_orchestration_invokes_all_bootstrap_steps(self) -> None:
         commands: list[tuple[list[str], Path]] = []
         options = SetupOptions()
@@ -761,6 +891,10 @@ class SetupOrchestrationTests(unittest.TestCase):
                 ),
             ),
             patch("scripts.setup_local_environment.validate_internal_artifacts"),
+            patch(
+                "scripts.setup_local_environment.ensure_database_ready_for_clone",
+                return_value="existing",
+            ) as ensure_database,
             patch("scripts.setup_local_environment.initialize_database_schema") as initialize_db,
             patch("scripts.setup_local_environment.ensure_published_configuration") as ensure_config,
             patch("scripts.setup_local_environment.bootstrap_initial_admin") as initial_admin,
@@ -794,6 +928,8 @@ class SetupOrchestrationTests(unittest.TestCase):
                 "local_identity_provider.py",
             ],
         )
+        self.assertEqual(completed[0], "database_ready:existing")
+        ensure_database.assert_called_once_with()
         initialize_db.assert_called_once_with()
         ensure_config.assert_called_once_with()
         initial_admin.assert_called_once_with(interactive=True)

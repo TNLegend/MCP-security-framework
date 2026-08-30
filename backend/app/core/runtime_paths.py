@@ -12,6 +12,7 @@ RUNTIME_CACHE_DIR = RUNTIME_DIR / "cache"
 RUNTIME_TOOLS_DIR = RUNTIME_DIR / "tools"
 RUNTIME_TMP_DIR = RUNTIME_DIR / "tmp"
 RUNTIME_SECRETS_DIR = RUNTIME_DIR / "secrets"
+RUNTIME_POSTGRES_DIR = RUNTIME_DIR / "postgres"
 UPSTREAM_SECRETS_DIR = RUNTIME_SECRETS_DIR / "upstream"
 
 HF_HOME_DIR = RUNTIME_CACHE_DIR / "huggingface"
@@ -50,6 +51,7 @@ def runtime_directories(
         runtime_tools_dir,
         runtime_tools_dir / "opa",
         runtime_dir / "tmp",
+        runtime_dir / "postgres",
         runtime_secrets_dir,
         runtime_secrets_dir / "upstream",
     )
