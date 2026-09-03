@@ -57,12 +57,14 @@ from scripts.provision_service_identities import (  # noqa: E402
 )
 from scripts.setup_local_environment import (  # noqa: E402
     InstallationCheck,
+    REQUIRED_BUILD_SECURITY_TABLES,
     REQUIRED_RUNTIME_CALL_COLUMNS,
     SetupOptions,
     ensure_environment_file,
     ensure_postgres_password,
     ensure_trusted_session_pepper,
     missing_external_configuration,
+    _build_security_schema_ok,
     _runtime_calls_schema_ok,
     published_configuration_installation_check,
     prepare_source_only_environment,
@@ -242,6 +244,16 @@ class ProjectPortabilityTests(unittest.TestCase):
                 connection.execute(text(f"ALTER TABLE runtime_calls ADD COLUMN {column_name} VARCHAR(100)"))
 
         self.assertTrue(_runtime_calls_schema_ok(inspect(engine)))
+
+    def test_build_security_self_check_requires_all_phase6_tables(self) -> None:
+        engine = create_engine("sqlite:///:memory:")
+        self.assertFalse(_build_security_schema_ok(inspect(engine)))
+
+        Base.metadata.create_all(engine)
+        self.assertTrue(_build_security_schema_ok(inspect(engine)))
+        self.assertTrue(
+            REQUIRED_BUILD_SECURITY_TABLES.issubset(set(inspect(engine).get_table_names()))
+        )
 
     def test_runtime_calls_upgrade_adds_control_plane_columns_idempotently(self) -> None:
         if configured_engine.dialect.name != "postgresql":
@@ -913,6 +925,9 @@ class SetupOrchestrationTests(unittest.TestCase):
             "local_identity_provider.py",
             "download_tool_analyzer_models.py",
             "download_opa.py",
+            "provision_semgrep.py",
+            "provision_gitleaks.py",
+            "provision_trivy.py",
         ):
             self.assertIn(script, command_text)
         script_order = [
@@ -923,6 +938,9 @@ class SetupOrchestrationTests(unittest.TestCase):
             script_order,
             [
                 "download_opa.py",
+                "provision_semgrep.py",
+                "provision_gitleaks.py",
+                "provision_trivy.py",
                 "download_tool_analyzer_models.py",
                 "provision_service_identities.py",
                 "local_identity_provider.py",

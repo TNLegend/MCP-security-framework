@@ -20,6 +20,7 @@ import {
   fetchUsers,
 } from "./api/client";
 import Dashboard from "./pages/Dashboard";
+import BuildSecurity from "./pages/BuildSecurity";
 import Audit from "./pages/Audit";
 import EmergencyDeny from "./pages/EmergencyDeny";
 import Inventory from "./pages/Inventory";
@@ -33,6 +34,7 @@ import { LIMITS, clearFieldError, validateLogin } from "./utils/validation";
 const pages = [
   { id: "dashboard", label: "Dashboard" },
   { id: "inventory", label: "MCP Inventory" },
+  { id: "build", label: "Build Security" },
   { id: "analysis", label: "Tool Analysis" },
   { id: "config", label: "Security Configuration" },
   { id: "emergency", label: "Emergency Deny" },
@@ -161,7 +163,7 @@ function App() {
         servers: ["Servers", fetchServers, setServers],
         tools: ["Tools", fetchTools, setTools],
         policies: ["Policies", fetchPolicies, setPolicies],
-        runtimeLogs: ["Runtime logs", () => fetchRuntimeLogs({ limit: 50 }), setRuntimeLogPage],
+        runtimeLogs: ["Runtime logs", () => fetchRuntimeLogs({ limit: 20 }), setRuntimeLogPage],
         analyses: ["Tool analyses", fetchAllToolAnalyses, setToolAnalyses],
         revisions: ["Config revisions", fetchConfigRevisions, setConfigRevisions],
         activeRevision: ["Active config", fetchActiveConfigRevision, setActiveRevision],
@@ -230,6 +232,17 @@ function App() {
           onNavigate={setActivePage}
           onRefresh={loadData}
           runtimeStatus={runtimeStatus}
+        />
+      );
+    }
+
+    if (activePage === "build") {
+      return (
+        <BuildSecurity
+          isAdmin={isAdmin}
+          onRefresh={loadData}
+          revisions={configRevisions}
+          servers={activeServers}
         />
       );
     }
@@ -323,6 +336,7 @@ function App() {
     loading,
     operationsSummary,
     policies,
+    configRevisions,
     runtimeLogPage,
     runtimeStatus,
     users,

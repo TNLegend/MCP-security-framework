@@ -22,7 +22,10 @@ Gateway entirely.
 - Ed25519-signed v2 revisions, predecessor-chain verification, and anti-rollback;
 - authority-qualified SELF/SUBTREE scope evaluation in OPA;
 - canonical RFC 8785 argument binding from decision through execution;
-- fail-closed OPA, configuration, adapter, and EmergencyDeny failures;
+- fail-closed OPA, configuration, adapter, Build-gate, and EmergencyDeny failures;
+- optional signed Build Security evidence bound to an exact scan/source fingerprint,
+  Inventory server, assessment policy, required-scanner completion, and age limit;
+- no scanner execution on the Runtime request path;
 - no MCP invocation for a blocked request;
 - Control Plane, agent, proxy service, and discovery service identity separation.
 
@@ -45,6 +48,10 @@ Gateway entirely.
   control the upstream infrastructure;
 - a compromised proxy, OPA, trusted adapter, database administration plane, or signing key;
 - dishonest server behavior with an unchanged declaration;
+- Build scanners proving source properties beyond the exact validated workspace and
+  immutable Git revision/fingerprint they inspected;
+- a deployment choosing `Build Security mode DISABLED`, which intentionally
+  records no mandatory Build prerequisite for Runtime authorization;
 - paraphrased or encoded response attacks that do not match high-confidence guards;
 - SELECTOR and OPAQUE references, Resources, Prompts, MRTR, Tasks, subscriptions,
   Sampling, and Elicitation, which are unsupported and fail closed;

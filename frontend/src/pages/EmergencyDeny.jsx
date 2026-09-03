@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { createEmergencyDeny, revokeEmergencyDeny } from "../api/client";
+import { Pagination, usePagination } from "../components/Pagination";
 import {
   LIMITS,
   clearFieldError,
@@ -28,6 +29,7 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const denyPagination = usePagination(denies, String(denies.length));
 
   async function submit(event) {
     event.preventDefault();
@@ -212,7 +214,7 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
                 <td colSpan="6">No Emergency Deny records.</td>
               </tr>
             ) : (
-              denies.map((deny) => (
+              denyPagination.pageItems.map((deny) => (
                 <tr key={deny.id}>
                   <td>{deny.target_type}</td>
                   <td>{targetValue(deny)}</td>
@@ -239,6 +241,13 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
           </tbody>
         </table>
       </div>
+      <Pagination
+        label="Emergency Deny records"
+        onPageChange={denyPagination.setPage}
+        page={denyPagination.page}
+        pageCount={denyPagination.pageCount}
+        total={denyPagination.total}
+      />
     </section>
   );
 }

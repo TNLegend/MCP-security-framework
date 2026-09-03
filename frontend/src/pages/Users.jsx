@@ -1,4 +1,6 @@
 import { useState } from "react";
+
+import { Pagination, usePagination } from "../components/Pagination";
 import {
   createUser,
   disableUser,
@@ -37,6 +39,7 @@ function Users({ users = [], loading = false, onRefresh }) {
   });
   const [resetErrors, setResetErrors] = useState({});
   const [actionDialog, setActionDialog] = useState(null);
+  const userPagination = usePagination(users, String(users.length));
 
   async function create(event) {
     event.preventDefault();
@@ -329,7 +332,7 @@ function Users({ users = [], loading = false, onRefresh }) {
                 <td colSpan="5">No users.</td>
               </tr>
             ) : (
-              users.map((user) => {
+              userPagination.pageItems.map((user) => {
                 const finalAdmin = isFinalEnabledAdmin(user, users);
                 const lastAdminReason = finalAdmin
                   ? "At least one enabled ADMIN is required."
@@ -396,6 +399,13 @@ function Users({ users = [], loading = false, onRefresh }) {
           </tbody>
         </table>
         </div>
+        <Pagination
+          label="Users"
+          onPageChange={userPagination.setPage}
+          page={userPagination.page}
+          pageCount={userPagination.pageCount}
+          total={userPagination.total}
+        />
       </div>
       {resetTarget && (
         <div className="modal-backdrop" role="presentation">

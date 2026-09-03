@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -100,6 +101,53 @@ class Settings(BaseSettings):
     runtime_log_auto_cleanup_interval_rows: int = Field(default=1_000, ge=1, le=100_000)
     operations_metrics_window_minutes: int = Field(default=15, ge=1, le=1440)
 
+    build_scan_allowed_roots_json: str = "[]"
+    build_scan_git_allowed_hosts_json: str = '["github.com","gitlab.com","bitbucket.org"]'
+    build_scan_git_timeout_seconds: int = Field(default=300, ge=5, le=1800)
+    build_scan_git_max_output_bytes: int = Field(
+        default=1_000_000,
+        ge=1024,
+        le=100_000_000,
+    )
+    build_scan_max_files: int = Field(default=20_000, ge=1, le=1_000_000)
+    build_scan_max_total_bytes: int = Field(
+        default=1_000_000_000,
+        ge=1_000,
+        le=100_000_000_000,
+    )
+    build_scan_max_file_bytes: int = Field(
+        default=100_000_000,
+        ge=1,
+        le=10_000_000_000,
+    )
+    build_scan_trivy_db_max_age_hours: int = Field(default=72, ge=1, le=720)
+
+    @field_validator("build_scan_allowed_roots_json")
+    @classmethod
+    def validate_build_scan_allowed_roots_json(cls, value: str) -> str:
+        try:
+            parsed = json.loads(value)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("build_scan_allowed_roots_json must be valid JSON.") from exc
+        if not isinstance(parsed, list):
+            raise ValueError("build_scan_allowed_roots_json must be a JSON list.")
+        if any(not isinstance(item, str) or not item.strip() for item in parsed):
+            raise ValueError("build_scan_allowed_roots_json entries must be non-empty strings.")
+        return value
+
+    @field_validator("build_scan_git_allowed_hosts_json")
+    @classmethod
+    def validate_build_scan_git_allowed_hosts_json(cls, value: str) -> str:
+        try:
+            parsed = json.loads(value)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("build_scan_git_allowed_hosts_json must be valid JSON.") from exc
+        if not isinstance(parsed, list) or not parsed:
+            raise ValueError("build_scan_git_allowed_hosts_json must be a non-empty JSON list.")
+        if any(not isinstance(item, str) or not item.strip() for item in parsed):
+            raise ValueError("build_scan_git_allowed_hosts_json entries must be non-empty strings.")
+        return value
+
     @field_validator(
         "backend_assertion_jwks_path",
         "internal_service_public_keys_path",
@@ -115,6 +163,15 @@ class Settings(BaseSettings):
         if raw.startswith("<") and raw.endswith(">"):
             return raw
         return str(resolve_project_path(raw))
+
+    @property
+    def build_scan_allowed_roots(self) -> list[Path]:
+        values = json.loads(self.build_scan_allowed_roots_json)
+        return [resolve_project_path(item) for item in values]
+
+    @property
+    def build_scan_git_allowed_hosts(self) -> list[str]:
+        return [str(item).strip().lower() for item in json.loads(self.build_scan_git_allowed_hosts_json)]
 
     @property
     def database_url(self) -> str:

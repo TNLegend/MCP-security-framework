@@ -1,3 +1,4 @@
+from datetime import datetime
 import re
 from typing import Any, Annotated, Literal
 
@@ -322,6 +323,48 @@ class PolicyRequestContext(BaseModel):
         return _validate_identifier(value, "required_capability")
 
 
+class PolicyBuildSecurityContext(BaseModel):
+    mode: Literal["DISABLED", "ALLOW_WARN", "REQUIRE_PASS"] = "DISABLED"
+    max_evidence_age_hours: int = Field(default=168, ge=1, le=8760, strict=True)
+    evidence_present: StrictBool = False
+    scan_id: str | None = Field(default=None, min_length=36, max_length=36)
+    source_fingerprint: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    source_revision: str | None = Field(default=None, max_length=255)
+    assessment_status: Literal["PASS", "WARN", "BLOCK", "ERROR"] | None = None
+    assessment_policy_version: str | None = Field(default=None, min_length=1, max_length=128)
+    required_scanners_complete: StrictBool = False
+    completed_at: datetime | None = None
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def validate_evidence_consistency(self) -> "PolicyBuildSecurityContext":
+        required_values = (
+            self.scan_id,
+            self.source_fingerprint,
+            self.assessment_status,
+            self.assessment_policy_version,
+            self.completed_at,
+        )
+        if self.evidence_present:
+            if any(value is None for value in required_values):
+                raise ValueError("Build Security evidence context is incomplete.")
+            return self
+
+        if any(value is not None for value in required_values) or self.source_revision is not None:
+            raise ValueError(
+                "Build Security evidence fields must be null when evidence is absent."
+            )
+        if self.required_scanners_complete:
+            raise ValueError(
+                "Build Security scanner completeness cannot be true without evidence."
+            )
+        return self
+
+
 class PolicyRuntimeContext(BaseModel):
     environment: str = "local"
     session_id: NonEmptyString
@@ -371,6 +414,9 @@ class RuntimePolicyInput(BaseModel):
     tool: PolicyToolContext
     request: PolicyRequestContext
     runtime: PolicyRuntimeContext
+    build_security: PolicyBuildSecurityContext = Field(
+        default_factory=PolicyBuildSecurityContext
+    )
     policy_settings: dict[str, Any] = Field(default_factory=lambda: {"rules": {}})
 
     model_config = ConfigDict(extra="forbid")

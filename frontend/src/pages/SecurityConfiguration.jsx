@@ -17,6 +17,7 @@ import {
 } from "../utils/validation";
 import ConfigurationEditor from "../components/ConfigurationEditor";
 import SecurityPackManager from "../components/SecurityPackManager";
+import { Pagination, usePagination } from "../components/Pagination";
 
 function SecurityConfiguration({
   activeRevision,
@@ -34,6 +35,7 @@ function SecurityConfiguration({
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const revisionPagination = usePagination(revisions, String(revisions.length));
   const selectedRevision = useMemo(
     () =>
       revisions.find((revision) => revision.id === selectedRevisionId) ||
@@ -176,7 +178,7 @@ function SecurityConfiguration({
               </tr>
             </thead>
             <tbody>
-              {revisions.map((revision) => (
+              {revisionPagination.pageItems.map((revision) => (
                 <tr
                   className={selectedRevision?.id === revision.id ? "selected-row" : ""}
                   key={revision.id}
@@ -202,6 +204,13 @@ function SecurityConfiguration({
               ))}
             </tbody>
           </table>
+          <Pagination
+            label="Configuration revisions"
+            onPageChange={revisionPagination.setPage}
+            page={revisionPagination.page}
+            pageCount={revisionPagination.pageCount}
+            total={revisionPagination.total}
+          />
         </div>
 
         <div className="detail-panel">

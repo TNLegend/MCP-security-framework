@@ -44,6 +44,17 @@ APPROVED_MODEL_REVISIONS = {
 }
 
 
+def portable_snapshot_directory(cache_dir: Path, repo_id: str, revision: str) -> Path:
+    """Return the regular-file snapshot path used by the project on all platforms.
+
+    Hugging Face's shared cache layout relies on symlinks. Standard Windows users
+    may not have the Create symbolic links privilege, so setup downloads directly
+    into the snapshot directory that the analyzer already resolves locally.
+    """
+    model_dir = cache_dir / ("models--" + repo_id.replace("/", "--"))
+    return model_dir / "snapshots" / revision
+
+
 def main() -> int:
     configure_runtime_environment()
     parser = argparse.ArgumentParser(
@@ -67,11 +78,15 @@ def main() -> int:
     cache_dir.mkdir(parents=True, exist_ok=True)
     downloads = []
     for repo_id in [SEMANTIC_MODEL_NAME, EMBEDDING_MODEL_NAME]:
+        revision = APPROVED_MODEL_REVISIONS[repo_id]
+        destination = portable_snapshot_directory(cache_dir, repo_id, revision)
+        destination.mkdir(parents=True, exist_ok=True)
         snapshot_path = Path(
             snapshot_download(
                 repo_id=repo_id,
-                revision=APPROVED_MODEL_REVISIONS[repo_id],
+                revision=revision,
                 cache_dir=str(cache_dir),
+                local_dir=str(destination),
                 local_files_only=False,
                 resume_download=True,
                 allow_patterns=ALLOW_PATTERNS,

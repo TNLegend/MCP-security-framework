@@ -2,6 +2,7 @@ const API_BASE_URL =
   import.meta.env?.VITE_API_BASE_URL || "http://127.0.0.1:8000/api/v1";
 const REQUEST_TIMEOUT_MS = 20_000;
 const DISCOVERY_TIMEOUT_MS = 180_000;
+const BUILD_SCAN_TIMEOUT_MS = 600_000;
 const ERROR_MESSAGES = Object.freeze({
   upstream_oauth_dynamic_registration_unsupported:
     "This MCP does not support automatic OAuth registration. Enter a provider-issued OAuth client ID and try again.",
@@ -298,6 +299,97 @@ export async function fetchLocalRuntimeStatus() {
 export async function fetchOperationsSummary() {
   return request("/control-plane/operations/summary");
 }
+
+export async function fetchBuildScanners() {
+  return request("/control-plane/build-security/scanners");
+}
+
+export async function fetchBuildScans(filters = {}) {
+  const query = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && value !== "") {
+      query.set(key, String(value));
+    }
+  });
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return request(`/control-plane/build-security/scans${suffix}`);
+}
+
+export async function fetchBuildScan(scanId) {
+  return request(
+    `/control-plane/build-security/scans/${encodeURIComponent(scanId)}`,
+  );
+}
+
+export async function pickBuildLocalDirectory() {
+  return request("/control-plane/build-security/targets/local/pick-directory", {
+    method: "POST",
+    body: JSON.stringify({}),
+    timeoutMs: 300000,
+  });
+}
+
+export async function startLocalBuildScan(payload) {
+  return request("/control-plane/build-security/scans/local", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    timeoutMs: BUILD_SCAN_TIMEOUT_MS,
+  });
+}
+
+export async function startGitBuildScan(payload) {
+  return request("/control-plane/build-security/scans/git", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    timeoutMs: BUILD_SCAN_TIMEOUT_MS,
+  });
+}
+
+export async function startInventoryBuildScan(serverId, payload) {
+  return request(
+    `/control-plane/build-security/scans/inventory/${encodeURIComponent(serverId)}`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      timeoutMs: BUILD_SCAN_TIMEOUT_MS,
+    },
+  );
+}
+
+export async function fetchBuildSourceBindings() {
+  return request("/control-plane/build-security/inventory/sources");
+}
+
+export async function fetchBuildScanSources() {
+  return request("/control-plane/build-security/scan-sources?limit=500");
+}
+
+export async function fetchBuildSourceBinding(serverId) {
+  return request(
+    `/control-plane/build-security/inventory/${encodeURIComponent(serverId)}/source`,
+  );
+}
+
+export async function attachBuildScanToDraft(scanId, payload) {
+  return request(
+    `/control-plane/build-security/scans/${encodeURIComponent(scanId)}/attach-to-draft`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function configureBuildSourceBinding(serverId, payload) {
+  return request(
+    `/control-plane/build-security/inventory/${encodeURIComponent(serverId)}/source`,
+    {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
 
 export async function cleanupRuntimeLogs(payload) {
   return request("/control-plane/operations/runtime-logs/cleanup", {
@@ -637,6 +729,17 @@ export async function revokeEmergencyDeny(denyId) {
 
 export async function fetchAuditEvents() {
   return request("/control-plane/audit/events");
+}
+
+export async function fetchAuditEventPage({ limit = 20, offset = 0, search = "" } = {}) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (search.trim()) {
+    params.set("search", search.trim());
+  }
+  return request(`/control-plane/audit/events/page?${params.toString()}`);
 }
 
 export async function fetchUsers() {

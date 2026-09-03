@@ -246,6 +246,116 @@ tool_analysis_required_severity := lower(value) if {
 	value in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 }
 
+default build_security_object := {
+	"mode": "DISABLED",
+	"max_evidence_age_hours": 168,
+	"evidence_present": false,
+	"required_scanners_complete": false,
+}
+
+build_security_object := value if {
+	value := object.get(input_object, "build_security", {})
+	is_object(value)
+}
+
+default build_security_mode := "DISABLED"
+
+build_security_mode := value if {
+	value := object.get(build_security_object, "mode", "DISABLED")
+	value in {"DISABLED", "ALLOW_WARN", "REQUIRE_PASS"}
+}
+
+default build_evidence_present := false
+
+build_evidence_present := value if {
+	value := object.get(build_security_object, "evidence_present", false)
+	is_boolean(value)
+}
+
+default build_required_scanners_complete := false
+
+build_required_scanners_complete := value if {
+	value := object.get(build_security_object, "required_scanners_complete", false)
+	is_boolean(value)
+}
+
+default build_assessment_status := ""
+
+build_assessment_status := value if {
+	value := object.get(build_security_object, "assessment_status", "")
+	is_string(value)
+}
+
+default build_max_evidence_age_hours := 168
+
+build_max_evidence_age_hours := value if {
+	value := object.get(build_security_object, "max_evidence_age_hours", 168)
+	is_number(value)
+	value >= 1
+	value <= 8760
+}
+
+build_security_gate_enabled if {
+	build_security_mode != "DISABLED"
+}
+
+build_evidence_timestamp_valid if {
+	build_evidence_present
+	completed_at := object.get(build_security_object, "completed_at", null)
+	is_string(completed_at)
+	_ := time.parse_rfc3339_ns(completed_at)
+}
+
+build_evidence_stale if {
+	build_security_gate_enabled
+	build_evidence_present
+	build_evidence_timestamp_valid
+	completed_at := object.get(build_security_object, "completed_at", "")
+	completed_ns := time.parse_rfc3339_ns(completed_at)
+	now_ns := time.now_ns()
+	completed_ns > now_ns
+}
+
+build_evidence_stale if {
+	build_security_gate_enabled
+	build_evidence_present
+	build_evidence_timestamp_valid
+	completed_at := object.get(build_security_object, "completed_at", "")
+	completed_ns := time.parse_rfc3339_ns(completed_at)
+	now_ns := time.now_ns()
+	max_age_ns := build_max_evidence_age_hours * 60 * 60 * 1000000000
+	now_ns - completed_ns > max_age_ns
+}
+
+build_evidence_missing if {
+	build_security_gate_enabled
+	not build_evidence_present
+}
+
+build_evidence_invalid if {
+	build_security_gate_enabled
+	build_evidence_present
+	not build_evidence_timestamp_valid
+}
+
+build_evidence_scanner_incomplete if {
+	build_security_gate_enabled
+	build_evidence_present
+	not build_required_scanners_complete
+}
+
+build_evidence_assessment_blocked if {
+	build_security_gate_enabled
+	build_evidence_present
+	build_assessment_status in {"BLOCK", "ERROR"}
+}
+
+build_evidence_assessment_blocked if {
+	build_security_mode == "REQUIRE_PASS"
+	build_evidence_present
+	build_assessment_status == "WARN"
+}
+
 default semantic_flagged := false
 
 semantic_flagged := value if {
@@ -764,6 +874,41 @@ v2_precondition_candidates contains {
 }
 
 v2_precondition_candidates contains {
+	"precedence": 994,
+	"decision": deny_build_security_evidence_missing_decision,
+} if {
+	build_evidence_missing
+}
+
+v2_precondition_candidates contains {
+	"precedence": 993,
+	"decision": deny_build_security_evidence_invalid_decision,
+} if {
+	build_evidence_invalid
+}
+
+v2_precondition_candidates contains {
+	"precedence": 992,
+	"decision": deny_build_security_evidence_stale_decision,
+} if {
+	build_evidence_stale
+}
+
+v2_precondition_candidates contains {
+	"precedence": 991,
+	"decision": deny_build_security_scanner_incomplete_decision,
+} if {
+	build_evidence_scanner_incomplete
+}
+
+v2_precondition_candidates contains {
+	"precedence": 990,
+	"decision": deny_build_security_assessment_decision,
+} if {
+	build_evidence_assessment_blocked
+}
+
+v2_precondition_candidates contains {
 	"precedence": 897,
 	"decision": deny_invalid_arguments_decision,
 } if {
@@ -814,6 +959,41 @@ rule_candidates contains {
 	"decision": deny_review_required_decision,
 } if {
 	review_status == "REVIEW_REQUIRED"
+}
+
+rule_candidates contains {
+	"precedence": 994,
+	"decision": deny_build_security_evidence_missing_decision,
+} if {
+	build_evidence_missing
+}
+
+rule_candidates contains {
+	"precedence": 993,
+	"decision": deny_build_security_evidence_invalid_decision,
+} if {
+	build_evidence_invalid
+}
+
+rule_candidates contains {
+	"precedence": 992,
+	"decision": deny_build_security_evidence_stale_decision,
+} if {
+	build_evidence_stale
+}
+
+rule_candidates contains {
+	"precedence": 991,
+	"decision": deny_build_security_scanner_incomplete_decision,
+} if {
+	build_evidence_scanner_incomplete
+}
+
+rule_candidates contains {
+	"precedence": 990,
+	"decision": deny_build_security_assessment_decision,
+} if {
+	build_evidence_assessment_blocked
 }
 
 rule_candidates contains {
@@ -1167,6 +1347,95 @@ deny_review_required_decision := object.union(
 		"rule_id": "deny_tool_review_required",
 	},
 	decision_binding,
+)
+
+deny_build_security_evidence_missing_decision := object.union(
+	v2_decision(
+		"DENY",
+		"BLOCK",
+		"deny_build_security_evidence_missing",
+		"Required Build Security evidence is missing for this MCP server.",
+		"critical",
+	),
+	{
+		"evidence": {
+			"build_security_mode": build_security_mode,
+		},
+		"recommended_action": "Run Build Security and publish the resulting evidence reference.",
+	},
+)
+
+deny_build_security_evidence_invalid_decision := object.union(
+	v2_decision(
+		"DENY",
+		"BLOCK",
+		"deny_build_security_evidence_invalid",
+		"Published Build Security evidence is malformed or incomplete.",
+		"critical",
+	),
+	{
+		"evidence": {
+			"build_security_mode": build_security_mode,
+			"scan_id": object.get(build_security_object, "scan_id", null),
+		},
+		"recommended_action": "Publish a valid Build Security evidence reference.",
+	},
+)
+
+deny_build_security_evidence_stale_decision := object.union(
+	v2_decision(
+		"DENY",
+		"BLOCK",
+		"deny_build_security_evidence_stale",
+		"Published Build Security evidence is stale or dated in the future.",
+		"critical",
+	),
+	{
+		"evidence": {
+			"build_security_mode": build_security_mode,
+			"scan_id": object.get(build_security_object, "scan_id", null),
+			"completed_at": object.get(build_security_object, "completed_at", null),
+			"max_evidence_age_hours": build_max_evidence_age_hours,
+		},
+		"recommended_action": "Run a current Build Security scan and publish its evidence.",
+	},
+)
+
+deny_build_security_scanner_incomplete_decision := object.union(
+	v2_decision(
+		"DENY",
+		"BLOCK",
+		"deny_build_security_scanner_incomplete",
+		"Build Security evidence was produced without all required scanners completing.",
+		"critical",
+	),
+	{
+		"evidence": {
+			"build_security_mode": build_security_mode,
+			"scan_id": object.get(build_security_object, "scan_id", null),
+			"assessment_status": build_assessment_status,
+		},
+		"recommended_action": "Resolve required scanner failures and run Build Security again.",
+	},
+)
+
+deny_build_security_assessment_decision := object.union(
+	v2_decision(
+		"DENY",
+		"BLOCK",
+		"deny_build_security_assessment",
+		"Build Security assessment does not satisfy the published Runtime gate.",
+		"critical",
+	),
+	{
+		"evidence": {
+			"build_security_mode": build_security_mode,
+			"scan_id": object.get(build_security_object, "scan_id", null),
+			"assessment_status": build_assessment_status,
+			"assessment_policy_version": object.get(build_security_object, "assessment_policy_version", null),
+		},
+		"recommended_action": "Remediate Build findings or publish an evidence status permitted by the configured gate.",
+	},
 )
 
 deny_tool_security_profile_drift_decision := deny_decision(

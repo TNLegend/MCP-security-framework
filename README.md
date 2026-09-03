@@ -50,7 +50,13 @@ Implemented:
 - dual-era/multi-revision MCP gateway support for supported Legacy and Modern
   HTTP MCP profiles;
 - framework-held Bearer authentication for upstream MCP servers through local
-  secret references.
+  secret references;
+- Build Security with safe Local/Git/Inventory target intake, project-managed
+  Semgrep/Gitleaks/Trivy scanners, normalized findings, deterministic
+  `PASS/WARN/BLOCK/ERROR` assessment, audit, and finding history;
+- optional signed Build evidence attached to Control Plane DRAFTs and enforced
+  by OPA after VALIDATE/PUBLISH, with stale/missing/incomplete evidence failing
+  closed when the Build gate is enabled.
 
 Docker is not used for the local MVP. The project runs directly with Python, Node.js, and PostgreSQL.
 
@@ -386,6 +392,8 @@ React/Vite Control Center for:
 
 - dashboard;
 - MCP inventory;
+- Build Security scan creation, scanner readiness, normalized findings,
+  assessment evidence, and Runtime-governance attachment;
 - Tool Analyzer evidence and ADMIN approval/block actions;
 - security configuration revisions;
 - Emergency Deny management;
@@ -434,6 +442,30 @@ the signed `MCP_DISCOVERY` service identity. The backend also exposes an
 ADMIN-only discovery route used by the Control Center; both paths reuse the same
 discovery service and outbound endpoint policy. Use `--auth-mode BEARER
 --credential-ref <logical-ref>` for a framework-held static Bearer credential.
+
+### `scanners/`
+
+Build Security adapters and target-safety contracts. A scan resolves a local
+directory, immutable Git revision, or Inventory-bound source into a validated
+workspace, copies only bounded non-ignored content, and never executes target
+code. For local sources, the ADMIN uses a native operating-system folder picker
+to choose the MCP directory; the web application does not enumerate the local
+filesystem. By default, any local drive/root can be selected. Operators can still
+restrict accepted local paths by setting explicit entries in
+`BUILD_SCAN_ALLOWED_ROOTS_JSON`. Semgrep, Gitleaks, and Trivy are invoked with
+fixed argv arrays and bounded timeouts/output. Required-scanner failure or
+unavailability produces an `ERROR` assessment, never `PASS`.
+
+Gitleaks findings are normalized before persistence; detected secret values are
+not stored in PostgreSQL, API payloads, audit events, or Runtime policy context.
+Build findings use stable fingerprints so consecutive Inventory-linked scans can
+classify evidence as `NEW`, `UNCHANGED`, `RESOLVED`, or `REGRESSED`.
+
+A completed Inventory-linked scan may be attached by an ADMIN to a Control Plane
+DRAFT. The published configuration stores only the exact scan/source fingerprint,
+source revision, assessment status/policy version, required-scanner completion,
+completion time, and gate mode. OPA remains the sole Runtime policy authority.
+Scanner binaries are never executed on the MCP request path.
 
 ### `proxy/`
 
@@ -530,8 +562,9 @@ Then run one bootstrap command from the repository root:
 python scripts/setup_local_environment.py
 ```
 
-No manual `pip install`, `npm install`, OPA installation, model download,
-key generation, database/user creation, schema initialization, or initial
+No manual `pip install`, `npm install`, OPA installation, Semgrep/Gitleaks/Trivy
+installation, Trivy vulnerability-database download, model download, key
+generation, database/user creation, schema initialization, or initial
 configuration import is required for the default local path.
 
 The idempotent bootstrap:
@@ -540,6 +573,9 @@ The idempotent bootstrap:
   `backend/requirements.txt` used by runtime and validation;
 - runs `npm ci` from the tracked frontend lockfile;
 - downloads the pinned OPA `1.18.2` binary and verifies its SHA-256;
+- provisions pinned project-managed Semgrep, Gitleaks, and Trivy under
+  `.runtime/tools`, verifies downloaded binary checksums where applicable,
+  and provisions the Trivy vulnerability database;
 - downloads the two pinned local Tool Analyzer model snapshots;
 - generates installation-specific service, assertion, revision-signing, and
   local-IDP key material under ignored `.runtime/secrets`;

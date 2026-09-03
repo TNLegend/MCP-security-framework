@@ -28,6 +28,13 @@ for import_path in (REPO_ROOT, BACKEND_DIR):
 from app.core.runtime_paths import (  # noqa: E402
     MODEL_CACHE_DIR,
     OPA_EXE,
+    SEMGREP_EXE,
+    SEMGREP_VERSION,
+    GITLEAKS_EXE,
+    GITLEAKS_VERSION,
+    TRIVY_CACHE_DIR,
+    TRIVY_EXE,
+    TRIVY_VERSION,
     RUNTIME_POSTGRES_DIR,
     RUNTIME_SECRETS_DIR,
     RUNTIME_TMP_DIR,
@@ -42,6 +49,14 @@ from scripts.check_dependencies import assert_system_prerequisites, find_postgre
 SEMANTIC_MODEL_REPOSITORY = "MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli"
 EMBEDDING_MODEL_REPOSITORY = "intfloat/multilingual-e5-small"
 PLACEHOLDER_VALUES = {"", "change_me", "<configure>", "<required>"}
+REQUIRED_BUILD_SECURITY_TABLES = {
+    "build_source_bindings",
+    "build_scan_runs",
+    "build_scanner_runs",
+    "build_findings",
+    "build_assessments",
+}
+
 REQUIRED_RUNTIME_CALL_COLUMNS = {
     "control_plane_revision_id",
     "control_plane_revision_number",
@@ -70,6 +85,9 @@ class SetupOptions:
     skip_frontend: bool = False
     skip_models: bool = False
     skip_opa: bool = False
+    skip_semgrep: bool = False
+    skip_gitleaks: bool = False
+    skip_trivy: bool = False
     skip_service_identities: bool = False
     skip_local_idp: bool = False
     skip_database: bool = False
@@ -495,6 +513,18 @@ def run_post_dependency_setup(
         _run([python, REPO_ROOT / "scripts" / "download_opa.py"], env=env)
         completed.append("opa")
 
+    if not options.skip_semgrep:
+        _run([python, REPO_ROOT / "scripts" / "provision_semgrep.py"], env=env)
+        completed.append("semgrep")
+
+    if not options.skip_gitleaks:
+        _run([python, REPO_ROOT / "scripts" / "provision_gitleaks.py"], env=env)
+        completed.append("gitleaks")
+
+    if not options.skip_trivy:
+        _run([python, REPO_ROOT / "scripts" / "provision_trivy.py"], env=env)
+        completed.append("trivy")
+
     if not options.skip_models:
         _run(
             [python, REPO_ROOT / "scripts" / "download_tool_analyzer_models.py"],
@@ -615,6 +645,9 @@ def installation_self_check(*, check_database: bool = True) -> list[Installation
         InstallationCheck("Frontend lockfile", (FRONTEND_DIR / "package-lock.json").is_file()),
         InstallationCheck("Frontend dependencies", (FRONTEND_DIR / "node_modules").is_dir()),
         InstallationCheck("OPA", OPA_EXE.is_file()),
+        InstallationCheck("Semgrep", _semgrep_available()),
+        InstallationCheck("Gitleaks", _gitleaks_available()),
+        InstallationCheck("Trivy", _trivy_available()),
         InstallationCheck("Analyzer models", _analyzer_models_available()),
         InstallationCheck("Runtime directories", all(path.is_dir() for path in runtime_directories())),
     ]
@@ -659,9 +692,11 @@ def installation_self_check(*, check_database: bool = True) -> list[Installation
             try:
                 inspector = inspect(engine)
                 tables = set(inspector.get_table_names())
-                schema_ok = {"control_plane_users", "mcp_servers", "mcp_tools"}.issubset(
-                    tables
-                ) and _runtime_calls_schema_ok(inspector)
+                schema_ok = (
+                    {"control_plane_users", "mcp_servers", "mcp_tools"}.issubset(tables)
+                    and _runtime_calls_schema_ok(inspector)
+                    and _build_security_schema_ok(inspector)
+                )
             except Exception:
                 schema_ok = False
             if schema_ok:
@@ -721,6 +756,10 @@ def _runtime_calls_schema_ok(inspector) -> bool:  # noqa: ANN001
         return False
     columns = {column["name"] for column in inspector.get_columns("runtime_calls")}
     return REQUIRED_RUNTIME_CALL_COLUMNS.issubset(columns)
+
+
+def _build_security_schema_ok(inspector) -> bool:  # noqa: ANN001
+    return REQUIRED_BUILD_SECURITY_TABLES.issubset(set(inspector.get_table_names()))
 
 
 def validate_internal_artifacts(*, secret_dir: Path = RUNTIME_SECRETS_DIR) -> None:
@@ -803,6 +842,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ],
                 "python": str(python),
                 "opa": str(OPA_EXE),
+                "semgrep": str(SEMGREP_EXE),
+                "gitleaks": str(GITLEAKS_EXE),
+                "trivy": str(TRIVY_EXE),
             },
             indent=2,
         )
@@ -822,6 +864,9 @@ def _parse_options(argv: Sequence[str] | None) -> SetupOptions:
         "frontend",
         "models",
         "opa",
+        "semgrep",
+        "gitleaks",
+        "trivy",
         "service-identities",
         "local-idp",
         "database",
@@ -901,6 +946,77 @@ def _python_dependencies_healthy() -> bool:
     except Exception:
         return False
     return result.returncode == 0
+
+
+def _semgrep_available() -> bool:
+    if not SEMGREP_EXE.is_file():
+        return False
+    try:
+        result = subprocess.run(
+            [str(SEMGREP_EXE), "--version"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            shell=False,
+            env={
+                **os.environ,
+                "SEMGREP_SEND_METRICS": "off",
+                "SEMGREP_ENABLE_VERSION_CHECK": "0",
+            },
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and result.stdout.strip().splitlines()[-1:] == [SEMGREP_VERSION]
+
+
+def _gitleaks_available() -> bool:
+    if not GITLEAKS_EXE.is_file():
+        return False
+    try:
+        result = subprocess.run(
+            [str(GITLEAKS_EXE), "version"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            shell=False,
+        )
+    except Exception:
+        return False
+    lines = result.stdout.strip().splitlines()
+    return result.returncode == 0 and lines[-1:] == [GITLEAKS_VERSION]
+
+
+def _trivy_available() -> bool:
+    if not TRIVY_EXE.is_file():
+        return False
+    try:
+        result = subprocess.run(
+            [str(TRIVY_EXE), "--version"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            shell=False,
+        )
+    except Exception:
+        return False
+    version_ok = result.returncode == 0 and any(
+        line.strip() == f"Version: {TRIVY_VERSION}"
+        for line in result.stdout.splitlines()
+    )
+    database = TRIVY_CACHE_DIR / "db" / "trivy.db"
+    metadata = TRIVY_CACHE_DIR / "db" / "metadata.json"
+    return (
+        version_ok
+        and database.is_file()
+        and database.stat().st_size >= 1_000_000
+        and metadata.is_file()
+    )
 
 
 def _analyzer_models_available() -> bool:

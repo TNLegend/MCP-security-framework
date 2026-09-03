@@ -23,10 +23,13 @@ Le cœur Runtime Security est implémenté et validé. Le backend couvre notamme
 - Runtime Calls, Audit et Operations ;
 - Controlled AI Assistance, strictement advisory-only ;
 - support d'authentification upstream NONE, Bearer et OAuth ;
-- Result Guard.
+- Result Guard ;
+- Build Security avec intake Local/Git/Inventory, Semgrep, Gitleaks et Trivy ;
+- assessment déterministe `PASS / WARN / BLOCK / ERROR`, historique des findings et audit ;
+- publication optionnelle de preuves Build dans une révision Control Plane signée,
+  puis gate Runtime autoritatif dans OPA.
 
-Les modules Build Security (Semgrep, Trivy, GitLeaks) et Deploy Security
-(AWS/IAM) constituent les phases suivantes.
+Le module Deploy Security (AWS/IAM) constitue la phase suivante.
 
 ## Installation locale
 
@@ -39,9 +42,11 @@ python scripts/setup_local_environment.py
 ```
 
 Le bootstrap crée `backend/.venv`, installe le fichier unique
-`backend/requirements.txt`, provisionne OPA et les modèles locaux, génère les
-identités internes, prépare PostgreSQL, initialise le schéma et crée la
-configuration publiée initiale.
+`backend/requirements.txt`, provisionne OPA, les modèles locaux, Semgrep,
+Gitleaks, Trivy et la base de vulnérabilités Trivy, génère les identités internes,
+prépare PostgreSQL, initialise le schéma et crée la configuration publiée initiale.
+Les binaires Build sont gérés sous `.runtime/tools` et ne nécessitent pas
+d'installation système manuelle.
 
 Pour le chemin local par défaut, aucune création manuelle du user ou de la base
 PostgreSQL n'est requise : le setup peut initialiser un cluster propre au projet

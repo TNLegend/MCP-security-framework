@@ -15,7 +15,10 @@ from app.services.internal_identity_assertion import (
     InternalIdentityAssertionVerifier,
 )
 from app.services.opa_client import OPAClient, OPAClientError
-from app.services.published_configuration import PublishedConfigurationProvider
+from app.services.published_configuration import (
+    PublishedConfigurationProvider,
+    build_security_context_for_snapshot,
+)
 from app.services.subject_authorization import (
     SubjectAuthorizationError,
     SubjectAuthorizationResolver,
@@ -237,6 +240,11 @@ def _verify_v2_snapshot_context(context: dict[str, Any], snapshot) -> None:
         for scope in snapshot.get_authority_resource_scopes()
     ]:
         raise SubjectAuthorizationError("snapshot_scopes_mismatch")
+    if context.get("build_security") != build_security_context_for_snapshot(
+        snapshot,
+        server_ref,
+    ):
+        raise SubjectAuthorizationError("snapshot_build_security_mismatch")
 
 
 def evaluate_opa_authoritative(

@@ -13,6 +13,17 @@ import {
   discoverHttpMcpServer,
   fetchRuntimeLogs,
   fetchOperationsSummary,
+  fetchBuildScanners,
+  fetchBuildScans,
+  fetchBuildScan,
+  pickBuildLocalDirectory,
+  startLocalBuildScan,
+  startGitBuildScan,
+  startInventoryBuildScan,
+  fetchBuildSourceBindings,
+  fetchBuildSourceBinding,
+  configureBuildSourceBinding,
+  attachBuildScanToDraft,
   cleanupRuntimeLogs,
   fetchSecurityPacks,
   createToolContractDraft,
@@ -195,6 +206,101 @@ test("operations API exposes protected summary and bounded cleanup", async () =>
     reason: "Preview bounded runtime retention safely.",
   });
 });
+
+test("Build Security client uses protected bounded endpoints", async () => {
+  const scanners = await captureRequest(() => fetchBuildScanners());
+  assert.match(scanners.url, /\/control-plane\/build-security\/scanners$/);
+
+  const scans = await captureRequest(() => fetchBuildScans({ limit: 50, status: "COMPLETED" }));
+  const scansUrl = new URL(scans.url);
+  assert.equal(scansUrl.pathname.endsWith("/control-plane/build-security/scans"), true);
+  assert.equal(scansUrl.searchParams.get("limit"), "50");
+  assert.equal(scansUrl.searchParams.get("status"), "COMPLETED");
+
+  const detail = await captureRequest(() => fetchBuildScan("scan id"));
+  assert.match(detail.url, /\/control-plane\/build-security\/scans\/scan%20id$/);
+
+  const sourceBindings = await captureRequest(() => fetchBuildSourceBindings());
+  assert.match(
+    sourceBindings.url,
+    /\/control-plane\/build-security\/inventory\/sources$/,
+  );
+
+  const picker = await captureRequest(() => pickBuildLocalDirectory());
+  assert.match(
+    picker.url,
+    /\/control-plane\/build-security\/targets\/local\/pick-directory$/,
+  );
+  assert.equal(picker.options.method, "POST");
+
+  const localPayload = {
+    display_name: "local-mcp",
+    source_locator: "D:\\mcp",
+    linked_server_id: 3,
+    reason: "Scan local source",
+  };
+  const local = await captureRequest(() => startLocalBuildScan(localPayload));
+  assert.match(local.url, /\/control-plane\/build-security\/scans\/local$/);
+  assert.equal(local.options.method, "POST");
+  assert.deepEqual(local.body, localPayload);
+  assert.equal(await captureRequestTimeout(() => startLocalBuildScan(localPayload)), 600_000);
+
+  const gitPayload = {
+    display_name: "git-mcp",
+    repository_url: "https://github.com/org/repo.git",
+    source_ref: "main",
+    linked_server_id: null,
+    reason: "Scan immutable Git source",
+  };
+  const git = await captureRequest(() => startGitBuildScan(gitPayload));
+  assert.match(git.url, /\/control-plane\/build-security\/scans\/git$/);
+  assert.equal(git.options.method, "POST");
+  assert.deepEqual(git.body, gitPayload);
+
+  const inventory = await captureRequest(() =>
+    startInventoryBuildScan(17, { reason: "Scan configured source" }),
+  );
+  assert.match(inventory.url, /\/control-plane\/build-security\/scans\/inventory\/17$/);
+  assert.equal(inventory.options.method, "POST");
+
+  const binding = await captureRequest(() => fetchBuildSourceBinding(17));
+  assert.match(
+    binding.url,
+    /\/control-plane\/build-security\/inventory\/17\/source$/,
+  );
+
+  const evidence = await captureRequest(() =>
+    attachBuildScanToDraft("scan-1", {
+      draft_revision_id: "11111111-1111-1111-1111-111111111111",
+      mode: "REQUIRE_PASS",
+      max_evidence_age_hours: 48,
+      reason: "Attach exact Build evidence",
+    }),
+  );
+  assert.match(
+    evidence.url,
+    /\/control-plane\/build-security\/scans\/scan-1\/attach-to-draft$/,
+  );
+  assert.equal(evidence.options.method, "POST");
+  assert.deepEqual(evidence.body, {
+    draft_revision_id: "11111111-1111-1111-1111-111111111111",
+    mode: "REQUIRE_PASS",
+    max_evidence_age_hours: 48,
+    reason: "Attach exact Build evidence",
+  });
+
+  const update = await captureRequest(() =>
+    configureBuildSourceBinding(17, {
+      target_type: "LOCAL_DIRECTORY",
+      source_locator: "D:\\mcp",
+      source_ref: null,
+      reason: "Bind source",
+    }),
+  );
+  assert.equal(update.options.method, "PUT");
+  assert.match(update.url, /\/control-plane\/build-security\/inventory\/17\/source$/);
+});
+
 
 test("controlled AI assistance uses the protected advisory endpoint and bounded timeout", async () => {
   const captured = await captureRequest(() =>

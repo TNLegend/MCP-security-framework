@@ -28,6 +28,25 @@ OPA_SHA256 = "b9022224ee660c87cc35ce957c21c352fa57b267d71fb4e1ce779a38e107c9df"
 OPA_DIR = RUNTIME_TOOLS_DIR / "opa"
 OPA_EXE = OPA_DIR / "opa.exe"
 
+SEMGREP_VERSION = "1.175.0"
+SEMGREP_DIR = RUNTIME_TOOLS_DIR / "semgrep"
+SEMGREP_VENV_DIR = SEMGREP_DIR / "venv"
+SEMGREP_EXE = (
+    SEMGREP_VENV_DIR / "Scripts" / "semgrep.exe"
+    if os.name == "nt"
+    else SEMGREP_VENV_DIR / "bin" / "semgrep"
+)
+
+GITLEAKS_VERSION = "8.30.1"
+GITLEAKS_DIR = RUNTIME_TOOLS_DIR / "gitleaks"
+GITLEAKS_EXE = GITLEAKS_DIR / ("gitleaks.exe" if os.name == "nt" else "gitleaks")
+
+TRIVY_VERSION = "0.74.0"
+TRIVY_DIR = RUNTIME_TOOLS_DIR / "trivy"
+TRIVY_EXE = TRIVY_DIR / ("trivy.exe" if os.name == "nt" else "trivy")
+TRIVY_CACHE_DIR = TRIVY_DIR / "cache"
+TRIVY_DOCKER_CONFIG_DIR = TRIVY_DIR / "docker-config"
+
 
 def runtime_directories(
     project_root: Path = PROJECT_ROOT,
@@ -50,6 +69,11 @@ def runtime_directories(
         runtime_cache_dir / "npm",
         runtime_tools_dir,
         runtime_tools_dir / "opa",
+        runtime_tools_dir / "semgrep",
+        runtime_tools_dir / "gitleaks",
+        runtime_tools_dir / "trivy",
+        runtime_tools_dir / "trivy" / "cache",
+        runtime_tools_dir / "trivy" / "docker-config",
         runtime_dir / "tmp",
         runtime_dir / "postgres",
         runtime_secrets_dir,

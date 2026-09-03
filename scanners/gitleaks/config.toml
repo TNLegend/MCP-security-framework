@@ -1,0 +1,4 @@
+title = "MCP Security Framework Gitleaks"
+
+[extend]
+useDefault = true

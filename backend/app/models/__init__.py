@@ -1,4 +1,11 @@
 from app.models.audit_event import AuditEvent
+from app.models.build_security import (
+    BuildAssessment,
+    BuildFinding,
+    BuildScannerRun,
+    BuildScanRun,
+    BuildSourceBinding,
+)
 from app.models.control_plane import (
     ControlPlaneAuditEvent,
     ControlPlaneConfigRevision,
@@ -31,6 +38,11 @@ __all__ = [
     "RuntimeCall",
     "PolicyDecision",
     "AuditEvent",
+    "BuildScanRun",
+    "BuildScannerRun",
+    "BuildFinding",
+    "BuildAssessment",
+    "BuildSourceBinding",
     "IdentityAssertionReplay",
     "TrustedAgentSession",
     "ControlPlaneUser",

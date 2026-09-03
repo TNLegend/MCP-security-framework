@@ -152,7 +152,15 @@ class RuntimePolicyInputTests(unittest.TestCase):
 
         self.assertEqual(
             set(model.model_dump().keys()),
-            {"subject", "server", "tool", "request", "runtime", "policy_settings"},
+            {
+                "subject",
+                "server",
+                "tool",
+                "request",
+                "runtime",
+                "build_security",
+                "policy_settings",
+            },
         )
 
     def test_tool_name_is_required(self) -> None:

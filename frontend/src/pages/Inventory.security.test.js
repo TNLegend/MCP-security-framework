@@ -49,3 +49,12 @@ test("inventory hides mutating server controls from VIEWER", () => {
   assert.match(source, /\{canManageServer && isOAuth && server\.oauth_status !== "CONNECTED" && \(/);
   assert.match(source, /\{canManageServer && isOAuth && server\.oauth_status === "CONNECTED" && \(/);
 });
+
+test("inventory exposes Build source location for large MCP inventories", () => {
+  assert.match(source, /fetchBuildSourceBindings/);
+  assert.match(source, /Search name, endpoint, local path, Git repository/);
+  assert.match(source, /Filter MCP Inventory by Build source/);
+  assert.match(source, /Source not configured/);
+  assert.match(source, /binding\.source_locator/);
+  assert.match(source, /Build source/);
+});

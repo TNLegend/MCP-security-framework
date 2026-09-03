@@ -1,4 +1,7 @@
+import { Pagination, usePagination } from "../components/Pagination";
+
 function Policies({ policies, loading }) {
+  const policyPagination = usePagination(policies, String(policies.length));
   return (
     <section className="page-section">
       <div className="section-heading">
@@ -22,7 +25,7 @@ function Policies({ policies, loading }) {
                 <td colSpan="4">Aucune donnée</td>
               </tr>
             ) : (
-              policies.map((policy) => (
+              policyPagination.pageItems.map((policy) => (
                 <tr key={policy.id}>
                   <td>{policy.rule_id}</td>
                   <td>{policy.decision}</td>
@@ -34,6 +37,13 @@ function Policies({ policies, loading }) {
           </tbody>
         </table>
       </div>
+      <Pagination
+        label="Policies"
+        onPageChange={policyPagination.setPage}
+        page={policyPagination.page}
+        pageCount={policyPagination.pageCount}
+        total={policyPagination.total}
+      />
     </section>
   );
 }

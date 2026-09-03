@@ -13,7 +13,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = REPO_ROOT / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
-from app.core.runtime_paths import OPA_EXE  # noqa: E402
+from app.core.runtime_paths import (  # noqa: E402
+    GITLEAKS_EXE,
+    GITLEAKS_VERSION,
+    OPA_EXE,
+    TRIVY_EXE,
+    TRIVY_VERSION,
+    SEMGREP_EXE,
+    SEMGREP_VERSION,
+)
 
 
 MIN_PYTHON = (3, 11)
@@ -183,17 +191,83 @@ def system_prerequisite_checks() -> list[DependencyCheck]:
 
 
 def project_managed_checks() -> list[DependencyCheck]:
+    checks: list[DependencyCheck] = []
     if OPA_EXE.exists():
         detail = _run_version([str(OPA_EXE), "version"]) or str(OPA_EXE)
-        return [DependencyCheck("OPA", True, detail, project_managed=True)]
-    return [
-        DependencyCheck(
-            "OPA",
-            True,
-            "not provisioned yet; setup downloads and checksum-verifies the pinned binary",
-            project_managed=True,
+        checks.append(DependencyCheck("OPA", True, detail, project_managed=True))
+    else:
+        checks.append(
+            DependencyCheck(
+                "OPA",
+                True,
+                "not provisioned yet; setup downloads and checksum-verifies the pinned binary",
+                project_managed=True,
+            )
         )
-    ]
+
+    if SEMGREP_EXE.exists():
+        detail = _run_version([str(SEMGREP_EXE), "--version"]) or str(SEMGREP_EXE)
+        checks.append(
+            DependencyCheck(
+                "Semgrep",
+                detail.strip().splitlines()[-1:] == [SEMGREP_VERSION],
+                detail,
+                project_managed=True,
+            )
+        )
+    else:
+        checks.append(
+            DependencyCheck(
+                "Semgrep",
+                True,
+                f"not provisioned yet; setup installs pinned Semgrep {SEMGREP_VERSION} in .runtime/tools",
+                project_managed=True,
+            )
+        )
+
+    if GITLEAKS_EXE.exists():
+        detail = _run_version([str(GITLEAKS_EXE), "version"]) or str(GITLEAKS_EXE)
+        checks.append(
+            DependencyCheck(
+                "Gitleaks",
+                detail.strip().splitlines()[-1:] == [GITLEAKS_VERSION],
+                detail,
+                project_managed=True,
+            )
+        )
+    else:
+        checks.append(
+            DependencyCheck(
+                "Gitleaks",
+                True,
+                f"not provisioned yet; setup downloads and checksum-verifies pinned Gitleaks {GITLEAKS_VERSION}",
+                project_managed=True,
+            )
+        )
+
+    if TRIVY_EXE.exists():
+        detail = _run_version([str(TRIVY_EXE), "--version"]) or str(TRIVY_EXE)
+        checks.append(
+            DependencyCheck(
+                "Trivy",
+                any(
+                    line.strip() == f"Version: {TRIVY_VERSION}"
+                    for line in detail.splitlines()
+                ),
+                detail,
+                project_managed=True,
+            )
+        )
+    else:
+        checks.append(
+            DependencyCheck(
+                "Trivy",
+                True,
+                f"not provisioned yet; setup downloads and checksum-verifies pinned Trivy {TRIVY_VERSION} and its vulnerability DB",
+                project_managed=True,
+            )
+        )
+    return checks
 
 
 def assert_system_prerequisites() -> None:

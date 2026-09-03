@@ -41,6 +41,7 @@ PRODUCTION_DIRS = (
     ROOT / "common",
     ROOT / "mcp-lab",
     ROOT / "scripts",
+    ROOT / "scanners",
 )
 
 LOCAL_IMPORT_ROOTS = {
@@ -49,6 +50,7 @@ LOCAL_IMPORT_ROOTS = {
     "agent",
     "common",
     "scripts",
+    "scanners",
     "server",
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { approveTool, blockTool, fetchToolAnalysisBundle } from "../api/client";
 import ControlledAIAssistant from "../components/ControlledAIAssistant";
+import { Pagination, usePagination } from "../components/Pagination";
 import ToolContractOnboarding from "../components/ToolContractOnboarding";
 import {
   activateRowOnKeyboard,
@@ -25,6 +26,7 @@ function ToolAnalysis({
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
+  const toolPagination = usePagination(tools, String(tools.length));
 
   const toolsById = useMemo(() => new Map(tools.map((tool) => [tool.id, tool])), [tools]);
   const serversById = useMemo(
@@ -189,7 +191,7 @@ function ToolAnalysis({
                     <td colSpan="5">No tools discovered.</td>
                   </tr>
                 ) : (
-                  tools.map((tool) => {
+                  toolPagination.pageItems.map((tool) => {
                     const server = serversById.get(tool.server_id);
                     const selectTool = () => setSelectedToolId(tool.id);
                     return (
@@ -224,6 +226,13 @@ function ToolAnalysis({
               </tbody>
             </table>
           </div>
+          <Pagination
+            label="Analyzed tools"
+            onPageChange={toolPagination.setPage}
+            page={toolPagination.page}
+            pageCount={toolPagination.pageCount}
+            total={toolPagination.total}
+          />
         </div>
 
         <div className="detail-panel">
@@ -420,11 +429,12 @@ function InfoRow({ label, value }) {
 }
 
 function FindingsView({ error, findings }) {
+  const findingPagination = usePagination(findings, String(findings.length));
   if (error) return <SectionError error={error} title="Findings" />;
   if (findings.length === 0) return <div className="empty-state">No findings for the latest analysis.</div>;
   return (
     <div className="finding-list">
-      {findings.map((finding, index) => (
+      {findingPagination.pageItems.map((finding, index) => (
         <article className="finding-card" key={finding.id || `${finding.code}-${index}`}>
           <div className="finding-heading">
             <div><strong>{finding.title || finding.code || "Analysis finding"}</strong><span>{finding.code || finding.source || "Analyzer"}</span></div>
@@ -438,13 +448,21 @@ function FindingsView({ error, findings }) {
           </dl>
         </article>
       ))}
+      <Pagination
+        label="Analysis findings"
+        onPageChange={findingPagination.setPage}
+        page={findingPagination.page}
+        pageCount={findingPagination.pageCount}
+        total={findingPagination.total}
+      />
     </div>
   );
 }
 
 function SemanticScores({ error, scores }) {
-  if (error) return <SectionError error={error} title="Semantic scores" />;
   const rows = semanticScoreRows(scores);
+  const scorePagination = usePagination(rows, String(rows.length));
+  if (error) return <SectionError error={error} title="Semantic scores" />;
   const factGroups = semanticFactGroups(scores?.facts);
   return (
     <>
@@ -491,8 +509,16 @@ function SemanticScores({ error, scores }) {
       </div>
       {rows.length === 0 ? <div className="empty-state">No semantic category scores available.</div> : (
         <div className="table-shell"><table><thead><tr><th>Category</th><th>Score</th></tr></thead><tbody>
-          {rows.map(([category, score]) => <tr key={category}><td>{humanize(category)}</td><td>{formatScore(score)}</td></tr>)}
-        </tbody></table></div>
+          {scorePagination.pageItems.map(([category, score]) => <tr key={category}><td>{humanize(category)}</td><td>{formatScore(score)}</td></tr>)}
+        </tbody></table>
+        <Pagination
+          label="Semantic categories"
+          onPageChange={scorePagination.setPage}
+          page={scorePagination.page}
+          pageCount={scorePagination.pageCount}
+          total={scorePagination.total}
+        />
+        </div>
       )}
     </>
   );
@@ -509,18 +535,28 @@ function AnalysisHistory({ bundle }) {
 }
 
 function HistoryTable({ error, rows, title }) {
+  const historyPagination = usePagination(rows, `${title}|${rows.length}`);
   return (
     <section>
       <h4>{title}</h4>
       <SectionError error={error} title={title} />
       {!error && (rows.length === 0 ? <div className="empty-state">No {title.toLowerCase()} recorded.</div> : (
         <div className="table-shell history-table"><table><thead><tr><th>Recorded</th><th>Status</th><th>Fingerprint</th></tr></thead><tbody>
-          {rows.map((row, index) => {
+          {historyPagination.pageItems.map((row, index) => {
             const status = row.analysis_status || row.review_status || row.status || row.action || "-";
             return <tr key={row.id || index}><td title={formatDate(row.completed_at || row.created_at || row.observed_at || row.first_seen_at)}>{formatDate(row.completed_at || row.created_at || row.observed_at || row.first_seen_at)}</td><td><span className="history-status" title={status}>{humanize(status)}</span></td><td><span className="history-fingerprint" title={row.fingerprint || "-"}>{shorten(row.fingerprint)}</span></td></tr>;
           })}
         </tbody></table></div>
       ))}
+      {!error && (
+        <Pagination
+          label={title}
+          onPageChange={historyPagination.setPage}
+          page={historyPagination.page}
+          pageCount={historyPagination.pageCount}
+          total={historyPagination.total}
+        />
+      )}
     </section>
   );
 }

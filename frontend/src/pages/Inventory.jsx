@@ -7,11 +7,13 @@ import {
   discoverHttpMcpServer,
   discoverRegisteredMcpServer,
   fetchOAuthCallbackUri,
+  fetchBuildSourceBindings,
   fetchToolAnalysisBundle,
   registerOAuthMcpServer,
   startOAuthConnection,
 } from "../api/client";
 import { buildGovernedEndpoint } from "../utils/gateway";
+import { Pagination, usePagination } from "../components/Pagination";
 import {
   LIMITS,
   activateRowOnKeyboard,
@@ -54,6 +56,11 @@ function Inventory({
   const [archiving, setArchiving] = useState(false);
   const [trustDialog, setTrustDialog] = useState(null);
   const [trustChanging, setTrustChanging] = useState(false);
+  const [sourceBindings, setSourceBindings] = useState({});
+  const [buildSourceLoading, setBuildSourceLoading] = useState(false);
+  const [buildSourceError, setBuildSourceError] = useState("");
+  const [inventorySearch, setInventorySearch] = useState("");
+  const [buildSourceFilter, setBuildSourceFilter] = useState("ALL");
 
   const visibleServers = useMemo(
     () => includeArchived ? servers : servers.filter((server) => server.status !== "archived"),
@@ -92,6 +99,42 @@ function Inventory({
   const sensitiveToolCount = visibleTools.filter((tool) => tool.is_sensitive === true).length;
   const pendingCount = pendingToolAnalysisCount(visibleTools);
   const reviewRequiredCount = reviewRequiredToolCount(visibleTools);
+  const buildSourceBinding = selectedServer
+    ? sourceBindings[String(selectedServer.id)] || null
+    : null;
+  const filteredServers = useMemo(() => {
+    const query = inventorySearch.trim().toLowerCase();
+    return visibleServers.filter((server) => {
+      const binding = sourceBindings[String(server.id)] || null;
+      if (buildSourceFilter === "CONFIGURED" && !binding) return false;
+      if (buildSourceFilter === "UNCONFIGURED" && binding) return false;
+      if (
+        ["LOCAL_DIRECTORY", "GIT_REPOSITORY"].includes(buildSourceFilter)
+        && binding?.target_type !== buildSourceFilter
+      ) {
+        return false;
+      }
+      if (!query) return true;
+      return [
+        server.name,
+        server.server_info_name,
+        server.endpoint,
+        server.transport,
+        server.protocol_version,
+        binding?.target_type,
+        binding?.source_locator,
+        binding?.source_ref,
+      ].some((value) => String(value || "").toLowerCase().includes(query));
+    });
+  }, [buildSourceFilter, inventorySearch, sourceBindings, visibleServers]);
+  const serverPagination = usePagination(
+    filteredServers,
+    `${includeArchived}|${inventorySearch}|${buildSourceFilter}|${filteredServers.length}`,
+  );
+  const toolPagination = usePagination(
+    selectedServerTools,
+    `${selectedServerId || ""}|${selectedServerTools.length}`,
+  );
 
   useEffect(() => {
     if (visibleServers.length === 0) {
@@ -119,6 +162,38 @@ function Inventory({
       setSelectedToolId(selectedServerTools[0]?.id ?? null);
     }
   }, [selectedServer, selectedServerTools, selectedToolId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBuildSourceError("");
+    if (!isAdmin) {
+      setSourceBindings({});
+      setBuildSourceLoading(false);
+      return undefined;
+    }
+    setBuildSourceLoading(true);
+    fetchBuildSourceBindings()
+      .then((values) => {
+        if (cancelled) return;
+        const next = {};
+        for (const binding of values || []) {
+          next[String(binding.server_id)] = binding;
+        }
+        setSourceBindings(next);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setSourceBindings({});
+          setBuildSourceError(err.message || "Build source bindings unavailable.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setBuildSourceLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, servers]);
 
   useEffect(() => {
     let cancelled = false;
@@ -339,7 +414,10 @@ function Inventory({
       <div className="inventory-layout">
         <div className="inventory-section">
           <div className="section-heading compact-heading">
-            <h3>MCP Servers</h3>
+            <div>
+              <h3>MCP Servers</h3>
+              <p>{filteredServers.length} shown · {visibleServers.length} available</p>
+            </div>
             <label className="toggle-control">
               <input
                 checked={includeArchived}
@@ -349,11 +427,42 @@ function Inventory({
               Include archived
             </label>
           </div>
+          <div className="inventory-source-controls">
+            <input
+              aria-label="Search MCP Inventory"
+              onChange={(event) => setInventorySearch(event.target.value)}
+              placeholder="Search name, endpoint, local path, Git repository..."
+              type="search"
+              value={inventorySearch}
+            />
+            <select
+              aria-label="Filter MCP Inventory by Build source"
+              disabled={!isAdmin}
+              onChange={(event) => setBuildSourceFilter(event.target.value)}
+              value={buildSourceFilter}
+            >
+              <option value="ALL">All Build sources</option>
+              <option value="CONFIGURED">Source configured</option>
+              <option value="LOCAL_DIRECTORY">Local sources</option>
+              <option value="GIT_REPOSITORY">Git sources</option>
+              <option value="UNCONFIGURED">Source not configured</option>
+            </select>
+          </div>
+          {buildSourceError && <div className="error-text">{buildSourceError}</div>}
           <ServerTable
-            servers={visibleServers}
+            isAdmin={isAdmin}
+            servers={serverPagination.pageItems}
+            sourceBindings={sourceBindings}
             tools={visibleTools}
             selectedServerId={selectedServerId}
             onSelectServer={setSelectedServerId}
+          />
+          <Pagination
+            label="MCP servers"
+            onPageChange={serverPagination.setPage}
+            page={serverPagination.page}
+            pageCount={serverPagination.pageCount}
+            total={serverPagination.total}
           />
         </div>
 
@@ -362,6 +471,10 @@ function Inventory({
             canArchive={isAdmin && selectedServer.status !== "archived"}
             canManageServer={isAdmin && selectedServer.status !== "archived"}
             canManageTrust={isAdmin && selectedServer.status !== "archived"}
+            buildSourceBinding={buildSourceBinding}
+            buildSourceError={buildSourceError}
+            buildSourceLoading={buildSourceLoading}
+            buildSourceVisible={isAdmin}
             connecting={discovering}
             discovering={discovering}
             gatewayStatus={runtimeStatus?.gateway}
@@ -385,9 +498,16 @@ function Inventory({
               <p>{selectedServerTools.length} tool(s)</p>
             </div>
             <ToolsTable
-              tools={selectedServerTools}
+              tools={toolPagination.pageItems}
               selectedToolId={selectedToolId}
               onSelectTool={setSelectedToolId}
+            />
+            <Pagination
+              label="MCP tools"
+              onPageChange={toolPagination.setPage}
+              page={toolPagination.page}
+              pageCount={toolPagination.pageCount}
+              total={toolPagination.total}
             />
           </div>
         )}
@@ -631,7 +751,14 @@ function SummaryCard({ label, value }) {
   );
 }
 
-function ServerTable({ servers, tools, selectedServerId, onSelectServer }) {
+function ServerTable({
+  isAdmin,
+  onSelectServer,
+  selectedServerId,
+  servers,
+  sourceBindings,
+  tools,
+}) {
   if (servers.length === 0) {
     return <EmptyState />;
   }
@@ -643,6 +770,7 @@ function ServerTable({ servers, tools, selectedServerId, onSelectServer }) {
           <tr>
             <th>Server</th>
             <th>Endpoint</th>
+            <th>Build source</th>
             <th>Transport</th>
             <th>Protocol</th>
             <th>Tools</th>
@@ -654,6 +782,7 @@ function ServerTable({ servers, tools, selectedServerId, onSelectServer }) {
         <tbody>
           {servers.map((server) => {
             const toolCount = tools.filter((tool) => tool.server_id === server.id).length;
+            const binding = sourceBindings[String(server.id)] || null;
 
             return (
               <tr
@@ -667,7 +796,22 @@ function ServerTable({ servers, tools, selectedServerId, onSelectServer }) {
                 tabIndex="0"
               >
                 <td>{getServerDisplayName(server)}</td>
-                <td>{displayValue(server.endpoint)}</td>
+                <td><code className="inventory-endpoint-cell">{displayValue(server.endpoint)}</code></td>
+                <td>
+                  {isAdmin ? (
+                    binding ? (
+                      <div className="inventory-build-source-cell">
+                        <strong>{binding.target_type === "LOCAL_DIRECTORY" ? "Local" : "Git"}</strong>
+                        <code title={binding.source_locator}>{binding.source_locator}</code>
+                        {binding.source_ref && <small>ref: {binding.source_ref}</small>}
+                      </div>
+                    ) : (
+                      <span className="source-not-configured">Not configured</span>
+                    )
+                  ) : (
+                    <span className="hint-text">ADMIN only</span>
+                  )}
+                </td>
                 <td>{displayValue(server.transport)}</td>
                 <td>{displayValue(server.protocol_version)}</td>
                 <td>{toolCount}</td>
@@ -742,6 +886,10 @@ function ToolsTable({ tools, selectedToolId, onSelectTool }) {
 }
 
 function ServerDetailPanel({
+  buildSourceBinding,
+  buildSourceError,
+  buildSourceLoading,
+  buildSourceVisible,
   canArchive,
   canManageServer,
   canManageTrust,
@@ -844,6 +992,26 @@ function ServerDetailPanel({
             ["last_scan_at", formatDate(server.last_scan_at)],
             ["notes", server.notes],
           ]}
+        />
+        <MetadataSection
+          title="Build source traceability"
+          items={
+            buildSourceVisible
+              ? [
+                  [
+                    "source_status",
+                    buildSourceLoading
+                      ? "loading"
+                      : (buildSourceBinding ? "configured" : "not configured"),
+                  ],
+                  ["source_type", buildSourceBinding?.target_type],
+                  ["source_location", buildSourceBinding?.source_locator],
+                  ["source_ref", buildSourceBinding?.source_ref],
+                  ["binding_updated_at", formatDate(buildSourceBinding?.updated_at)],
+                  ["error", buildSourceError],
+                ]
+              : [["source_status", "ADMIN only"]]
+          }
         />
       </div>
     </div>

@@ -58,8 +58,21 @@ Example:
 
 For a negative load scenario, use an identity expected to be denied and set `--expected-outcome BLOCKED`.
 
+## Build Security operational boundary
+
+Semgrep, Gitleaks, and Trivy execute only in the asynchronous/control-plane Build
+scan path against a validated copied workspace. They are never launched while
+mediating an MCP `tools/call`. A completed scan can become Runtime-relevant only
+after an ADMIN attaches its exact evidence reference to a DRAFT and that DRAFT is
+validated and published as the signed Control Plane snapshot.
+
+Runtime receives only bounded facts: gate mode, scan id, source fingerprint/revision,
+assessment status/policy version, required-scanner completion, completion time, and
+maximum evidence age. Raw scanner output, source paths, and discovered secret values
+are not Runtime policy inputs.
+
 ## Security invariants
 
-Performance and operations controls never bypass OPA, identity verification, argument validation, adapter validation, Tool Result Guard, Emergency Deny, or audit controls.
+Performance and operations controls never bypass OPA, identity verification, argument validation, adapter validation, Build Security gates, Tool Result Guard, Emergency Deny, or audit controls.
 
 Dependency failure or overload is not an authorization fallback. Policy failure remains fail-closed and must not reach the upstream MCP.

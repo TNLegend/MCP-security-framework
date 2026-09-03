@@ -34,6 +34,7 @@ from app.services.published_configuration import (
     PublishedConfigurationError,
     PublishedConfigurationSnapshot,
     PublishedConfigurationSnapshotResolver,
+    build_security_context_for_snapshot,
 )
 from proxy.identity_binding import (
     IdentityBindingError,
@@ -346,6 +347,22 @@ class MCPProxy:
         }
 
         server_ref = server_ref_for_server(server)
+        try:
+            build_security_context = build_security_context_for_snapshot(
+                config_snapshot,
+                server_ref,
+            )
+        except PublishedConfigurationError as exc:
+            return self._profile_error_response(
+                tool_call,
+                server.get("id"),
+                getattr(exc, "code", str(exc)),
+            )
+        tool_call = {
+            **tool_call,
+            "build_security": build_security_context,
+        }
+
         emergency_code, deny_id = self._emergency_deny_status(
             tool_call,
             server_ref=server_ref,
@@ -892,6 +909,18 @@ class MCPProxy:
                     "upstream_transport_kind",
                     "legacy_streamable_http",
                 ),
+            },
+            "build_security": tool_call.get("build_security") or {
+                "mode": "DISABLED",
+                "max_evidence_age_hours": 168,
+                "evidence_present": False,
+                "scan_id": None,
+                "source_fingerprint": None,
+                "source_revision": None,
+                "assessment_status": None,
+                "assessment_policy_version": None,
+                "required_scanners_complete": False,
+                "completed_at": None,
             },
             "policy_settings": tool_call.get("policy_settings") or {"rules": {}},
         }

@@ -114,6 +114,43 @@ class PublishedConfigurationSnapshot:
     def get_policy_settings(self) -> dict[str, Any]:
         return self.content.policy_settings.model_dump(mode="json")
 
+    def get_build_security_context(self, server_ref: str) -> dict[str, Any]:
+        settings = self.content.build_security
+        matches = [
+            evidence
+            for evidence in settings.evidence
+            if evidence.server_ref == server_ref
+        ]
+        if len(matches) > 1:
+            raise PublishedConfigurationError("build_evidence_ambiguous")
+        if not matches:
+            return {
+                "mode": settings.mode,
+                "max_evidence_age_hours": settings.max_evidence_age_hours,
+                "evidence_present": False,
+                "scan_id": None,
+                "source_fingerprint": None,
+                "source_revision": None,
+                "assessment_status": None,
+                "assessment_policy_version": None,
+                "required_scanners_complete": False,
+                "completed_at": None,
+            }
+
+        evidence = matches[0]
+        return {
+            "mode": settings.mode,
+            "max_evidence_age_hours": settings.max_evidence_age_hours,
+            "evidence_present": True,
+            "scan_id": evidence.scan_id,
+            "source_fingerprint": evidence.source_fingerprint,
+            "source_revision": evidence.source_revision,
+            "assessment_status": evidence.assessment_status,
+            "assessment_policy_version": evidence.assessment_policy_version,
+            "required_scanners_complete": evidence.required_scanners_complete,
+            "completed_at": evidence.completed_at.isoformat().replace("+00:00", "Z"),
+        }
+
     def get_tool_security_contract(
         self,
         *,
@@ -163,6 +200,40 @@ class PublishedConfigurationSnapshot:
         if authority not in contexts:
             raise PublishedConfigurationError("authority_context_unavailable")
         return contexts[authority].model_dump(mode="json")
+
+
+def disabled_build_security_context() -> dict[str, Any]:
+    return {
+        "mode": "DISABLED",
+        "max_evidence_age_hours": 168,
+        "evidence_present": False,
+        "scan_id": None,
+        "source_fingerprint": None,
+        "source_revision": None,
+        "assessment_status": None,
+        "assessment_policy_version": None,
+        "required_scanners_complete": False,
+        "completed_at": None,
+    }
+
+
+def build_security_context_for_snapshot(
+    snapshot: Any,
+    server_ref: str,
+) -> dict[str, Any]:
+    getter = getattr(snapshot, "get_build_security_context", None)
+    if callable(getter):
+        return getter(server_ref)
+
+    content = getattr(snapshot, "content", None)
+    build_security = getattr(content, "build_security", None)
+    if build_security is None:
+        # Backward-compatible behavior for legacy v2 snapshot implementations that
+        # predate Build Security. Production ControlPlaneConfigContent always has
+        # an explicit build_security section, whose default mode is DISABLED.
+        return disabled_build_security_context()
+
+    raise PublishedConfigurationError("build_security_snapshot_interface_missing")
 
 
 def config_content_hash(content: dict[str, Any]) -> str:

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchRuntimeLogs } from "../api/client";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 20;
 const ERROR_STATUSES = new Set([
   "tool_error",
   "protocol_error",

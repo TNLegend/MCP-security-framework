@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { Pagination, usePagination } from "./Pagination";
+
 const TABS = [
   ["identity", "Identity bindings"],
   ["authorization", "Agent authorizations"],
@@ -53,6 +55,8 @@ function ConfigurationEditor({ content, contentText, error, onChange, onRawChang
 
 function IdentityEditor({ document, onChange, readOnly }) {
   const bindings = document.bindings || [];
+  const indexedBindings = bindings.map((binding, index) => ({ binding, index }));
+  const bindingPagination = usePagination(indexedBindings, String(bindings.length));
   if (readOnly) {
     return <ReadOnlyIdentityBindings bindings={bindings} revision={document.revision} />;
   }
@@ -64,7 +68,7 @@ function IdentityEditor({ document, onChange, readOnly }) {
     <div className="structured-editor">
       <TextField disabled={readOnly} label="Document revision" onChange={(revision) => onChange({ ...document, revision })} value={document.revision || ""} />
       <div className="editor-list">
-        {bindings.map((binding, index) => (
+        {bindingPagination.pageItems.map(({ binding, index }) => (
           <div className="editor-row identity-row" key={index}>
             <TextField disabled={readOnly} label="Issuer" onChange={(value) => updateBinding(index, "issuer", value)} value={binding.issuer || ""} />
             <TextField disabled={readOnly} label="Subject" onChange={(value) => updateBinding(index, "subject", value)} value={binding.subject || ""} />
@@ -73,12 +77,20 @@ function IdentityEditor({ document, onChange, readOnly }) {
           </div>
         ))}
       </div>
+      <Pagination
+        label="Identity bindings"
+        onPageChange={bindingPagination.setPage}
+        page={bindingPagination.page}
+        pageCount={bindingPagination.pageCount}
+        total={bindingPagination.total}
+      />
       {!readOnly && <button onClick={() => onChange({ ...document, bindings: [...bindings, { issuer: "", subject: "", agent_id: "" }] })} type="button">Add binding</button>}
     </div>
   );
 }
 
 function ReadOnlyIdentityBindings({ bindings, revision }) {
+  const bindingPagination = usePagination(bindings, String(bindings.length));
   return (
     <div className="structured-editor">
       <ReadOnlyValue label="Document revision" value={revision || "-"} />
@@ -95,7 +107,7 @@ function ReadOnlyIdentityBindings({ bindings, revision }) {
               </tr>
             </thead>
             <tbody>
-              {bindings.map((binding, index) => (
+              {bindingPagination.pageItems.map((binding, index) => (
                 <tr key={`${binding.issuer}-${binding.subject}-${index}`}>
                   <td>{binding.issuer || "-"}</td>
                   <td>{binding.subject || "-"}</td>
@@ -104,6 +116,13 @@ function ReadOnlyIdentityBindings({ bindings, revision }) {
               ))}
             </tbody>
           </table>
+          <Pagination
+            label="Identity bindings"
+            onPageChange={bindingPagination.setPage}
+            page={bindingPagination.page}
+            pageCount={bindingPagination.pageCount}
+            total={bindingPagination.total}
+          />
         </div>
       )}
     </div>
@@ -112,6 +131,8 @@ function ReadOnlyIdentityBindings({ bindings, revision }) {
 
 function AuthorizationEditor({ document, onChange, readOnly }) {
   const entries = Object.entries(document.subjects || {});
+  const indexedEntries = entries.map((entry, index) => ({ entry, index }));
+  const authorizationPagination = usePagination(indexedEntries, String(entries.length));
   if (readOnly) {
     return <ReadOnlyAuthorizations entries={entries} revision={document.revision} />;
   }
@@ -123,7 +144,7 @@ function AuthorizationEditor({ document, onChange, readOnly }) {
     <div className="structured-editor">
       <TextField disabled={readOnly} label="Document revision" onChange={(revision) => onChange({ ...document, revision })} value={document.revision || ""} />
       <div className="editor-list">
-        {entries.map(([agentId, profile], index) => (
+        {authorizationPagination.pageItems.map(({ entry: [agentId, profile], index }) => (
           <AuthorizationRow
             agentId={agentId}
             key={index}
@@ -134,6 +155,13 @@ function AuthorizationEditor({ document, onChange, readOnly }) {
           />
         ))}
       </div>
+      <Pagination
+        label="Agent authorizations"
+        onPageChange={authorizationPagination.setPage}
+        page={authorizationPagination.page}
+        pageCount={authorizationPagination.pageCount}
+        total={authorizationPagination.total}
+      />
       {!readOnly && <button onClick={() => replaceEntries([...entries, [uniqueAgentId(entries), { role: "viewer", grants: [] }]])} type="button">Add subject</button>}
     </div>
   );
@@ -149,6 +177,7 @@ function ReadOnlyAuthorizations({ entries, revision }) {
       scopes: grant?.scopes?.join(", ") || "-",
     }));
   });
+  const authorizationPagination = usePagination(rows, String(rows.length));
 
   return (
     <div className="structured-editor">
@@ -167,7 +196,7 @@ function ReadOnlyAuthorizations({ entries, revision }) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, index) => (
+              {authorizationPagination.pageItems.map((row, index) => (
                 <tr key={`${row.agentId}-${row.capability}-${index}`}>
                   <td><span className="table-ellipsis" title={row.agentId}>{row.agentId}</span></td>
                   <td><span className="table-ellipsis" title={row.role}>{row.role}</span></td>
@@ -177,6 +206,13 @@ function ReadOnlyAuthorizations({ entries, revision }) {
               ))}
             </tbody>
           </table>
+          <Pagination
+            label="Agent authorization grants"
+            onPageChange={authorizationPagination.setPage}
+            page={authorizationPagination.page}
+            pageCount={authorizationPagination.pageCount}
+            total={authorizationPagination.total}
+          />
         </div>
       )}
     </div>
@@ -185,6 +221,8 @@ function ReadOnlyAuthorizations({ entries, revision }) {
 
 function AuthorizationRow({ agentId, onChange, onRemove, profile, readOnly }) {
   const grants = profile.grants || [];
+  const indexedGrants = grants.map((grant, index) => ({ grant, index }));
+  const grantPagination = usePagination(indexedGrants, `${agentId}|${grants.length}`);
   function updateGrant(index, field, value) {
     onChange(agentId, { ...profile, grants: grants.map((grant, row) => row === index ? { ...grant, [field]: value } : grant) });
   }
@@ -196,7 +234,7 @@ function AuthorizationRow({ agentId, onChange, onRemove, profile, readOnly }) {
         {!readOnly && <button className="danger-action" onClick={onRemove} type="button">Remove subject</button>}
       </div>
       <div className="grant-list">
-        {grants.map((grant, index) => (
+        {grantPagination.pageItems.map(({ grant, index }) => (
           <div className="editor-row grant-row" key={index}>
             <TextField disabled={readOnly} label="Capability" onChange={(value) => updateGrant(index, "capability", value)} value={grant.capability || ""} />
             <TextField disabled={readOnly} label="Scopes (comma separated)" onChange={(value) => updateGrant(index, "scopes", splitList(value))} value={(grant.scopes || []).join(", ")} />
@@ -204,6 +242,13 @@ function AuthorizationRow({ agentId, onChange, onRemove, profile, readOnly }) {
           </div>
         ))}
       </div>
+      <Pagination
+        label={`Grants for ${agentId}`}
+        onPageChange={grantPagination.setPage}
+        page={grantPagination.page}
+        pageCount={grantPagination.pageCount}
+        total={grantPagination.total}
+      />
       {!readOnly && <button onClick={() => onChange(agentId, { ...profile, grants: [...grants, { capability: "", scopes: [] }] })} type="button">Add grant</button>}
     </section>
   );

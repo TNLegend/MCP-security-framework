@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import threading
 from typing import Any
 
 from sqlalchemy import event, func, select, text, update
 from sqlalchemy.orm import Session
 
+from app.models.build_security import BuildAssessment, BuildScanRun
 from app.models.control_plane import ControlPlaneConfigRevision, ControlPlaneState, ControlPlaneUser
+from app.models.mcp_server import MCPServer
 from app.models.tool_analysis import ToolObservationReviewApproval, ToolProtocolObservation
 from app.models.trusted_agent_session import TrustedAgentSession
 from app.schemas.control_plane import ControlPlaneConfigContent, empty_latest_configuration
@@ -25,6 +27,7 @@ from app.services.revision_signing import (
 )
 from app.services.tool_observation_approval import evidence_bundle_for_observation
 from common.canonical_json import sha256_canonical_json
+from common.mcp_endpoint import server_ref_for_server
 from proxy.resource_adapters_v2 import AdapterRegistry
 from proxy.tool_security_v2 import (
     CapabilityCatalog,
@@ -673,11 +676,74 @@ def _evidence_snapshot_approvable(evidence_bundle: dict[str, Any]) -> bool:
     )
 
 
+def _canonical_utc_naive(value: datetime) -> datetime:
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _validate_build_security_database_artifacts(
+    db: Session,
+    content: ControlPlaneConfigContent,
+) -> None:
+    for evidence in content.build_security.evidence:
+        scan = db.get(BuildScanRun, evidence.scan_id)
+        if scan is None:
+            raise ControlPlaneConfigError("build_evidence_scan_missing")
+        if scan.status not in {"COMPLETED", "FAILED"} or scan.completed_at is None:
+            raise ControlPlaneConfigError("build_evidence_scan_not_terminal")
+        if scan.linked_server_id is None:
+            raise ControlPlaneConfigError("build_evidence_scan_not_inventory_linked")
+        server = db.get(MCPServer, scan.linked_server_id)
+        if server is None:
+            raise ControlPlaneConfigError("build_evidence_server_missing")
+        if server.status == "archived":
+            raise ControlPlaneConfigError("build_evidence_server_archived")
+
+        expected_server_ref = server_ref_for_server(
+            {
+                "endpoint": server.endpoint,
+                "transport": server.transport,
+            }
+        )
+        if evidence.server_ref != expected_server_ref:
+            raise ControlPlaneConfigError("build_evidence_server_ref_mismatch")
+        if scan.source_fingerprint != evidence.source_fingerprint:
+            raise ControlPlaneConfigError("build_evidence_source_fingerprint_mismatch")
+        if scan.source_revision != evidence.source_revision:
+            raise ControlPlaneConfigError("build_evidence_source_revision_mismatch")
+        if _canonical_utc_naive(scan.completed_at) != _canonical_utc_naive(
+            evidence.completed_at
+        ):
+            raise ControlPlaneConfigError("build_evidence_completed_at_mismatch")
+
+        assessment = db.scalar(
+            select(BuildAssessment).where(BuildAssessment.build_scan_id == scan.id)
+        )
+        if assessment is None:
+            raise ControlPlaneConfigError("build_evidence_assessment_missing")
+        if scan.status == "FAILED":
+            if assessment.status != "ERROR" or assessment.required_scanners_complete:
+                raise ControlPlaneConfigError("build_evidence_terminal_state_inconsistent")
+        elif assessment.status == "ERROR" or not assessment.required_scanners_complete:
+            raise ControlPlaneConfigError("build_evidence_terminal_state_inconsistent")
+        if assessment.status != evidence.assessment_status:
+            raise ControlPlaneConfigError("build_evidence_assessment_status_mismatch")
+        if assessment.policy_version != evidence.assessment_policy_version:
+            raise ControlPlaneConfigError("build_evidence_policy_version_mismatch")
+        if (
+            assessment.required_scanners_complete
+            != evidence.required_scanners_complete
+        ):
+            raise ControlPlaneConfigError("build_evidence_scanner_completeness_mismatch")
+
+
 def _validate_v2_database_artifacts(
     db: Session,
     revision: ControlPlaneConfigRevision,
     content: ControlPlaneConfigContent,
 ) -> None:
+    _validate_build_security_database_artifacts(db, content)
     contracts = {
         (contract.server_ref, contract.tool_name): contract
         for contract in content.tool_security_contracts or ()

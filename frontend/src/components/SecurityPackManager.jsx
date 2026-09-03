@@ -12,6 +12,7 @@ import {
   validateSecurityPackPackage,
 } from "../api/client";
 import { declarativeManifestFromForm } from "./securityPackUtils";
+import { Pagination, usePagination } from "./Pagination";
 
 const EMPTY_PACK = {
   packId: "",
@@ -72,6 +73,14 @@ function SecurityPackManager({ onComplete, revision }) {
 
   const builtinCount = catalog.builtin_packs?.length || 0;
   const installations = catalog.installations || [];
+  const adapterPagination = usePagination(
+    adapterCatalog.adapters || [],
+    String(adapterCatalog.adapters?.length || 0),
+  );
+  const installationPagination = usePagination(
+    installations,
+    String(installations.length),
+  );
   const selectedInstallationVersions = useMemo(() => {
     const next = {};
     for (const installation of installations) {
@@ -245,7 +254,7 @@ function SecurityPackManager({ onComplete, revision }) {
               </tr>
             </thead>
             <tbody>
-              {(adapterCatalog.adapters || []).map((adapter) => (
+              {adapterPagination.pageItems.map((adapter) => (
                 <tr key={adapter.adapter_id}>
                   <td>{adapter.family}</td>
                   <td>
@@ -260,6 +269,13 @@ function SecurityPackManager({ onComplete, revision }) {
             </tbody>
           </table>
         </div>
+        <Pagination
+          label="Trusted adapters"
+          onPageChange={adapterPagination.setPage}
+          page={adapterPagination.page}
+          pageCount={adapterPagination.pageCount}
+          total={adapterPagination.total}
+        />
         <p className="field-help">
           Specialized adapters are reviewed framework code. Imported JSON packs cannot execute code.
         </p>
@@ -269,7 +285,7 @@ function SecurityPackManager({ onComplete, revision }) {
         <div className="empty-state">No custom Security Packs installed.</div>
       ) : (
         <div className="security-pack-installations">
-          {installations.map((installation) => {
+          {installationPagination.pageItems.map((installation) => {
             const active = installation.versions.find(
               (item) => item.version === installation.active_version,
             );
@@ -391,6 +407,13 @@ function SecurityPackManager({ onComplete, revision }) {
           })}
         </div>
       )}
+      <Pagination
+        label="Security Pack installations"
+        onPageChange={installationPagination.setPage}
+        page={installationPagination.page}
+        pageCount={installationPagination.pageCount}
+        total={installationPagination.total}
+      />
 
       <div className="security-pack-package-panel">
         <div className="section-heading compact-heading">

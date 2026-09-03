@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
@@ -118,6 +118,61 @@ class PolicySettings(BaseModel):
         return self
 
 
+BuildSecurityGateMode = Literal["DISABLED", "ALLOW_WARN", "REQUIRE_PASS"]
+BuildSecurityAssessmentStatus = Literal["PASS", "WARN", "BLOCK", "ERROR"]
+
+
+class BuildSecurityEvidenceReference(BaseModel):
+    server_ref: str = Field(min_length=1, max_length=1024)
+    scan_id: str = Field(min_length=36, max_length=36)
+    source_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_revision: str | None = Field(default=None, max_length=255)
+    assessment_status: BuildSecurityAssessmentStatus
+    assessment_policy_version: str = Field(min_length=1, max_length=128)
+    required_scanners_complete: StrictBool
+    completed_at: datetime
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @field_validator("server_ref", "scan_id", "source_revision", "assessment_policy_version")
+    @classmethod
+    def normalize_build_evidence_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Build Security evidence text values must not be empty.")
+        return normalized
+
+    @field_validator("completed_at")
+    @classmethod
+    def normalize_completed_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+
+class BuildSecuritySettings(BaseModel):
+    mode: BuildSecurityGateMode = "DISABLED"
+    max_evidence_age_hours: int = Field(default=168, ge=1, le=8760, strict=True)
+    evidence: tuple[BuildSecurityEvidenceReference, ...] = Field(
+        default_factory=tuple,
+        max_length=1000,
+    )
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def validate_build_evidence_uniqueness(self) -> "BuildSecuritySettings":
+        server_refs = [item.server_ref for item in self.evidence]
+        if len(server_refs) != len(set(server_refs)):
+            raise ValueError("Build Security evidence must be unique per server_ref.")
+        scan_ids = [item.scan_id for item in self.evidence]
+        if len(scan_ids) != len(set(scan_ids)):
+            raise ValueError("Build Security scan references must be unique.")
+        return self
+
+
 class AuthorityContext(BaseModel):
     separator: Literal["/", ".", ":"] = "/"
     case_sensitive: StrictBool = True
@@ -132,6 +187,7 @@ class ControlPlaneConfigContent(BaseModel):
     identity_bindings: IdentityBindingDocument
     agent_authorizations: SubjectAuthorizationDocument
     policy_settings: PolicySettings = Field(default_factory=PolicySettings)
+    build_security: BuildSecuritySettings = Field(default_factory=BuildSecuritySettings)
     supported_schema_profile: Literal["supported-json-schema-v1"] = "supported-json-schema-v1"
     capability_catalog_version: Literal["2"] = "2"
     resource_type_registry_version: Literal["2"] = "2"

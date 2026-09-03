@@ -1,0 +1,143 @@
+rules:
+  - id: mcp.python.tool-os-system
+    languages: [python]
+    message: MCP tool executes a shell command through os.system.
+    severity: ERROR
+    metadata:
+      mcp_framework_severity: CRITICAL
+      mcp_framework_category: COMMAND_EXECUTION
+      confidence: HIGH
+      cwe: [CWE-78]
+    patterns:
+      - pattern-inside: |
+          @$MCP.tool(...)
+          def $FUNC(...):
+            ...
+      - pattern: os.system(...)
+
+  - id: python.os-system
+    languages: [python]
+    message: Process execution through os.system requires security review.
+    severity: ERROR
+    metadata:
+      mcp_framework_severity: HIGH
+      mcp_framework_category: COMMAND_EXECUTION
+      confidence: HIGH
+      cwe: [CWE-78]
+    patterns:
+      - pattern: os.system(...)
+      - pattern-not-inside: |
+          @$MCP.tool(...)
+          def $FUNC(...):
+            ...
+
+  - id: mcp.python.tool-subprocess-shell
+    languages: [python]
+    message: MCP tool launches a subprocess with shell=True.
+    severity: ERROR
+    metadata:
+      mcp_framework_severity: CRITICAL
+      mcp_framework_category: COMMAND_EXECUTION
+      confidence: HIGH
+      cwe: [CWE-78]
+    patterns:
+      - pattern-inside: |
+          @$MCP.tool(...)
+          def $FUNC(...):
+            ...
+      - pattern: subprocess.$CALL(..., shell=True, ...)
+
+  - id: python.subprocess-shell
+    languages: [python]
+    message: subprocess with shell=True expands command-injection risk.
+    severity: ERROR
+    metadata:
+      mcp_framework_severity: HIGH
+      mcp_framework_category: COMMAND_EXECUTION
+      confidence: HIGH
+      cwe: [CWE-78]
+    patterns:
+      - pattern: subprocess.$CALL(..., shell=True, ...)
+      - pattern-not-inside: |
+          @$MCP.tool(...)
+          def $FUNC(...):
+            ...
+
+  - id: python.dangerous-eval
+    languages: [python]
+    message: Dynamic evaluation with eval can execute attacker-controlled expressions.
+    severity: ERROR
+    metadata:
+      mcp_framework_severity: HIGH
+      mcp_framework_category: CODE_EXECUTION
+      confidence: HIGH
+      cwe: [CWE-95]
+    pattern: eval(...)
+
+  - id: python.dangerous-exec
+    languages: [python]
+    message: Dynamic execution with exec can execute attacker-controlled code.
+    severity: ERROR
+    metadata:
+      mcp_framework_severity: HIGH
+      mcp_framework_category: CODE_EXECUTION
+      confidence: HIGH
+      cwe: [CWE-95]
+    pattern: exec(...)
+
+  - id: python.requests-tls-verification-disabled
+    languages: [python]
+    message: HTTPS certificate verification is explicitly disabled.
+    severity: ERROR
+    metadata:
+      mcp_framework_severity: HIGH
+      mcp_framework_category: INSECURE_TRANSPORT
+      confidence: HIGH
+      cwe: [CWE-295]
+    pattern: requests.$METHOD(..., verify=False, ...)
+
+  - id: python.unsafe-pickle-load
+    languages: [python]
+    message: Pickle deserialization can execute code when input is untrusted.
+    severity: ERROR
+    metadata:
+      mcp_framework_severity: HIGH
+      mcp_framework_category: UNSAFE_DESERIALIZATION
+      confidence: HIGH
+      cwe: [CWE-502]
+    pattern-either:
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+
+  - id: python.asyncio-interpreter-c
+    languages: [python]
+    message: Python interpreter executes dynamically supplied code through asyncio subprocess.
+    severity: ERROR
+    metadata:
+      mcp_framework_severity: HIGH
+      mcp_framework_category: CODE_EXECUTION
+      confidence: HIGH
+      cwe: [CWE-78, CWE-95]
+    pattern: asyncio.create_subprocess_exec(..., "-c", $CODE, ...)
+
+  - id: javascript.dangerous-eval
+    languages: [javascript, typescript]
+    message: Dynamic evaluation with eval can execute attacker-controlled JavaScript.
+    severity: ERROR
+    metadata:
+      mcp_framework_severity: HIGH
+      mcp_framework_category: CODE_EXECUTION
+      confidence: HIGH
+      cwe: [CWE-95]
+    pattern: eval(...)
+
+  - id: javascript.function-constructor
+    languages: [javascript, typescript]
+    message: Dynamic Function construction can execute attacker-controlled JavaScript.
+    severity: ERROR
+    metadata:
+      mcp_framework_severity: HIGH
+      mcp_framework_category: CODE_EXECUTION
+      confidence: HIGH
+      cwe: [CWE-95]
+    pattern: new Function(...)
