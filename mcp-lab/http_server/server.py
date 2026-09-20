@@ -84,6 +84,11 @@ class ToolExecutionError(Exception):
     pass
 
 
+@app.get("/health")
+def health_check() -> dict[str, str]:
+    return {"status": "ok", "service": "mcp-security-http-lab"}
+
+
 @app.get("/mcp")
 def mcp_get() -> Response:
     return Response(status_code=status.HTTP_405_METHOD_NOT_ALLOWED)

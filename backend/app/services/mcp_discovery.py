@@ -14,6 +14,7 @@ from common.upstream_auth import (
     resolve_upstream_bearer_token,
 )
 from proxy.http_mcp_client import MCPHttpClient
+from proxy.mcp_transport import StreamableHTTPResponseDecoder, TransportProtocolError
 from proxy.protocol_negotiation import MCP_CLIENT_USER_AGENT, ProtocolNegotiator
 from proxy.protocol_profiles import (
     LEGACY_PROFILE_ID,
@@ -298,17 +299,30 @@ def send_json_rpc(
     )
     try:
         with DISCOVERY_OPENER.open(request, timeout=10) as response:
-            raw_body = response.read(MAX_DISCOVERY_RESPONSE_BYTES + 1)
-            if len(raw_body) > MAX_DISCOVERY_RESPONSE_BYTES:
-                raise MCPDiscoveryError("discovery_response_too_large")
             if response.status not in expected_statuses:
                 raise MCPDiscoveryError("unexpected_discovery_http_status")
-            if raw_body and response.headers.get_content_type() != "application/json":
-                raise MCPDiscoveryError("unexpected_discovery_content_type")
+            if response.status != 200:
+                raw_body = response.read(MAX_DISCOVERY_RESPONSE_BYTES + 1)
+                if len(raw_body) > MAX_DISCOVERY_RESPONSE_BYTES:
+                    raise MCPDiscoveryError("discovery_response_too_large")
+                return {
+                    "status": response.status,
+                    "headers": response.headers,
+                    "body": parse_strict_json(raw_body) if raw_body else None,
+                }
+            decoder = StreamableHTTPResponseDecoder(
+                expected_request_id=payload.get("id"),
+                max_response_bytes=MAX_DISCOVERY_RESPONSE_BYTES,
+                max_sse_event_bytes=MAX_DISCOVERY_RESPONSE_BYTES,
+            )
+            try:
+                message = decoder.decode(response)
+            except TransportProtocolError as exc:
+                raise MCPDiscoveryError(str(exc)) from exc
             return {
                 "status": response.status,
                 "headers": response.headers,
-                "body": parse_strict_json(raw_body) if raw_body else None,
+                "body": message,
             }
     except urllib.error.HTTPError as exc:
         raise MCPDiscoveryError("discovery_http_error") from exc

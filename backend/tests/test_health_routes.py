@@ -55,11 +55,34 @@ class HealthRouteTests(unittest.TestCase):
         manager = SimpleNamespace(
             status=lambda **kwargs: runtime,
             identity_provider_status=lambda: healthy,
+            mcp_lab_status=lambda: healthy,
         )
         with patch.object(routes_health, "LocalRuntimeManager", return_value=manager):
             response = routes_health.readiness_check(db=object())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.body)["status"], "ready")
+
+    def test_readiness_fails_closed_when_mcp_lab_is_unavailable(self) -> None:
+        healthy = SimpleNamespace(status="healthy")
+        unavailable = SimpleNamespace(status="unavailable")
+        runtime = SimpleNamespace(
+            ready=True,
+            backend=healthy,
+            database=healthy,
+            opa=healthy,
+            gateway=healthy,
+        )
+        manager = SimpleNamespace(
+            status=lambda **kwargs: runtime,
+            identity_provider_status=lambda: healthy,
+            mcp_lab_status=lambda: unavailable,
+        )
+        with patch.object(routes_health, "LocalRuntimeManager", return_value=manager):
+            response = routes_health.readiness_check(db=object())
+        payload = json.loads(response.body)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(payload["status"], "not_ready")
+        self.assertEqual(payload["components"]["mcp_lab"], "unavailable")
 
     def test_readiness_fails_closed_when_dependency_is_unavailable(self) -> None:
         healthy = SimpleNamespace(status="healthy")
@@ -74,6 +97,7 @@ class HealthRouteTests(unittest.TestCase):
         manager = SimpleNamespace(
             status=lambda **kwargs: runtime,
             identity_provider_status=lambda: healthy,
+            mcp_lab_status=lambda: healthy,
         )
         with patch.object(routes_health, "LocalRuntimeManager", return_value=manager):
             response = routes_health.readiness_check(db=object())

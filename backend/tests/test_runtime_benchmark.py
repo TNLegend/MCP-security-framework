@@ -60,6 +60,21 @@ class _BenchmarkHandler(BaseHTTPRequestHandler):
             }
             encoded = json.dumps(body).encode("utf-8")
             self.send_response(200)
+        elif token == "Bearer upstream-error-token":
+            body = {
+                "jsonrpc": "2.0",
+                "id": payload["id"],
+                "error": {
+                    "code": -32004,
+                    "message": "upstream_execution_failed",
+                    "data": {
+                        "rule_id": "allow_generic_security_model_v2",
+                        "execution_status": "http_error",
+                    },
+                },
+            }
+            encoded = json.dumps(body).encode("utf-8")
+            self.send_response(502)
         else:
             body = {
                 "jsonrpc": "2.0",
@@ -176,6 +191,24 @@ class RuntimeBenchmarkTests(unittest.TestCase):
                 for headers in legacy_tool_headers
             )
         )
+
+    def test_upstream_error_uses_error_message_not_allow_rule_id(self):
+        report = benchmark_gateway(
+            gateway_url=self.url,
+            server_id=1,
+            tool_name="list_files",
+            arguments={},
+            bearer_token="upstream-error-token",
+            protocol_version=MODERN_PROTOCOL_VERSION,
+            requests_count=3,
+            concurrency=1,
+            timeout_seconds=2,
+            expected_outcome="ANY",
+            warmup=0,
+        )
+        self.assertEqual(report["outcomes"]["errors"], 3)
+        self.assertEqual(report["outcomes"]["blocked"], 0)
+        self.assertEqual(report["error_codes"], {"upstream_execution_failed": 3})
 
     def test_wrong_security_expectation_is_reported(self):
         report = benchmark_gateway(

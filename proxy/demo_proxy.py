@@ -10,6 +10,59 @@ from proxy.mcp_proxy import MCPProxy
 from scripts.local_identity_provider import issue_access_token, load_project_env
 
 
+DEMO_IDENTITY_SUBJECT = "service-account-llm-agent-demo"
+DEMO_MCP_ENDPOINT = "http://127.0.0.1:9000/mcp"
+
+
+def _demo_server_id(proxy: MCPProxy) -> int:
+    server = proxy.backend_client.find_server(endpoint=DEMO_MCP_ENDPOINT)
+    if (
+        not isinstance(server, dict)
+        or isinstance(server.get("id"), bool)
+        or not isinstance(server.get("id"), int)
+    ):
+        raise RuntimeError(
+            "The MCP lab is not registered in Inventory. Run discovery first."
+        )
+    return server["id"]
+
+
+def _demo_cases(*, server_id: int, session_token: str) -> list[tuple[str, dict]]:
+    return [
+        (
+            "Case 1 - allowed contract read",
+            {
+                "server_id": server_id,
+                "session_token": session_token,
+                "tool_name": "read_file",
+                "arguments": {
+                    "path": "contracts/contract1.txt",
+                },
+            },
+        ),
+        (
+            "Case 2 - blocked .env read",
+            {
+                "server_id": server_id,
+                "session_token": session_token,
+                "tool_name": "read_file",
+                "arguments": {
+                    "path": ".env",
+                },
+            },
+        ),
+        (
+            "Case 3 - allowed contract listing",
+            {
+                "server_id": server_id,
+                "session_token": session_token,
+                "tool_name": "list_files",
+                "arguments": {},
+            },
+        ),
+    ]
+
+
 def main() -> None:
     load_project_env()
     print("MCP Security Framework - Proxy Runtime Demo")
@@ -22,42 +75,23 @@ def main() -> None:
     print("=" * 50)
 
     proxy = MCPProxy()
+    server_id = _demo_server_id(proxy)
     trusted_session = proxy.create_trusted_session(
-        issue_access_token(subject="service-account-agent-demo")
+        issue_access_token(subject=DEMO_IDENTITY_SUBJECT)
     )
 
-    demo_cases = [
-        (
-            "Case 1 - allowed contract read",
-            {
-                "session_token": trusted_session["session_token"],
-                "tool_name": "read_file",
-                "arguments": {
-                    "path": "contracts/contract1.txt",
-                },
-            },
-        ),
-        (
-            "Case 2 - blocked .env read",
-            {
-                "session_token": trusted_session["session_token"],
-                "tool_name": "read_file",
-                "arguments": {
-                    "path": ".env",
-                },
-            },
-        ),
-    ]
-
-    for label, tool_call in demo_cases:
+    for label, tool_call in _demo_cases(
+        server_id=server_id,
+        session_token=trusted_session["session_token"],
+    ):
         print()
         print(f"=== {label} ===")
         result = proxy.handle_tool_call(tool_call)
         print_case_summary(tool_call, result)
 
     print()
-    print("Check runtime logs:")
-    print("Invoke-RestMethod http://127.0.0.1:8000/api/v1/runtime/logs")
+    print("Check runtime logs in the authenticated Control Center:")
+    print("http://127.0.0.1:5173/ -> Runtime Calls")
 
 
 def print_case_summary(tool_call: dict, result: dict) -> None:

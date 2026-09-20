@@ -770,6 +770,44 @@ class DualEraGatewayTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 400)
         self.assertEqual(self.proxy.upstream_invocations, 0)
 
+    def test_upstream_execution_failures_are_not_reported_as_policy_blocks(self) -> None:
+        original = self.proxy.handle_tool_call
+        try:
+            for execution_status in ("http_error", "protocol_error", "upstream_auth_error"):
+                with self.subTest(execution_status=execution_status):
+                    self.proxy.handle_tool_call = lambda _call, status=execution_status: {
+                        "status": "error",
+                        "executed": False,
+                        "mcp_called": True,
+                        "execution_status": status,
+                        "rule_id": "allow_generic_security_model_v2",
+                    }
+                    response = self.client.post(
+                        "/mcp/1",
+                        headers=self.modern_headers("tools/call", "send_email"),
+                        json=self.modern_payload(
+                            "tools/call",
+                            {
+                                "name": "send_email",
+                                "arguments": {
+                                    "recipient": "alice@example.com",
+                                    "subject": "hello",
+                                    "body": "world",
+                                },
+                            },
+                        ),
+                    )
+                    self.assertEqual(response.status_code, 502)
+                    error = response.json()["error"]
+                    self.assertEqual(error["message"], "upstream_execution_failed")
+                    self.assertEqual(error["data"]["execution_status"], execution_status)
+                    self.assertEqual(
+                        error["data"]["rule_id"],
+                        "allow_generic_security_model_v2",
+                    )
+        finally:
+            self.proxy.handle_tool_call = original
+
     def test_four_cross_era_quadrants_share_allow_and_block_semantics(self) -> None:
         for client_profile in (MODERN_PROFILE_ID, LEGACY_PROFILE_ID):
             for upstream_profile in (MODERN_PROFILE_ID, LEGACY_PROFILE_ID):
@@ -875,9 +913,13 @@ class StrictJSONBoundaryTests(unittest.TestCase):
                 with self.assertRaises(StrictJSONError):
                     parse_strict_json(document)
 
+    def test_accepts_bounded_deep_json(self) -> None:
+        document = (b'{"a":' * 64) + b"0" + (b"}" * 64)
+        self.assertIsInstance(parse_strict_json(document), dict)
+
     def test_rejects_excessive_depth(self) -> None:
-        document = (b'{"a":' * 34) + b"0" + (b"}" * 34)
-        with self.assertRaises(StrictJSONError):
+        document = (b'{"a":' * 65) + b"0" + (b"}" * 65)
+        with self.assertRaisesRegex(StrictJSONError, "json_depth_exceeded"):
             parse_strict_json(document)
 
     def test_gateway_rejects_oversized_content_length_before_body_parse(self) -> None:

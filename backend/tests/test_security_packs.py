@@ -13,7 +13,11 @@ from app.db.database import Base
 from app.models.control_plane import ControlPlaneState, ControlPlaneUser
 from app.schemas.control_plane import empty_latest_configuration
 from app.schemas.security_pack import ContractScopeInput, CreateToolContractDraftRequest
-from app.services.control_plane_config import create_revision, publish_revision
+from app.services.control_plane_config import (
+    create_revision,
+    patch_draft_revision,
+    publish_revision,
+)
 from app.services.security_pack_onboarding import (
     _AIPackSuggestion,
     _build_contract,
@@ -474,6 +478,48 @@ class SecurityPackOnboardingTests(unittest.TestCase):
             self.assertEqual(result["observation_approvals"], 1)
             self.assertEqual(content.security_packs[0].id, "ticketing")
             self.assertEqual(content.tool_security_contracts[0].tool_name, "get_ticket")
+
+            stale_content = content.model_copy(
+                update={
+                    "tool_observation_approvals": tuple(
+                        approval.model_copy(update={"revision_id": "legacy-draft-id"})
+                        for approval in content.tool_observation_approvals
+                    )
+                }
+            )
+            patch_draft_revision(
+                db,
+                draft_id=pack_revision.id,
+                content=stale_content,
+                actor=admin,
+                change_summary="simulate legacy draft approval",
+            )
+
+            with patch(
+                "app.services.security_pack_onboarding.ToolAnalysisService",
+                analysis_service,
+            ):
+                repaired = create_tool_contract_draft(
+                    db,
+                    tool=tool,
+                    payload=CreateToolContractDraftRequest(
+                        template_id="ticket.read",
+                        argument_mappings={"resource": ("ticket_id",)},
+                        draft_revision_id=pack_revision.id,
+                        approve_observations=True,
+                        change_summary="repair legacy draft approval",
+                    ),
+                    actor=admin,
+                )
+            repaired_content = validate_config_content(pack_revision.content)
+            self.assertEqual(repaired["revision_id"], pack_revision.id)
+            self.assertTrue(repaired_content.tool_observation_approvals)
+            self.assertTrue(
+                all(
+                    approval.revision_id == pack_revision.id
+                    for approval in repaired_content.tool_observation_approvals
+                )
+            )
 
             publish_revision(
                 db,

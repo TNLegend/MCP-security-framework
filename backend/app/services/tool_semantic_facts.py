@@ -19,61 +19,100 @@ _EXAMPLE_HEADING_RE = re.compile(
 
 _ACTION_PATTERNS = {
     "read": (
-        r"\b(read|fetch|get|retrieve|inspect|view|download|lire|récupérer|consulter|télécharger)\b",
+        r"\b(read(?:s|ing)?|fetch(?:es|ed|ing)?|get(?:s|ting)?|retrieve(?:s|d|ing)?|obtain(?:s|ed|ing)?|acquir(?:e|es|ed|ing)|inspect(?:s|ed|ing)?|view(?:s|ed|ing)?|download(?:s|ed|ing)?|lire|lit|lis(?:ent|ez|ons)?|lecture|récup(?:érer|ère|ères|èrent|éré|érée|érés|érées)|obtenir|obtiens|obtient|obtenez|obtiennent|obtenu|obtenue|acqu(?:érir|iert|iers|érez|ièrent|is|ise)|consult(?:er|e|es|ent|é|ée|és|ées)|télécharg(?:er|e|es|ent|é|ée|és|ées))\b",
     ),
     "search": (
-        r"\b(search|query|find|lookup|filter|rechercher|chercher|interroger|filtrer)\b",
+        r"\b(search(?:es|ed|ing)?|query(?:ies|ied|ing)?|find(?:s|ing)?|found|lookup(?:s|ed|ing)?|filter(?:s|ed|ing)?|recherch(?:er|e|es|ent|é|ée|és|ées)|cherch(?:er|e|es|ent|é|ée|és|ées)|interrog(?:er|e|es|ent|é|ée|és|ées)|filtr(?:er|e|es|ent|é|ée|és|ées))\b",
     ),
-    "list": (r"\b(list|enumerate|browse|lister|énumérer|parcourir)\b",),
-    "create": (r"\b(create|add|insert|upload|publish|créer|ajouter|insérer|téléverser|publier)\b",),
-    "update": (r"\b(update|edit|modify|move|rename|set|mettre à jour|modifier|déplacer|renommer)\b",),
-    "delete": (r"\b(delete|remove|erase|drop|truncate|supprimer|effacer)\b",),
-    "send": (r"\b(send|forward|transmit|upload|post|notify|envoyer|transmettre|téléverser|notifier)\b",),
+    "list": (
+        r"\b(list(?:s|ed|ing)?|enumerat(?:e|es|ed|ing)|brows(?:e|es|ed|ing)|list(?:er|e|es|ent|é|ée|és|ées)|énumér(?:er|e|es|ent|é|ée|és|ées)|parcourir|parcourt|parcourent|parcouru)\b",
+    ),
+    "create": (
+        r"\b(creat(?:e|es|ed|ing)|add(?:s|ed|ing)?|insert(?:s|ed|ing)?|upload(?:s|ed|ing)?|publish(?:es|ed|ing)?|cré(?:er|e|es|ent|é|ée|és|ées)|ajout(?:er|e|es|ent|é|ée|és|ées)|insér(?:er|e|es|ent|é|ée|és|ées)|télévers(?:er|e|es|ent|é|ée|és|ées)|publi(?:er|e|es|ent|é|ée|és|ées))\b",
+    ),
+    "update": (
+        r"\b(updat(?:e|es|ed|ing)|edit(?:s|ed|ing)?|modif(?:y|ies|ied|ying)|writ(?:e|es|ing|ten)|persist(?:s|ed|ing)?|commit(?:ted|ting)|mov(?:e|es|ed|ing)|renam(?:e|es|ed|ing)|set(?:s|ting)?|mettre à jour|mis à jour|modifi(?:er|e|es|ent|é|ée|és|ées)|écri(?:re|t|vent)|persist(?:er|e|es|ent|é|ée|és|ées)|valid(?:er|e|es|ent|é|ée|és|ées)|déplac(?:er|e|es|ent|é|ée|és|ées)|renomm(?:er|e|es|ent|é|ée|és|ées))\b",
+        r"\bcommit\b(?=\s+(?:the\s+)?(?:changes?|updates?|writes?|transaction|state)\b)",
+    ),
+    "delete": (
+        r"\b(delet(?:e|es|ed|ing)|remov(?:e|es|ed|ing)|eras(?:e|es|ed|ing)|wipe(?:s|d|ing)?|destroy(?:s|ed|ing)?|purge(?:s|d|ing)?|drop(?:s|ped|ping)?|truncat(?:e|es|ed|ing)|supprim(?:er|e|es|ent|é|ée|és|ées)|effac(?:er|e|es|ent|é|ée|és|ées)|détru(?:ire|it|isent)|purg(?:er|e|es|ent|é|ée|és|ées))\b",
+    ),
+    "send": (
+        r"\b(send(?:s|ing)?|sent|contact(?:ed|ing)?|forward(?:s|ed|ing)?|transmit(?:s|ted|ting)?|relay(?:s|ed|ing)?|upload(?:s|ed|ing)?|post(?:s|ed|ing)?|broadcast(?:s|ed|ing)?|mirror(?:s|ed|ing)?|notif(?:y|ies|ied|ying)|envoy(?:er|é|ée|és|ées)|envoi(?:e|ent)|contact(?:er|e|es|ent|é|ée|és|ées)|transmettre|transmet|transmis|relay(?:er|e|es|ent|é|ée|és|ées)|diffus(?:er|e|es|ent|é|ée|és|ées)|copi(?:er|e|es|ent|é|ée|és|ées)|télévers(?:er|e|es|ent|é|ée|és|ées)|notifi(?:er|e|es|ent|é|ée|és|ées))\b",
+    ),
     "execute": (
-        r"\b(execute|run|launch|invoke|exécuter|lancer|invoquer)\b.{0,35}\b(shell|scripts?|process(?:es)?|executables?|operating system commands?|scripts?|processus|exécutables?|commandes? système)\b",
-        r"\b(shell|scripts?|process(?:es)?|executables?|operating system commands?|processus|exécutables?|commandes? système)\b.{0,25}\b(execution|execute|run|exécution|exécuter|lancer)\b",
-        r"\bshell\s+commands?\b",
+        r"\b(execut(?:e|es|ed|ing)|run(?:s|ning)?|launch(?:es|ed|ing)?|invok(?:e|es|ed|ing)|exécut(?:er|e|es|ent|é|ée|és|ées)|lanc(?:er|e|es|ent|é|ée|és|ées)|invoqu(?:er|e|es|ent|é|ée|és|ées))\b.{0,35}\b(shell|scripts?|process(?:es)?|executables?|operating system commands?|processus|exécutables?|commandes? système)\b",
+        r"\b(shell|scripts?|process(?:es)?|executables?|operating system commands?|processus|exécutables?|commandes? système)\b.{0,25}\b(execution|execut(?:e|es|ed|ing)|run(?:s|ning)?|exécution|exécut(?:er|e|es|ent|é|ée|és|ées)|lanc(?:er|e|es|ent|é|ée|és|ées))\b",
     ),
     "authorize": (
-        r"\b(grant|revoke|authorize|assign|elevate|accorder|révoquer|autoriser|attribuer|élever)\b.{0,35}\b(role|permission|access|privilege|rôle|autorisation|accès|privilège)\b",
+        r"\b(grant(?:s|ed|ing)?|give(?:s|n|ing)?|revok(?:e|es|ed|ing)|authoriz(?:e|es|ed|ing)|assign(?:s|ed|ing)?|elevat(?:e|es|ed|ing)|promot(?:e|es|ed|ing)|make|accord(?:er|e|es|ent|é|ée|és|ées)|donn(?:er|e|es|ent|é|ée|és|ées)|révoqu(?:er|e|es|ent|é|ée|és|ées)|autoris(?:er|e|es|ent|é|ée|és|ées)|attribu(?:er|e|es|ent|é|ée|és|ées)|promouv(?:oir|e|es|ent)|transform(?:er|e|es|ent|é|ée|és|ées)|élèv(?:e|es|ent)|élev(?:er|é|ée|és|ées))\b.{0,45}\b(admin(?:istrator)?s?|owners?|root|superuser|roles?|permissions?|access|privileges?|administrateurs?|propriétaires?|rôles?|autorisations?|accès|privilèges?)\b",
     ),
     "transact": (
-        r"\b(pay|charge|transfer|purchase|refund|payer|facturer|virer|acheter|rembourser)\b",
-        r"\b(initiate|create|issue|start|initier|créer|émettre)\b.{0,30}\b(payment|transfer|refund|paiement|virement|remboursement)\b",
+        r"\b(pay(?:s|ing)?|paid|charg(?:e|es|ed|ing)|debit(?:s|ed|ing)?|transfer(?:s|red|ring)?|purchas(?:e|es|ed|ing)|refund(?:s|ed|ing)?|payer|paie|paient|payé|payée|payés|payées|factur(?:er|e|es|ent|é|ée|és|ées)|débit(?:er|e|es|ent|é|ée|és|ées)|vir(?:er|e|es|ent|é|ée|és|ées)|achet(?:er|e|es|ent|é|ée|és|ées)|achète|achètent|rembours(?:er|e|es|ent|é|ée|és|ées))\b",
+        r"\b(initiat(?:e|es|ed|ing)|creat(?:e|es|ed|ing)|issu(?:e|es|ed|ing)|start(?:s|ed|ing)?|mak(?:e|es|ing)|perform(?:s|ed|ing)?|execut(?:e|es|ed|ing)|initi(?:er|e|es|ent|é|ée|és|ées)|cré(?:er|e|es|ent|é|ée|és|ées)|émett(?:re|ent)|émis(?:e|es)?|démarr(?:er|e|es|ent|é|ée|és|ées)|effectu(?:er|e|es|ent|é|ée|és|ées))\b.{0,30}\b(payments?|transfers?|refunds?|paiements?|virements?|remboursements?)\b",
     ),
-    "health_check": (r"\b(ping|health(?:check)?|readiness|liveness|status check)\b",),
+    "health_check": (r"\b(ping(?:s|ed|ing)?|health(?:check)?|readiness|liveness|status check)\b",),
 }
 
 _RESOURCE_PATTERNS = {
     "filesystem": (r"\b(filesystem|files?|folders?|directories|paths?|système de fichiers|fichiers?|dossiers?|répertoires?|chemins?)\b",),
-    "document": (r"\b(documents?|pages?|notes?|wikis?|content|markdown|documents?|contenu)\b",),
+    "document": (r"\b(documents?|documentation|docs?|guides?|manuals?|manuels?|pages?|notes?|wikis?|content|markdown|contenu)\b",),
     "database": (r"\b(databases?|schemas?|tables?|rows?|records?|collections?|sql|bases? de données|enregistrements?)\b",),
-    "message": (r"\b(emails?|messages?|comments?|mailboxes?|recipients?|courriels?|commentaires?|destinataires?)\b",),
+    "message": (
+        r"\b(emails?|messages?|comments?|mailboxes?|recipients?|contacts?|address books?|courriels?|commentaires?|destinataires?|contacts?|carnets? d'adresses?)\b",
+    ),
     "calendar": (r"\b(calendars?|events?|meetings?|calendriers?|événements?|réunions?)\b",),
     "cloud_storage": (r"\b(buckets?|containers?|cloud objects?|blobs?|storage|stockage|objets? cloud)\b",),
-    "identity": (r"\b(users?|identities|utilisateurs?|identités)\b",),
-    "secret_store": (r"\b(secrets?|credentials?|tokens?|passwords?|api[_ -]?keys?|vault|identifiants?|jetons?|mots? de passe|clés? api)\b",),
+    "identity": (r"\b(users?|identity|identities|utilisateurs?|identité|identités)\b",),
+    "secret_store": (
+        r"\b(secrets?|credentials?|tokens?|passwords?|api[_ -]?keys?|vault|authentication material|auth material|bearer credentials?|identifiants?|jetons?|mots? de passe|clés? api|matériel d'authentification)\b",
+    ),
     "source_code": (r"\b(repositories|repository|commits?|branches?|pull requests?|source code|dépôts?|code source)\b",),
     "payment": (r"\b(payments?|transactions?|invoices?|refunds?|merchant|paiements?|virements?|factures?|remboursements?)\b",),
-    "network_endpoint": (r"\b(urls?|uris?|endpoints?|webhooks?|hosts?|api endpoints?|points? de terminaison)\b",),
-    "process": (r"\b(shell|scripts?|process(?:es)?|executables?|operating system commands?|processus|exécutables?|commandes? système)\b", r"\bshell\s+commands?\b"),
+    "network_endpoint": (
+        r"\b(urls?|uris?|endpoints?|webhooks?|hosts?|api endpoints?|points? de terminaison)\b",
+        r"\b(localhost|loopback|link-local|metadata service|service de métadonnées|169\.254\.169\.254)\b",
+    ),
+    "process": (r"\b(shell|bash|powershell|scripts?|process(?:es)?|executables?|system commands?|operating system commands?|command lines?|processus|exécutables?|commandes? système|lignes? de commande)\b", r"\bshell\s+commands?\b"),
 }
 
 _DATA_PATTERNS = {
-    "credentials": (r"\b(credentials?|tokens?|passwords?|api[_ -]?keys?|secrets?|identifiants?|jetons?|mots? de passe|clés? api)\b",),
+    "credentials": (
+        r"\b(credentials?|login credentials?|bearer credentials?|authentication credentials?|authentication secrets?|auth(?:entication|orization)? tokens?|access tokens?|refresh tokens?|tokens?|passwords?|api[_ -]?keys?|secrets?|authentication material|auth material|identifiants?|identifiants? de connexion|jetons?|mots? de passe|clés? api|matériel d'authentification)\b",
+    ),
     "personal_data": (r"\b(personal data|personally identifiable|pii|phone numbers?|home addresses?|postal addresses?|données personnelles|adresses? postales|coordonnées personnelles)\b",),
     "financial_data": (r"\b(financial data|bank accounts?|card numbers?|balances?|données financières|comptes? bancaires|soldes?)\b",),
     "source_code": (r"\b(source code|repositories|commits?|code source|dépôts?)\b",),
     "document_content": (r"\b(document content|page content|file contents?|markdown|contenu (?:du )?(?:document|fichier|page))\b",),
     "communications": (r"\b(email bodies|message content|comments?|correspondence|contenu des messages|commentaires?|correspondance)\b",),
     "location": (r"\b(location data|coordinates|latitude|longitude|gps|données de localisation|coordonnées gps)\b",),
+    "sensitive_data": (
+        r"\b(confidential|private|sensitive)\b.{0,40}\b(?:data|records?|documents?|files?|content|information)\b",
+        r"\b(données?|enregistrements?|documents?|fichiers?|contenu|informations?)\s+(?:confidentielles?|privées?|sensibles?)\b",
+    ),
 }
 
 _SCOPE_PATTERNS = {
-    "bulk": (r"\b(bulk|mass|batch|all (?:users|contacts|records)|every recipient|en masse|tous les|toutes les)\b",),
-    "cross_tenant": (r"\b(other|another|cross)[ -]?(tenant|account|organization|project)\b", r"\b(autre|inter)[ -]?(tenant|compte|organisation|projet)\b"),
+    "bulk": (
+        r"\b(bulk|mass|batch|broadcast|every recipient|all recipients|entire recipient list|complete recipient list|entire address book|complete address book|address book|en masse|diffusion générale|liste complète des destinataires|carnet d'adresses complet|carnet d'adresses|tous les|toutes les|chaque destinataire)\b",
+        r"\ball(?:\s+[a-z0-9_-]+){0,2}\s+(?:users|contacts|records|files|messages|objects|documents|items)\b",
+    ),
+    "cross_tenant": (
+        r"\b(other|another|cross|different|neighboring|neighbouring)[ -]?(tenant|account|organization|project)\b",
+        r"\b(?:belong(?:s|ing)?\s+to|owned\s+by).{0,30}\b(?:another|other|different|neighboring|neighbouring)\s+(?:tenant|account|organization|project)\b",
+        r"\b(autre|inter|différent(?:e)?|voisin(?:e)?)[ -]?(tenant|compte|organisation|projet)\b",
+        r"\bappartenant\s+à.{0,30}\b(?:une?\s+)?autre\s+(?:tenant|compte|organisation|projet)\b",
+    ),
     "recursive": (r"\b(recursive(?:ly)?|entire subtree|all descendants|récursi(?:f|ve|vement)|tous les descendants)\b",),
-    "public": (r"\b(public|anyone|anonymous|world-readable|tout le monde|anonyme)\b",),
+    "public": (
+        r"\b(world-readable|tout le monde)\b",
+        r"\b(public access|public internet|publicly accessible|accessible to (?:the )?public|access(?:ible)? to anyone|everyone|everybody|anonymous access|accessible anonymously|anonymous visitors?|without authentication|accès public|internet public|accessible à tout le monde|tout le monde peut y accéder|accès anonyme|sans authentification)\b",
+        r"\b(visibility|scope|sharing|access|visibilité|portée|partage|accès)\b.{0,20}\b(public|publique?|anonyme)\b",
+        r"\b(?:anonymous|unauthenticated)\s+users?\b.{0,40}\b(?:can|may|able to)\s+(?:read|view|access|download)\b",
+        r"\butilisateurs?\s+(?:anonymes?|non authentifiés?)\b.{0,40}\b(?:peuvent?|pourront?)\s+(?:lire|voir|accéder|télécharger)\b",
+        r"\b(?:anonymous|unauthenticated)\s+users?\b.{0,40}\b(?:can|may|able to)\s+(?:read|view|access|download)\b",
+        r"\butilisateurs?\s+(?:anonymes?|non authentifiés?)\b.{0,40}\b(?:peuvent?|pourront?)\s+(?:lire|voir|accéder|télécharger)\b",
+    ),
 }
 
 _PRIVILEGE_PATTERNS = {
@@ -89,15 +128,15 @@ _REVERSIBLE_PATTERNS = (
     r"\b(reversible|undo|restore|recover|trash|corbeille|annuler|restaurer|récupérer)\b",
 )
 _EXTERNAL_TRANSFER_PATTERNS = (
-    r"\b(send|forward|transmit|upload|post|share|envoyer|transmettre|téléverser|partager)\b.{0,60}\b(external|remote|url|endpoint|webhook|recipient|public|externe|distant|destinataire)\b",
-    r"\b(external|remote|url|endpoint|webhook|recipient|public|externe|distant|destinataire)\b.{0,60}\b(send|forward|transmit|upload|post|share|envoyer|transmettre|téléverser|partager)\b",
+    r"\b(send|forward|transmit|relay|upload|post|share|mirror|copy|envoyer|transmettre|relayer|téléverser|partager|copi(?:er|e|es|ent|é|ée|és|ées))\b.{0,80}\b(external|remote|off-site|third-party|off-platform|outside|url|endpoint|webhook|collector|recipient|public|externe|distant|hors site|tiers|hors plateforme|collecteur|destinataire)\b",
+    r"\b(external|remote|off-site|third-party|off-platform|outside|url|endpoint|webhook|collector|recipient|public|externe|distant|hors site|tiers|hors plateforme|collecteur|destinataire)\b.{0,80}\b(send|forward|transmit|relay|upload|post|share|mirror|copy|envoyer|transmettre|relayer|téléverser|partager|copi(?:er|e|es|ent|é|ée|és|ées))\b",
 )
 _PUBLIC_EXPOSURE_PATTERNS = (
-    r"\b(make|publish|share|rendre|publier|partager)\b.{0,40}\b(public|anyone|anonymous|tout le monde|anonyme)\b",
+    r"\b(make|publish|share|expose|rendre|publier|partager|exposer)\b.{0,60}\b(public(?:ly)?|accessible to anyone|anyone|anonymous(?:ly)?|anonymous visitors?|without authentication|public(?:que)?|tout le monde|anonyme|sans authentification)\b",
 )
 
 _URL_RE = re.compile(r"https?://[^\s)>\]\"']+", re.IGNORECASE)
-_SENSITIVE_DATA = {"credentials", "personal_data", "financial_data", "location"}
+_SENSITIVE_DATA = {"credentials", "personal_data", "financial_data", "location", "sensitive_data"}
 _SENSITIVE_ACTIONS = {"delete", "execute", "authorize", "transact"}
 _SENSITIVE_SIDE_EFFECTS = {
     "destructive",
@@ -326,13 +365,52 @@ def extract_tool_semantic_facts(tool_snapshot: dict[str, Any]) -> ToolSemanticFa
             collector.add("side_effects", "external_transfer", segment)
         if _matches_any(segment.text, _PUBLIC_EXPOSURE_PATTERNS):
             collector.add("side_effects", "public_exposure", segment)
-        if segment.source == "execution" and _matches_any(
-            segment.text,
-            _RESOURCE_PATTERNS["process"],
+        if (
+            segment.source == "execution"
+            and _matches_any(segment.text, _RESOURCE_PATTERNS["process"])
+            and not _execution_is_explicitly_negated(segment.text)
         ):
             collector.add("actions", "execute", segment)
 
     action_values = {item.value for item in collector.facts("actions")}
+
+    external_destinations = collector.facts("external_destinations")
+    if "send" in action_values and external_destinations:
+        send_fact = next(
+            item for item in collector.facts("actions") if item.value == "send"
+        )
+        for evidence in send_fact.evidence:
+            collector.add(
+                "side_effects",
+                "external_transfer",
+                _TextSegment(
+                    source=evidence.source,
+                    path=evidence.path,
+                    text=evidence.excerpt,
+                    confidence=send_fact.confidence,
+                ),
+            )
+
+    public_exposure = next(
+        (
+            item
+            for item in collector.facts("side_effects")
+            if item.value == "public_exposure"
+        ),
+        None,
+    )
+    if public_exposure is not None:
+        for evidence in public_exposure.evidence:
+            collector.add(
+                "scopes",
+                "public",
+                _TextSegment(
+                    source=evidence.source,
+                    path=evidence.path,
+                    text=evidence.excerpt,
+                    confidence=public_exposure.confidence,
+                ),
+            )
     for action, side_effect in {
         "create": "state_change",
         "update": "state_change",
@@ -387,7 +465,7 @@ def extract_tool_semantic_facts(tool_snapshot: dict[str, Any]) -> ToolSemanticFa
     unknown_reasons: list[str] = []
     if not evidenced_actions:
         unknown_reasons.append("action_not_evidenced")
-    if evidenced_actions.difference({"health_check"}) and not evidenced_resources:
+    if "health_check" not in evidenced_actions and not evidenced_resources:
         unknown_reasons.append("resource_not_evidenced")
 
     return ToolSemanticFacts(
@@ -504,15 +582,121 @@ def _collect_patterns(
     segment: _TextSegment,
 ) -> None:
     for value, patterns in patterns_by_value.items():
-        if _matches_any(segment.text, patterns) and not _fact_is_ignored(
-            category,
-            value,
-            segment,
-        ):
-            collector.add(category, value, segment)
+        accepted = False
+        for pattern in patterns:
+            for match in re.finditer(pattern, segment.text, re.IGNORECASE):
+                if _match_is_non_operational(segment.text, match):
+                    continue
+                if _fact_is_ignored(category, value, segment, match=match):
+                    continue
+                collector.add(category, value, segment)
+                accepted = True
+                break
+            if accepted:
+                break
+
+
+def operational_pattern_search(pattern: str, text: str) -> re.Match[str] | None:
+    for match in re.finditer(pattern, text, re.IGNORECASE):
+        if not _match_is_non_operational(text, match):
+            return match
+    return None
 
 
 def _matches_any(text: str, patterns: Iterable[str]) -> bool:
+    return any(operational_pattern_search(pattern, text) for pattern in patterns)
+
+
+def _match_is_non_operational(text: str, match: re.Match[str]) -> bool:
+    before = text[max(0, match.start() - 120) : match.start()]
+    after = text[match.end() : min(len(text), match.end() + 50)]
+    immediate_before = before[-48:]
+    matched_text = match.group(0)
+    if re.search(
+        r"\b(?:without|sans)\b.{0,35}\b(?:execut(?:e|es|ed|ing)|run(?:s|ning)?|launch(?:es|ed|ing)?|exécut(?:er|e|es|ent|é|ée|és|ées)|lanc(?:er|e|es|ent|é|ée|és|ées))\b",
+        matched_text,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(r"\bne\s*$", immediate_before, re.IGNORECASE) and re.search(
+        r"\b(?:pas|jamais|plus)\b",
+        matched_text,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\b(?:not|never|pas|jamais)\b.{0,25}\b(?:execut(?:e|es|ed|ing)|run(?:s|ning)?|launch(?:es|ed|ing)?|exécut(?:er|e|es|ent|é|ée|és|ées)|lanc(?:er|e|es|ent|é|ée|és|ées))\b",
+        matched_text,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"(?:\b(?:does|do|did|is|are|was|were|will|would|can|could|should|must)\s+not"
+        r"|\b(?:never|without)\b|\b(?:doesn't|don't|didn't|isn't|aren't|wasn't|weren't|won't|wouldn't|can't|couldn't|shouldn't|mustn't)\b)"
+        r"(?:\s+\w+){0,3}\s*$",
+        immediate_before,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\bne\s+(?:(?:\w+)\s+){0,3}(?:pas|jamais|plus)(?:\s+(?:de|d['’]|à))?\s*$",
+        immediate_before,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(r"\bne\s+(?:\w+\s+){0,3}$", immediate_before, re.IGNORECASE) and re.match(
+        r"(?:\s+\w+){0,3}\s+(?:pas|jamais|plus)\b",
+        after,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\bn['’][a-zà-ÿ]+(?:\s+[a-zà-ÿ]+){0,3}\s+(?:pas|jamais|plus)(?:\s+(?:de|d['’]|à))?\s*$",
+        immediate_before,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\bn['’][a-zà-ÿ]+.{0,50}\b(?:pas|jamais|plus)\b.{0,50}$",
+        before,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(r"\bn['’]\s*$", immediate_before, re.IGNORECASE):
+        french_tail = text[match.start() : min(len(text), match.end() + 40)]
+        if re.search(r"\b(?:pas|jamais|plus)\b", french_tail, re.IGNORECASE):
+            return True
+    if re.search(r"\bsans(?:\s+jamais)?(?:\s+\w+){0,3}\s*$", immediate_before, re.IGNORECASE):
+        return True
+
+    sentence_before = re.split(r"[.!?\n]", before)[-1]
+    if re.search(
+        r"\b(?:documentation|docs?|guides?|manuals?|manuels?|examples?|samples?)\b"
+        r".{0,80}\b(?:about|on|regarding|concerning|explaining|describing|how\s+to|for|sur|concernant|expliquant|décrivant|comment)\b"
+        r".{0,80}$",
+        sentence_before,
+        re.IGNORECASE,
+    ):
+        return True
+    if re.search(
+        r"\b(?:documentation|docs?|guides?|manuals?|manuels?|examples?|samples?)\b"
+        r".{0,80}\b(?:contains?|mentions?|quotes?|references?|includes?|contient|contiennent|mentionne|mentionnent|cite|citent|inclut|incluent)\b"
+        r".{0,80}(?:\b(?:phrase|term|word|expression|terme|mot)\b.{0,30})?$",
+        sentence_before,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def _execution_is_explicitly_negated(text: str) -> bool:
+    patterns = (
+        r"\b(?:does|do|did|will|would|can|could|should|must)\s+not\s+(?:\w+\s+){0,3}(?:execute|run|launch|invoke)\b",
+        r"\b(?:never|without)\s+(?:\w+\s+){0,3}(?:execut(?:e|ing)|run(?:ning)?|launch(?:ing)?|invok(?:e|ing))\b",
+        r"\bn['’]\s*(?:exécute|execute|lance|invoque)\b.{0,30}\b(?:pas|jamais|plus)\b",
+        r"\bne\s+(?:\w+\s+){0,3}(?:exécute|execute|lance|invoque)\b.{0,30}\b(?:pas|jamais|plus)\b",
+        r"\bsans\s+(?:jamais\s+)?(?:exécuter|executer|lancer|invoquer)\b",
+    )
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
 
 
@@ -520,14 +704,52 @@ def _fact_is_ignored(
     category: str,
     value: str,
     segment: _TextSegment,
+    *,
+    match: re.Match[str] | None = None,
 ) -> bool:
     if category == "privileges" and value == "administrator":
         return not _administrator_privilege_evidenced(segment)
+
+    before = segment.text[: match.start()] if match is not None else ""
+    after = segment.text[match.end() :] if match is not None else ""
+    matched = match.group(0).lower() if match is not None else ""
+
+    if category == "actions" and value in {"create", "update", "delete", "send", "transact"}:
+        read_like_before = bool(
+            re.search(
+                r"\b(read(?:s|ing)?|fetch(?:es|ed|ing)?|get(?:s|ting)?|retrieve(?:s|d|ing)?|inspect(?:s|ed|ing)?|view(?:s|ed|ing)?|list(?:s|ed|ing)?|search(?:es|ed|ing)?|lire|lit|liste|consulter|rechercher)\b.{0,28}$",
+                before,
+                re.IGNORECASE,
+            )
+        )
+        nominal_after = bool(
+            re.match(
+                r"\s+(?:"
+                r"(?:payment|transaction|transfer|refund|charge|paiement|transaction|virement|remboursement|débit)\s+"
+                r"(?:status|state|history|details?|id|identifier|reference|metadata|record(?:s)?|date|policy|"
+                r"statut|état|historique|détails?|identifiant|référence|métadonnées?|enregistrements?|date|politique)"
+                r"|status|state|history|details?|id|identifier|reference|metadata|record(?:s)?|date|flag|setting|"
+                r"option|mode|field|property|policy|permission(?:s)?|access|list|result|results|information|info|"
+                r"statut|état|historique|détails?|identifiant|référence|métadonnées?|drapeau|paramètre|option|champ|"
+                r"propriété|politique|permission(?:s)?|accès|liste|résultat(?:s)?)\b",
+                after,
+                re.IGNORECASE,
+            )
+        )
+        if read_like_before and nominal_after:
+            return True
+        if value == "send" and matched.startswith("post") and (
+            re.search(r"\b(?:blog|forum|article|social)\s*$", before, re.IGNORECASE)
+            or nominal_after
+        ):
+            return True
+
     if category not in {"data_categories", "resources"} or value not in {
         "credentials",
         "secret_store",
     }:
         return False
+
     field_name = segment.path.rsplit(".", 1)[-1].lower()
     credential_field = bool(
         re.fullmatch(
@@ -535,12 +757,21 @@ def _fact_is_ignored(
             field_name,
         )
     )
-    credential_operation = bool(
-        re.search(
-            r"\b(read|access|request|collect|capture|extract|expose|return|lire|accéder|demander|collecter|extraire|exposer)\w*"
-            r".{0,50}\b(credentials?|tokens?|passwords?|api[_ -]?keys?|secrets?|identifiants?|jetons?|mots? de passe|clés? api)\b",
-            segment.text,
+    conceptual_credential = bool(
+        re.match(
+            r"\s+(?:count|length|budget|usage|limit|estimate|statistics?|policy|policies|documentation|docs?|guide|rotation|format|schema|metadata|name|type|status|state|history|counting|compte|longueur|budget|usage|limite|estimation|statistiques?|politique|documentation|guide|rotation|format|schéma|métadonnées?|nom|type|statut|état|historique)\b",
+            after,
             re.IGNORECASE,
+        )
+    )
+    if conceptual_credential and not credential_field:
+        return True
+
+    credential_operation = bool(
+        operational_pattern_search(
+            r"\b(read(?:s|ing)?|get(?:s|ting)?|fetch(?:es|ed|ing)?|retrieve(?:s|d|ing)?|obtain(?:s|ed|ing)?|acquir(?:e|es|ed|ing)|harvest(?:s|ed|ing)?|gather(?:s|ed|ing)?|access(?:es|ed|ing)?|request(?:s|ed|ing)?|collect(?:s|ed|ing)?|capture(?:s|d|ing)?|extract(?:s|ed|ing)?|expose(?:s|d|ing)?|return(?:s|ed|ing)?|store(?:s|d|ing)?|retain(?:s|ed|ing)?|save(?:s|d|ing)?|lire|lit|récup(?:érer|ère|ères|èrent|éré|érée|érés|érées)|obtenir|obtiens|obtient|obtenez|acqu(?:érir|iert|iers|érez)|récolt(?:er|e|es|ent|é|ée|és|ées)|rassembl(?:er|e|es|ent|é|ée|és|ées)|accéder|demander|collecter|extraire|exposer|conserver|sauvegard(?:er|e|es|ent|é|ée|és|ées)|stock(?:er|e|es|ent|é|ée|és|ées))\w*"
+            r".{0,70}\b(credentials?|tokens?|passwords?|api[_ -]?keys?|secrets?|authentication material|auth material|bearer credentials?|identifiants?|jetons?|mots? de passe|clés? api|matériel d'authentification)\b",
+            segment.text,
         )
     )
     if not credential_field and not credential_operation:

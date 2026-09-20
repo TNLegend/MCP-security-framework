@@ -50,6 +50,13 @@ test("inventory hides mutating server controls from VIEWER", () => {
   assert.match(source, /\{canManageServer && isOAuth && server\.oauth_status === "CONNECTED" && \(/);
 });
 
+test("inventory administrative modals close on Escape while idle", () => {
+  assert.match(source, /window\.addEventListener\("keydown", handleEscape\)/);
+  assert.match(source, /event\.key !== "Escape" \|\| archiving \|\| trustChanging/);
+  assert.match(source, /setArchiveDialog\(null\)/);
+  assert.match(source, /setTrustDialog\(null\)/);
+});
+
 test("inventory exposes Build source location for large MCP inventories", () => {
   assert.match(source, /fetchBuildSourceBindings/);
   assert.match(source, /Search name, endpoint, local path, Git repository/);

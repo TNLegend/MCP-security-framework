@@ -610,6 +610,9 @@ def _project_security_schema_node(node: dict[str, Any]) -> dict[str, Any]:
         isinstance(node_type, list) and "object" in node_type
     )
     for key, value in node.items():
+        if key == "x-mcp-header":
+            if isinstance(value, str) and PATH_TOKEN_PATTERN.fullmatch(value):
+                continue
         if key == "additionalProperties" and object_node:
             continue
         if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):

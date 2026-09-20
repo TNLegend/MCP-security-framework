@@ -20,7 +20,7 @@ from common.mcp_endpoint import (
 )
 from app.api.routes_inventory import is_local_lab_endpoint, upsert_server
 from app.schemas.inventory import DiscoveryImportPayload
-from app.services.mcp_discovery import discover_http_mcp_server
+from app.services.mcp_discovery import discover_http_mcp_server, send_json_rpc
 from proxy.http_mcp_client import MCPHttpClient, MCPHttpError
 from proxy.protocol_profiles import MODERN_PROFILE_ID, MODERN_PROTOCOL_VERSION
 
@@ -225,6 +225,52 @@ class MCPEndpointPolicyTests(unittest.TestCase):
 
         self.assertIs(server, existing)
         self.assertEqual(server.trust_status, "unknown")
+
+    def test_modern_discovery_accepts_bounded_sse_jsonrpc_response(self) -> None:
+        class SSEHandler(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                content_length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(content_length) if content_length else b"{}"
+                import json
+                request_payload = json.loads(body.decode("utf-8"))
+                response_payload = json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_payload.get("id"),
+                        "result": {"tools": []},
+                    },
+                    separators=(",", ":"),
+                )
+                event = f"event: message\ndata: {response_payload}\n\n".encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(event)))
+                self.end_headers()
+                self.wfile.write(event)
+
+            def log_message(self, format, *args):  # noqa: A003
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), SSEHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            endpoint = f"http://127.0.0.1:{server.server_address[1]}/mcp"
+            result = send_json_rpc(
+                url=endpoint,
+                payload={
+                    "jsonrpc": "2.0",
+                    "id": "sse-probe",
+                    "method": "tools/list",
+                    "params": {},
+                },
+            )
+            self.assertEqual(result["status"], 200)
+            self.assertEqual(result["body"]["result"]["tools"], [])
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
 
     def test_runtime_http_client_does_not_follow_redirects(self) -> None:
         class RedirectHandler(BaseHTTPRequestHandler):

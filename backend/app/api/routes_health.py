@@ -28,13 +28,19 @@ def readiness_check(db: Session = Depends(get_db)):
     manager = LocalRuntimeManager()
     runtime = manager.status(db=db, backend_current_process=True)
     identity = manager.identity_provider_status()
-    ready = runtime.ready and identity.status == "healthy"
+    mcp_lab = manager.mcp_lab_status()
+    ready = (
+        runtime.ready
+        and identity.status == "healthy"
+        and mcp_lab.status == "healthy"
+    )
     component_statuses = {
         "backend": runtime.backend.status,
         "database": runtime.database.status,
         "opa": runtime.opa.status,
         "gateway": runtime.gateway.status,
         "identity_provider": identity.status,
+        "mcp_lab": mcp_lab.status,
     }
     return JSONResponse(
         status_code=200 if ready else 503,
@@ -82,7 +88,12 @@ def local_runtime_status(
     _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
     db: Session = Depends(get_db),
 ):
-    return LocalRuntimeManager().status(
+    manager = LocalRuntimeManager()
+    payload = manager.status(
         db=db,
         backend_current_process=True,
     ).as_dict(include_ownership=False)
+    payload["mcp_lab"] = manager.mcp_lab_status().as_dict()
+    payload["mcp_lab"].pop("managed_by_framework", None)
+    payload["ready"] = payload["ready"] and payload["mcp_lab"]["status"] == "healthy"
+    return payload

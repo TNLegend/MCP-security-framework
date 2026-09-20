@@ -679,6 +679,17 @@ class MCPGateway:
             }
         )
         if not proxy_result.get("executed"):
+            if proxy_result.get("status") == "error":
+                return _jsonrpc_error(
+                    payload.get("id"),
+                    -32004,
+                    "upstream_execution_failed",
+                    502,
+                    data={
+                        "execution_status": proxy_result.get("execution_status"),
+                        "rule_id": proxy_result.get("rule_id"),
+                    },
+                )
             return _jsonrpc_error(
                 payload.get("id"),
                 -32003,

@@ -758,7 +758,8 @@ class IntegratedDualEraGatewayE2ETests(unittest.TestCase):
 
             response = self._tool_call(MODERN_PROFILE_ID, "alice@example.com")
 
-            self.assertEqual(response.status_code, 403)
+            self.assertEqual(response.status_code, 502)
+            self.assertEqual(response.json()["error"]["message"], "upstream_execution_failed")
             self.assertEqual(DualEraFallbackTrapHandler.modern_call_count, 1)
             self.assertEqual(DualEraFallbackTrapHandler.legacy_initialize_count, 0)
             self.assertEqual(DualEraFallbackTrapHandler.legacy_call_count, 0)

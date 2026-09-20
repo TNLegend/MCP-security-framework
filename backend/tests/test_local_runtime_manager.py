@@ -170,6 +170,45 @@ class LocalRuntimeManagerTests(unittest.TestCase):
         self.assertFalse(started[0][1]["shell"])
         manager.shutdown()
 
+    def test_existing_healthy_mcp_lab_is_reused(self) -> None:
+        started = []
+        manager = LocalRuntimeManager(
+            process_starter=lambda *args, **kwargs: started.append(args) or FakeProcess(),
+            readiness_checker=lambda url: "9000/health" in url,
+        )
+
+        status = manager.ensure_mcp_lab(auto_start=True)
+
+        self.assertEqual(status.status, "healthy")
+        self.assertFalse(status.managed_by_framework)
+        self.assertEqual(started, [])
+
+    def test_missing_mcp_lab_launches_trusted_entrypoint(self) -> None:
+        started = []
+        ready = {"mcp_lab": False}
+
+        def start(command, **kwargs):  # noqa: ANN001
+            started.append((command, kwargs))
+            ready["mcp_lab"] = True
+            return FakeProcess()
+
+        manager = LocalRuntimeManager(
+            process_starter=start,
+            readiness_checker=lambda url: ready["mcp_lab"] and "9000/health" in url,
+            sleeper=lambda _: None,
+            python_executable=Path("python.exe"),
+        )
+
+        status = manager.ensure_mcp_lab(auto_start=True)
+
+        self.assertEqual(status.status, "healthy")
+        self.assertTrue(status.managed_by_framework)
+        self.assertEqual(started[0][0][:4], ["python.exe", "-m", "uvicorn", "server:app"])
+        self.assertIn("mcp-lab", started[0][0][5])
+        self.assertEqual(started[0][0][-2:], ["--port", "9000"])
+        self.assertFalse(started[0][1]["shell"])
+        manager.shutdown()
+
     def test_missing_local_identity_provider_launches_trusted_entrypoint(self) -> None:
         started = []
         ready = {"identity_provider": False}
@@ -300,7 +339,7 @@ class LocalRuntimeManagerTests(unittest.TestCase):
         self.assertFalse(process.killed)
 
     def test_required_framework_child_death_is_detected_and_siblings_are_cleaned(self) -> None:
-        for failed_component in ("opa", "gateway", "backend"):
+        for failed_component in ("opa", "gateway", "backend", "mcp_lab"):
             with self.subTest(component=failed_component):
                 failed = FakeProcess()
                 failed.exit(7)
@@ -465,6 +504,9 @@ class LocalRuntimeManagerTests(unittest.TestCase):
             def ensure_identity_provider(self, *, auto_start):
                 return healthy
 
+            def ensure_mcp_lab(self, *, auto_start):
+                return healthy
+
             def start_backend(self):
                 return healthy
 
@@ -511,6 +553,9 @@ class LocalRuntimeManagerTests(unittest.TestCase):
                 return healthy
 
             def ensure_identity_provider(self, *, auto_start):
+                return healthy
+
+            def ensure_mcp_lab(self, *, auto_start):
                 return healthy
 
             def start_backend(self):

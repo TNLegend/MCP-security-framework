@@ -274,6 +274,36 @@ class SupportedSchemaProfileTests(unittest.TestCase):
         self.assertEqual(send_email["tool_specific_python_authorization_loc"], 0)
         self.assertEqual(send_email["tool_specific_rego_loc"], 0)
 
+    def test_security_projection_strips_bounded_x_mcp_header_metadata(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "x-mcp-header": "owner",
+                },
+                "repo": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "x-mcp-header": "repo",
+                },
+            },
+            "required": ["owner", "repo"],
+            "additionalProperties": False,
+        }
+
+        projected = security_schema_projection(schema)
+
+        self.assertNotIn("x-mcp-header", projected["properties"]["owner"])
+        self.assertNotIn("x-mcp-header", projected["properties"]["repo"])
+        self.assertEqual(
+            SupportedSchemaProfileV1.validate(projected),
+            (("owner",), ("repo",)),
+        )
+        with self.assertRaisesRegex(SecurityModelError, "schema_x_mcp_header_unsupported"):
+            SupportedSchemaProfileV1.validate(schema)
+
     def test_unsupported_or_unbounded_schema_is_rejected(self):
         for schema in (
             {"type": "object", "properties": {}, "additionalProperties": True},

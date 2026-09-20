@@ -28,6 +28,21 @@ function ToolAnalysis({
   const [activeTab, setActiveTab] = useState("overview");
   const toolPagination = usePagination(tools, String(tools.length));
 
+  useEffect(() => {
+    if (!reviewDialog) {
+      return undefined;
+    }
+    function handleEscape(event) {
+      if (event.key !== "Escape" || busy) {
+        return;
+      }
+      event.preventDefault();
+      setReviewDialog(null);
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [busy, reviewDialog]);
+
   const toolsById = useMemo(() => new Map(tools.map((tool) => [tool.id, tool])), [tools]);
   const serversById = useMemo(
     () => new Map(servers.map((server) => [server.id, server])),

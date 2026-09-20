@@ -38,6 +38,12 @@ test("tool evidence bundle is owned by the selected tool and reloads on same-too
   assert.match(source, /setBundle\(null\)/);
 });
 
+test("tool review modal closes on Escape while idle", () => {
+  assert.match(source, /window\.addEventListener\("keydown", handleEscape\)/);
+  assert.match(source, /event\.key !== "Escape" \|\| busy/);
+  assert.match(source, /setReviewDialog\(null\)/);
+});
+
 test("tool evidence is organized into findings semantic AI history and raw tabs", () => {
   assert.match(source, /\["findings", "Findings"\]/);
   assert.match(source, /\["semantic", "Semantic"\]/);

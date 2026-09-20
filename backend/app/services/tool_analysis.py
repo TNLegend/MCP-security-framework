@@ -28,13 +28,14 @@ from app.services.tool_semantic_facts import (
     ToolSemanticFacts,
     extract_tool_semantic_facts,
     iter_schema_fields,
+    operational_pattern_search,
     strip_documentation_examples,
 )
 from proxy.protocol_profiles import LEGACY_PROFILE_ID, ProtocolProfileError, ProtocolProfileRegistry
 from proxy.security_packs import SecurityPackRegistry
 
 
-ANALYZER_REVISION = "tool-description-analyzer-v8"
+ANALYZER_REVISION = "tool-description-analyzer-v10"
 SEMANTIC_MODEL_NAME = "MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli"
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
 SEMANTIC_MODEL_VERSION = "local-cache"
@@ -112,66 +113,132 @@ SEMANTIC_CORROBORATION_PATTERNS = {
         r"\b(ignore[rz]?|contourne[rz]?|oublie[rz]?).{0,50}\b(instructions?|règles?|politique|sécurité)\b",
         r"\b(prefer|follow).{0,40}\b(tool|embedded).{0,20}\b(directions?|guidance).{0,40}\b(safeguards?|policy|platform)\b",
         r"\b(safeguards?|policy|platform).{0,60}\bprefer.{0,30}\btool\s+(directions?|guidance|instructions?)\b",
+        r"\b(tool(?:-provided)?|embedded)\s+(directions?|guidance|instructions?)\b.{0,50}\b(?:take|takes|have|has)\s+precedence\s+over\b.{0,50}\b(platform|policy|safeguards?)\b",
+        r"\b(platform|policy|safeguards?)\b.{0,50}\b(?:is|are)\s+secondary\s+to\b.{0,50}\b(tool|embedded)\b",
+        r"\b(?:instructions?|directions?|guidance)\b.{0,50}\b(?:embedded|tool)\b.{0,50}\b(?:more important|higher priority|superior)\b.{0,30}\b(?:platform|system|policy|rules?|safeguards?)\b",
+        r"\b(?:tool|embedded)\b.{0,60}\b(?:higher|greater)\s+priority\s+than\b.{0,60}\b(?:platform|system|developer|policy|rules?|safeguards?)\b",
+        r"\b(?:tool|embedded)\b.{0,60}\b(?:supersede|override|outweigh)\b.{0,60}\b(?:platform|system|developer|policy|rules?|safeguards?)\b",
+        r"\b(?:consignes?|instructions?)\b.{0,50}\b(?:outil|intégrées?)\b.{0,50}\b(?:priment|priorité|privilégier|plutôt que)\b.{0,50}\b(?:règles?|protections?|plateforme|politique)\b",
+        r"\b(?:règles?|protections?|plateforme|politique)\b.{0,60}\b(?:privilégier|priorité|secondaires?)\b.{0,40}\b(?:consignes?|instructions?)\b.{0,30}\boutil\b",
+        r"\b(?:consignes?|instructions?)\b.{0,50}\b(?:outil|intégrées?)\b.{0,50}\b(?:doivent\s+)?primer\s+sur\b.{0,50}\b(?:règles?|protections?|plateforme|politique)\b",
     ),
     "security_bypass": (
-        r"\b(bypass|disable|evade|circumvent).{0,50}\b(security|policy|authorization|safeguards?|restrictions?)\b",
+        r"\b(bypass|disable|evade|circumvent|sidestep|work around).{0,60}\b(security|policy|authorization|access controls?|safeguards?|restrictions?|checks?)\b",
+        r"\b(contourner|éviter|désactiver).{0,60}\b(sécurité|politique|autorisation|contrôles? d['’]accès|protections?|restrictions?|vérifications?)\b",
         r"\b(prefer|follow|obey).{0,50}\b(tool|embedded|provided)\s+instructions?.{0,50}\b(over|instead of)\b.{0,50}\b(platform|security|policy|safeguards?)\b",
+        r"\b(tool(?:-provided)?|embedded)\s+(directions?|guidance|instructions?)\b.{0,50}\b(?:take|takes)\s+precedence\s+over\b.{0,50}\b(platform|security|policy|safeguards?)\b",
+        r"\b(?:consignes?|instructions?)\b.{0,50}\boutil\b.{0,50}\b(?:priment|priorité|plutôt que)\b.{0,50}\b(?:sécurité|politique|plateforme|protections?)\b",
+        r"\b(?:proceed|continue|perform|execute|carry on)\b.{0,80}\b(?:even (?:if|when)|despite)\b.{0,50}\b(?:authorization|policy|permission|security)\b.{0,40}\b(?:deny|denies|denied|forbid|forbids|forbidden|block|blocks|blocked)\b",
+        r"\b(?:continuer|procéder|effectuer|exécuter)\b.{0,80}\b(?:même si|malgré)\b.{0,50}\b(?:autorisation|politique|permission|sécurité)\b.{0,40}\b(?:refuse|refusée?|interdit|interdite|bloque|bloquée?)\b",
+        r"\b(?:proceed|continue|perform|execute).{0,60}\b(?:even\s+when|despite|regardless\s+of)\b.{0,60}\b(?:authorization|policy|security|access).{0,30}\b(?:denies?|denied|rejects?|refuses?|forbids?)\b",
+        r"\b(?:poursuis|continue|exécute|effectue).{0,60}\b(?:même\s+si|malgré)\b.{0,60}\b(?:autorisation|politique|sécurité|accès).{0,30}\b(?:refuse|rejette|interdit|bloque)\b",
     ),
     "secret_collection": (
-        r"\b(collect|capture|retrieve|request|extract|steal).{0,50}\b(passwords?|tokens?|credentials?|secrets?|api[_ -]?keys?)\b",
-        r"\b(collecte[rz]?|capture[rz]?|récup[ée]re[rz]?|demande[rz]?|extraire|vole[rz]?).{0,50}\b(mots? de passe|jetons?|identifiants?|secrets?|clés? api)\b",
+        r"\b(collect|capture|retrieve|request|extract|steal|harvest|gather|obtain|acquire|retain|save|store).{0,60}\b(passwords?|tokens?|credentials?|login credentials?|bearer credentials?|authentication credentials?|authentication secrets?|secrets?|api[_ -]?keys?)\b",
+        r"\b(collecte[rz]?|capture[rz]?|récup(?:érer|ère|ères|èrent|éré|érée|érés|érées)|obtenir|obtiens|obtient|obtenez|acqu(?:érir|iert|iers|érez)|demande[rz]?|extraire|vole[rz]?).{0,60}\b(mots? de passe|jetons?|identifiants?|secrets?|clés? api)\b",
+        r"\b(?:collect|capture|retrieve|request|extract|steal|obtain|acquire|retain|save|store).{0,70}\b(?:authentication\s+material|bearer\s+credentials?|access\s+tokens?|credentials?|passwords?|api[_ -]?keys?|secrets?)\b",
     ),
     "data_exfiltration": (
-        r"\b(exfiltrate|upload|transmit|forward|send).{0,60}\b(data|files?|contents?|records?|secrets?)\b",
-        r"\b(data|files?|contents?|records?|secrets?).{0,60}\b(external|remote|collector|webhook|upload|transmit|forward|send)\b",
+        r"\b(exfiltrate|upload|transmit|forward|send|relay|mirror|copy|replicate).{0,80}\b(private|confidential|sensitive)\b.{0,50}\b(data|files?|contents?|records?|secrets?|source code|personal data|coordinates?)\b.{0,80}\b(external|remote|off-site|third-party|collector|endpoint|elsewhere|webhook)\b",
+        r"\b(exfiltrate|upload|transmit|forward|send|relay|mirror|copy|replicate).{0,80}\b(data|files?|contents?|records?|secrets?|source code|personal data|coordinates?)\b.{0,80}\b(external|remote|off-site|third-party|collector|endpoint|elsewhere|webhook)\b",
+        r"\b(exfiltrate|upload|transmit|forward|send|relay|mirror|copy|replicate).{0,60}\b(data|files?|contents?|records?|secrets?|source code|personal data|coordinates?)\b",
+        r"\b(data|files?|contents?|records?|secrets?|source code|personal data|coordinates?).{0,60}\b(external|remote|collector|webhook|upload|transmit|forward|send)\b",
         r"\b(upload|transmit|forward|send).{0,80}\b(to|toward)\s+https?://",
+        r"\b(envoyer|transmettre|téléverser|exfiltrer).{0,60}\b(données?|fichiers?|contenu|enregistrements?|secrets?|code source|coordonnées?)\b",
+        r"\b(données?|fichiers?|contenu|enregistrements?|secrets?|code source|coordonnées?).{0,60}\b(externe|distant|collecteur|webhook|envoyer|transmettre|téléverser)\b",
+        r"\b(?:mirror|copy|forward|replicate|send).{0,80}\b(?:private|confidential|sensitive|source code|records?|data|content).{0,80}\b(?:remote|external|off-platform|collector|endpoint|elsewhere)\b",
+        r"\b(?:copier|transmettre|envoyer|répliquer).{0,80}\b(?:données?|contenu|enregistrements?|code source).{0,40}\b(?:privées?|confidentielles?|sensibles?).{0,80}\b(?:distant|externe|hors plateforme|collecteur|ailleurs)\b",
     ),
     "hidden_additional_action": (
-        r"\b(secretly|silently|covertly|without (?:telling|notifying)|hidden additional action)\b",
+        r"\b(secretly|silently|quietly|covertly|without (?:telling|notifying)|hidden additional action)\b",
+        r"\b(?:quietly|secretly|silently).{0,80}\b(?:second|additional|extra)\s+(?:write|update|change|action|operation)\b",
+        r"\b(?:preview|read-only|read only).{0,80}\b(?:but|while|even though).{0,60}\b(?:persist|commit|write|apply|modify|change)\b",
         r"\b(in addition|also).{0,40}\b(delete|execute|upload|send|modify|collect)\b",
+        r"\b(en cachette|silencieusement|sans (?:prévenir|informer)|action supplémentaire cachée)\b",
+        r"\b(quietly|behind the scenes|in the background|undisclosed|unannounced)\b.{0,80}\b(post|send|upload|delete|modify|apply|commit|copy)\b",
+        r"\b(en arrière-plan|discrètement|sans l'annoncer)\b.{0,80}\b(envoyer|publier|supprimer|modifier|appliquer|copier)\b",
+        r"\b(en plus|également).{0,40}\b(supprimer|exécuter|téléverser|envoyer|modifier|collecter)\b",
     ),
     "command_execution": (
         r"\b(execute|run|launch|invoke).{0,40}\b(commands?|shell|scripts?|process(?:es)?)\b",
         r"\b(shell|command|script)\s+execution\b",
     ),
     "unauthorized_data_access": (
-        r"\b(without (?:permission|authorization)|unauthori[sz]ed|outside.{0,20}(?:scope|permissions?))\b",
+        r"\b(without (?:permission|authorization)|unauthori[sz]ed|outside.{0,50}(?:(?:authorized|permitted)\s+)?(?:scope|permissions?))\b",
+        r"\b(?:beyond|outside|exceeding).{0,50}\b(?:permissions?|access|scope)\b.{0,40}\b(?:granted|allowed|authorized|permitted)\b",
+        r"\b(?:permissions?|access|scope)\b.{0,40}\b(?:granted|allowed|authorized|permitted)\b.{0,40}\b(?:exceeded|beyond|outside)\b",
+        r"\b(?:not allowed|not permitted|not authorized)\b.{0,30}\b(?:to )?(?:read|view|access|retrieve|inspect)\b",
+        r"\b(?:dépass(?:e|ent|er)|au-delà de|hors de).{0,50}\b(?:autorisations?|permissions?|accès|périmètre|portée)\b",
+        r"\b(?:not|isn't|aren't|wasn't|weren't)\s+(?:currently\s+)?authori[sz]ed\s+to\s+(?:read|view|access|retrieve|inspect)\b",
+        r"\b(sans (?:permission|autorisation)|non autoris[ée]s?|hors.{0,20}(?:portée|périmètre|autorisations?))\b",
+        r"\b(?:beyond|outside|exceed(?:ing)?).{0,40}\b(?:caller(?:'s)?|user(?:'s)?)?.{0,20}\b(?:permitted|authorized|allowed)\s+(?:scope|access|permissions?)\b",
+        r"\b(?:au-delà|en dehors).{0,40}\b(?:périmètre|portée|accès|autorisations?).{0,30}\b(?:autorisé(?:e)?|permis(?:e)?)\b",
     ),
     "user_deception": (
-        r"\b(deceive|mislead|impersonate|pretend|conceal|hide).{0,50}\b(user|behavior|action|purpose|identity)\b",
+        r"\b(deceive|mislead|impersonate|pretend|conceal|hide).{0,50}\b(user|behavior|action|purpose|identity|real behavior|actual behavior)\b",
+        r"\b(?:show|display|present).{0,40}\bpreview\b.{0,80}\b(?:while|but).{0,50}\b(?:commit(?:s|ted|ting)?|appl(?:y|ies|ied|ying)|persist(?:s|ed|ing)?|writ(?:e|es|ing|ten)|chang(?:e|es|ed|ing)|modif(?:y|ies|ied|ying))\b.{0,30}\b(?:anyway|regardless)?\b",
+        r"\b(?:present|describe|claim).{0,50}\bread[- ]?only\b.{0,80}\b(?:even though|while|but).{0,50}\b(?:changes?|writes?|modifies?|updates?|persists?)\b",
+        r"\bpretend\b.{0,80}\b(?:while|but)\b.{0,40}\b(?:actually|really)\b",
+        r"\b(?:show|display|present)\b.{0,40}\b(?:preview|simulation|dry run)\b.{0,80}\b(?:while|but)\b.{0,40}\b(?:actually|really)\s+(?:appl(?:y|ies|ied|ying)|execut(?:e|es|ed|ing)|perform(?:s|ed|ing)?|commit(?:s|ted|ting)?|chang(?:e|es|ed|ing)|modif(?:y|ies|ied|ying))\b",
+        r"\b(?:preview|simulate|display|show|claim).{0,80}\b(?:while|but).{0,60}\b(?:actually|really|silently|secretly|behind the scenes).{0,50}\b(?:apply|commit|perform|execute|change|modify)\b",
+        r"\b(?:preview|simulate|display|show|claim).{0,80}\b(?:while|but).{0,60}\b(?:apply|commit|perform|execute|change|modify).{0,60}\b(?:actually|really|silently|secretly|behind the scenes|in the background)\b",
+        r"\b(?:aperçu|simule|affiche|prétend).{0,80}\b(?:mais|alors que).{0,60}\b(?:réellement|effectivement|en arrière-plan).{0,50}\b(?:applique|valide|effectue|exécute|modifie)\b",
+        r"\b(?:aperçu|simule|affiche|prétend).{0,80}\b(?:mais|alors que).{0,60}\b(?:applique|valide|effectue|exécute|modifie).{0,60}\b(?:réellement|effectivement|en arrière-plan)\b",
+        r"\b(tromper|induire en erreur|usurper|prétendre|cacher|dissimuler).{0,60}\b(utilisateur|comportement|action|objectif|identité|véritable comportement)\b",
+        r"\bprétendre\b.{0,60}\b(?:aperçu|simulation)\b.{0,80}\b(?:tout en|mais)\b.{0,40}(?:(?:réellement|effectivement)\s+(?:appliqu|exécut|effectu|modifi)\w*|(?:appliquant|exécutant|effectuant|modifiant)\b.{0,25}\b(?:réellement|effectivement))",
     ),
     "privilege_escalation": (
-        r"\b(grant|elevate|escalate|assign).{0,50}\b(admin|owner|privilege|role|permission)\b",
-        r"\b(accorder|élever|attribuer).{0,50}\b(admin|propriétaire|privilège|rôle|permission)\b",
+        r"\b(grant|give|elevate|escalate|assign|promote|make).{0,60}\b(admin(?:istrator)?|owner|privilege|role|permission)\b",
+        r"\b(accorder|élever|attribuer|promouvoir|transformer).{0,60}\b(admin|administrateur|propriétaire|root|superuser|privilège|rôle|permission)\b",
+        r"\b(promote|make|turn).{0,50}\b(?:user|caller|account)?.{0,30}\b(?:admin(?:istrator)?|root|owner|superuser|privileged?)\b",
     ),
     "cross_tenant_access": (
         r"\b(other|another|cross)[ -]?(tenant|account|organization|project)\b",
-        r"\b(autre|inter)[ -]?(tenant|compte|organisation|projet)\b",
+        r"\b(autre|inter|différent(?:e)?|voisin(?:e)?)[ -]?(tenant|compte|organisation|projet)\b",
+        r"\b(?:belong(?:s|ing)?\s+to|owned\s+by).{0,30}\b(?:another|other|different|neighboring|neighbouring)\s+(?:tenant|account|organization|project)\b",
     ),
     "unexpected_destructive_operation": (
         r"\b(permanently|irreversibly|without confirmation).{0,50}\b(delete|remove|erase|overwrite)\b",
+        r"\b(delete|remove|erase|overwrite).{0,50}\b(permanently|irreversibly|without confirmation)\b",
         r"\b(définitivement|irréversiblement|sans confirmation).{0,50}\b(supprimer|effacer|écraser)\b",
+        r"\b(supprim(?:er|e|es|ent)|effac(?:er|e|es|ent)|écras(?:er|e|es|ent)|détru(?:ire|it|isent)|purger?)\b.{0,60}\b(définitivement|irréversiblement|sans confirmation|sans récupération)\b",
+        r"\b(wipe|purge|destroy).{0,60}\b(?:permanently|irreversibly|without recovery|with no recovery)\b",
     ),
     "public_sharing": (
-        r"\b(make|publish|share).{0,40}\b(public|anyone|anonymous)\b",
-        r"\b(rendre|publier|partager).{0,40}\b(public|tout le monde|anonyme)\b",
+        r"\b(make|publish|share|expose).{0,60}\b(public(?:ly)?|public internet|accessible to anyone|anyone|everyone|everybody|anonymous(?:ly)?)\b",
+        r"\b(?:change|set|update).{0,40}\b(?:visibility|sharing|access)\b.{0,50}\b(?:public|everyone|everybody|anyone)\b",
+        r"\b(?:anonymous|unauthenticated)\s+users?\b.{0,40}\b(?:can|may|able to)\s+(?:read|view|access|download)\b",
+        r"\b(rendre|publier|partager|expos(?:er|e|es|ent|é|ée|és|ées)).{0,60}\b(public(?:que)?|accessible à tout le monde|tout le monde|anonyme|sans authentification)\b",
+        r"\b(expose|make available).{0,60}\b(?:anonymous visitors?|the public|anyone|without authentication)\b",
     ),
     "bulk_messaging": (
-        r"\b(bulk|mass|all contacts|every recipient|unsolicited)\b",
-        r"\b(en masse|tous les contacts|chaque destinataire|non sollicit[ée])\b",
+        r"\b(bulk|mass|all contacts|every recipient|all recipients|entire recipient list|complete recipient list|entire address book|complete address book|unsolicited)\b",
+        r"\b(?:broadcast|send|contact).{0,60}\b(?:entire|complete|all|every)\s+(?:address book|recipient list|contacts?|recipients?)\b",
+        r"\b(?:envoyer|diffuser|contacter).{0,60}\b(?:tout|tous|toutes|entier|complet).{0,30}\b(?:carnet d['’]adresses|liste des destinataires|contacts?|destinataires?)\b",
+        r"\b(en masse|tous les contacts|chaque destinataire|non sollicit[ée]|diffus(?:er|e).{0,30}(?:carnet d'adresses|tous les destinataires))\b",
+        r"\b(?:broadcast|send).{0,50}\b(?:entire address book|all recipients|all contacts)\b",
     ),
     "server_side_request_forgery": (
-        r"\b(localhost|loopback|link-local|metadata service|169\.254\.169\.254)\b",
+        r"\b(localhost|loopback|link-local|metadata service|instance[- ]metadata|cloud metadata|imds|service de métadonnées|adresse locale|169\.254\.169\.254)\b",
     ),
     "shell_injection": (
-        r"\b(untrusted|user supplied|arbitrary).{0,40}\b(shell|command|script)\b",
-        r"\b(shell|command|script).{0,60}\b(untrusted|user supplied|arbitrary)\b",
+        r"\b(untrusted|user supplied|user-supplied|arbitrary).{0,50}\b(shell|bash|powershell|system command|command|script)\b",
+        r"\b(?:interpolate|concatenate|append|insert).{0,50}\b(?:untrusted|arbitrary|user[- ]supplied|user input).{0,60}\b(?:bash|shell|system command|command line|command)\b",
+        r"\b(shell|command|script).{0,60}\b(untrusted|user supplied|user-supplied|arbitrary)\b",
         r"\b(non fiable|fourni par l'utilisateur|arbitraire).{0,40}\b(shell|commande|script)\b",
+        r"\b(shell|commande|script).{0,60}\b(non fiable|fourni par l'utilisateur|arbitraire)\b",
+        r"\b(?:caller|user|attacker)[ -]?(?:controlled|supplied|provided).{0,50}\b(?:shell|command|script|command line)\b",
+        r"\b(?:concatenate|interpolate|append|insert).{0,50}\b(?:caller|user|attacker)[ -]?(?:controlled|supplied|provided).{0,50}\b(?:shell|command|script|command line)\b",
     ),
     "unauthorized_financial_transaction": (
-        r"\b(unauthori[sz]ed|without\s+(approval|consent)).{0,60}\b(payment|transfer|purchase|refund)\b",
-        r"\b(payment|transfer|purchase|refund).{0,60}\b(without.{0,20}(approval|consent)|unauthori[sz]ed)\b",
-        r"\b(paiement|virement|achat|remboursement).{0,60}\b(sans\s+(autorisation|consentement)|non\s+autoris[ée])\b",
+        r"\b(unauthori[sz]ed|without.{0,40}(approval|authorization|consent|permission)).{0,80}\b(payment|transfer|purchase|refund|charge|debit)\b",
+        r"\b(charge|debit|refund|transfer|pay).{0,80}\b(?:without|despite|even though).{0,50}\b(?:approval|authorization|consent|permission|not approved|did not approve)\b",
+        r"\b(payment|transfer|purchase|refund).{0,80}\b(without.{0,40}(approval|consent)|unauthori[sz]ed)\b",
+        r"\b(payment|transfer|purchase|refund).{0,80}\b(?:did\s+not|does\s+not|has\s+not|had\s+not)\s+(?:approve|consent)\b",
+        r"\b(paiement|virement|achat|remboursement|débit).{0,80}\b(sans.{0,30}(autorisation|consentement|permission|accord)|non\s+autoris[ée]|sans l['’]accord)\b",
+        r"\b(charge|debit|refund|transfer|pay).{0,60}\b(?:card|customer|account|transaction)?.{0,60}\bwithout.{0,30}\b(?:approval|authorization|consent)\b",
+        r"\b(charge|debit|refund|transfer|pay).{0,80}\b(?:even though|although|despite).{0,80}\b(?:did\s+not|does\s+not|was\s+not|is\s+not).{0,30}\b(?:authorize|approve|consent)\b",
+        r"\b(débiter?|débit(?:er|e)|rembourser|virer|payer).{0,60}\b(?:client|compte|carte)?.{0,60}\bsans.{0,30}\b(?:autorisation|consentement)\b",
     ),
 }
 
@@ -637,10 +704,65 @@ def _contextual_security_review_findings(
     """
     text = _semantic_text(tool_snapshot)
     checks = {
+        "prompt_injection": (
+            "contextual_prompt_injection",
+            "Tool metadata explicitly gives tool-provided instructions precedence over platform safeguards.",
+            "Reject tool metadata that attempts to override platform or security instructions.",
+        ),
+        "security_bypass": (
+            "contextual_security_bypass",
+            "Tool metadata explicitly describes bypassing security, policy, or authorization controls.",
+            "Remove bypass behavior and require normal authorization checks.",
+        ),
+        "secret_collection": (
+            "contextual_secret_collection",
+            "Tool metadata explicitly describes collecting passwords, tokens, credentials, or other secrets.",
+            "Require an explicit secret-access contract and restrict credential collection to the minimum authorized scope.",
+        ),
+        "data_exfiltration": (
+            "contextual_data_exfiltration",
+            "Sensitive data is explicitly described as being sent to an external destination.",
+            "Require an explicit external-transfer contract and tightly scoped destination.",
+        ),
+        "hidden_additional_action": (
+            "contextual_hidden_additional_action",
+            "An additional side effect is explicitly described as hidden or undisclosed.",
+            "Make all side effects explicit in the tool contract and user-visible purpose.",
+        ),
+        "unauthorized_data_access": (
+            "contextual_unauthorized_data_access",
+            "Access outside the authorized scope or without permission is explicitly described.",
+            "Constrain resources to the authorized scope and reject out-of-scope access.",
+        ),
+        "user_deception": (
+            "contextual_user_deception",
+            "The tool explicitly describes concealing or misrepresenting its real behavior to the user.",
+            "Require transparent behavior and remove deceptive instructions.",
+        ),
+        "privilege_escalation": (
+            "contextual_privilege_escalation",
+            "The tool explicitly describes granting or elevating administrator, owner, role, permission, or privilege authority.",
+            "Require an explicit identity-management capability and bounded authorization scope.",
+        ),
         "cross_tenant_access": (
             "contextual_cross_tenant_access",
             "Cross-tenant or cross-account access is explicitly described.",
             "Confirm tenant/account boundaries and require an explicit authorized scope.",
+        ),
+        "unexpected_destructive_operation": (
+            "contextual_unexpected_destructive_operation",
+            "Irreversible or confirmation-free destructive behavior is explicitly described.",
+            "Require an explicit destructive contract, bounded resource scope, and confirmation policy.",
+        ),
+        "public_sharing": (
+            "contextual_public_sharing",
+            "The tool explicitly describes making a resource public or accessible to anyone.",
+            "Require an explicit public-sharing capability and bounded resource scope.",
+        ),
+        "bulk_messaging": (
+            "contextual_bulk_messaging",
+            "Bulk or mass messaging behavior is explicitly described.",
+            "Require explicit bulk-messaging authorization and bounded recipient scope.",
         ),
         "unauthorized_financial_transaction": (
             "contextual_unauthorized_financial_transaction",
@@ -661,7 +783,7 @@ def _contextual_security_review_findings(
     findings: list[AnalysisFinding] = []
     for category, (code, evidence, recommendation) in checks.items():
         patterns = SEMANTIC_CORROBORATION_PATTERNS.get(category, ())
-        if not any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns):
+        if not any(operational_pattern_search(pattern, text) for pattern in patterns):
             continue
         if not _semantic_fact_support(category, facts, text):
             continue
@@ -689,6 +811,7 @@ def consistency_result(
     facts = semantic_facts or extract_tool_semantic_facts(tool_snapshot)
     description_caps = capabilities_from_text(tool_snapshot.get("description") or "")
     schema_caps = capabilities_from_schema(tool_snapshot.get("input_schema") or {})
+    output_schema_caps = capabilities_from_output_schema(tool_snapshot.get("output_schema") or {})
     annotation_caps = capabilities_from_text(_annotation_text(tool_snapshot.get("annotations") or {}))
     execution_caps = capabilities_from_execution(tool_snapshot.get("execution") or {})
     profile_caps = capabilities_from_profile(profile_snapshot or {})
@@ -699,6 +822,7 @@ def consistency_result(
             "status": "unconfigured",
             "description_capabilities": sorted(description_caps),
             "schema_capabilities": sorted(schema_caps),
+            "output_schema_capabilities": sorted(output_schema_caps),
             "annotation_capabilities": sorted(annotation_caps),
             "execution_capabilities": sorted(execution_caps),
             "profile_capabilities": [],
@@ -706,21 +830,32 @@ def consistency_result(
             "findings": findings,
         }
 
-    extra_schema_caps = {
-        capability
-        for capability in schema_caps
-        if not _capability_covered_by_contract(capability, profile_caps)
-        and not _passive_custom_read_contract_covers_schema_capability(
-            capability,
-            tool_name=str(tool_snapshot.get("name") or ""),
-            profile_snapshot=profile_snapshot,
-        )
+    def uncovered_schema_capabilities(capabilities: set[str]) -> set[str]:
+        return {
+            capability
+            for capability in capabilities
+            if not _capability_covered_by_contract(capability, profile_caps)
+            and not _passive_custom_read_contract_covers_schema_capability(
+                capability,
+                tool_name=str(tool_snapshot.get("name") or ""),
+                profile_snapshot=profile_snapshot,
+            )
+        }
+
+    extra_capabilities_by_source = {
+        "input_schema": uncovered_schema_capabilities(schema_caps),
+        "output_schema": uncovered_schema_capabilities(output_schema_caps),
+        "annotation": {
+            capability
+            for capability in annotation_caps
+            if not _capability_covered_by_contract(capability, profile_caps)
+        },
+        "execution": {
+            capability
+            for capability in execution_caps
+            if not _capability_covered_by_contract(capability, profile_caps)
+        },
     }
-    extra_schema_caps.update(
-        capability
-        for capability in annotation_caps | execution_caps
-        if not _capability_covered_by_contract(capability, profile_caps)
-    )
     extra_description_caps = set()
     if _description_capability_inference_reliable(facts):
         extra_description_caps = {
@@ -729,19 +864,32 @@ def consistency_result(
             if not _capability_covered_by_contract(capability, profile_caps)
         }
 
-    if extra_schema_caps:
-        for capability in sorted(extra_schema_caps):
+    for source, extra_capabilities in extra_capabilities_by_source.items():
+        for capability in sorted(extra_capabilities):
             code = _capability_mismatch_code({capability})
+            output_secret_review = (
+                source == "output_schema" and capability == "secret.access"
+            )
             findings.append(
                 _finding(
                     code,
                     "consistency",
-                    "schema",
-                    "critical" if code in CRITICAL_DETERMINISTIC_CODES else "high",
+                    source,
+                    (
+                        "high"
+                        if output_secret_review
+                        else "critical"
+                        if code in CRITICAL_DETERMINISTIC_CODES
+                        else "high"
+                    ),
                     88,
-                    f"schema capability exceeds profile: {capability}",
-                    "Narrow the schema or update the official Tool Security Profile.",
-                    decision=FINDING_DECISION_BLOCK,
+                    f"{source} capability exceeds profile: {capability}",
+                    "Narrow the declared behavior or update the official Tool Security Profile.",
+                    decision=(
+                        FINDING_DECISION_REVIEW
+                        if output_secret_review
+                        else FINDING_DECISION_BLOCK
+                    ),
                 )
             )
     if extra_description_caps:
@@ -763,6 +911,7 @@ def consistency_result(
         "status": status,
         "description_capabilities": sorted(description_caps),
         "schema_capabilities": sorted(schema_caps),
+        "output_schema_capabilities": sorted(output_schema_caps),
         "annotation_capabilities": sorted(annotation_caps),
         "execution_capabilities": sorted(execution_caps),
         "profile_capabilities": sorted(profile_caps),
@@ -840,9 +989,14 @@ def _passive_custom_read_contract_covers_schema_capability(
 def _description_capability_inference_reliable(
     facts: ToolSemanticFacts,
 ) -> bool:
-    resources = facts.values("resources", sources={"description"})
     actions = facts.values("actions", sources={"description"})
-    return bool(actions) and len(resources) == 1 and len(actions) <= 2
+    if not actions:
+        return False
+    inferred = _capabilities_from_semantic_facts(facts)
+    if len(inferred) == 1:
+        return True
+    resources = facts.values("resources", sources={"description"})
+    return len(resources) == 1 and len(actions) <= 2
 
 
 def drift_result(
@@ -879,7 +1033,7 @@ def drift_result(
     current_caps = capabilities_from_schema(current_schema)
     added_caps = sorted(current_caps - previous_caps)
     for capability in added_caps:
-        severity = "critical" if capability in {"process.execute", "secret.access", "filesystem.delete"} else "high"
+        severity = _drift_capability_severity(capability)
         changes.append(
             {
                 "type": "capability_added",
@@ -887,6 +1041,65 @@ def drift_result(
                 "severity": severity,
             }
         )
+
+    previous_description_caps = capabilities_from_text(
+        baseline_snapshot.get("description") or ""
+    )
+    current_description_caps = capabilities_from_text(
+        current_snapshot.get("description") or ""
+    )
+    for capability in sorted(current_description_caps - previous_description_caps):
+        changes.append(
+            {
+                "type": "description_capability_added",
+                "capability": capability,
+                "severity": _drift_capability_severity(capability),
+            }
+        )
+
+    previous_facts = extract_tool_semantic_facts(baseline_snapshot)
+    current_facts = extract_tool_semantic_facts(current_snapshot)
+    semantic_fact_severities = {
+        "side_effects": {
+            "destructive": "critical",
+            "code_execution": "critical",
+            "access_control_change": "critical",
+            "financial_transaction": "critical",
+            "external_transfer": "high",
+            "public_exposure": "high",
+            "communication": "medium",
+            "state_change": "medium",
+        },
+        "scopes": {
+            "cross_tenant": "high",
+            "public": "high",
+            "bulk": "high",
+            "recursive": "medium",
+        },
+        "privileges": {
+            "administrator": "critical",
+            "access_control": "high",
+            "delegated_identity": "high",
+        },
+        "data_categories": {
+            "credentials": "critical",
+            "personal_data": "high",
+            "financial_data": "high",
+            "location": "high",
+        },
+    }
+    for category, severity_by_value in semantic_fact_severities.items():
+        previous_values = previous_facts.values(category)
+        current_values = current_facts.values(category)
+        for value in sorted(current_values - previous_values):
+            changes.append(
+                {
+                    "type": "semantic_fact_added",
+                    "category": category,
+                    "value": value,
+                    "severity": severity_by_value.get(value, "medium"),
+                }
+            )
 
     similarity = embedding_model.similarity(
         baseline_snapshot.get("description") or "",
@@ -1604,8 +1817,33 @@ def _unresolved_semantic_unknown_reasons(
         and contract.get("tool_name") == tool_name
         and isinstance(effects, list)
     )
+    known_contract_action_verbs = {
+        "authorize",
+        "delete",
+        "execute",
+        "fetch",
+        "get",
+        "initiate",
+        "list",
+        "manage",
+        "mutate",
+        "ping",
+        "query",
+        "read",
+        "refund",
+        "request",
+        "search",
+        "select",
+        "send",
+        "transact",
+        "transfer",
+        "update",
+        "write",
+    }
     has_bound_action = contract_matches_tool and any(
-        isinstance(effect, dict) and bool(effect.get("capability"))
+        isinstance(effect, dict)
+        and isinstance(effect.get("capability"), str)
+        and effect["capability"].rsplit(".", 1)[-1].lower() in known_contract_action_verbs
         for effect in effects
     )
     has_bound_resource = contract_matches_tool and any(
@@ -1635,6 +1873,26 @@ def capabilities_from_schema(schema: dict[str, Any]) -> set[str]:
         }
     )
     return _capabilities_from_semantic_facts(facts)
+
+
+def capabilities_from_output_schema(schema: dict[str, Any]) -> set[str]:
+    facts = extract_tool_semantic_facts(
+        {
+            "name": "",
+            "description": "",
+            "input_schema": {},
+            "output_schema": schema,
+            "annotations": {},
+            "execution": {},
+        }
+    )
+    capabilities = _capabilities_from_semantic_facts(facts)
+    if (
+        "credentials" in facts.values("data_categories")
+        or "secret_store" in facts.values("resources")
+    ):
+        capabilities.add("secret.access")
+    return capabilities
 
 
 def capabilities_from_execution(execution: dict[str, Any]) -> set[str]:
@@ -1779,6 +2037,117 @@ def _capabilities_from_v2_contract(profile: dict[str, Any]) -> set[str]:
     return capabilities
 
 
+def _caller_supplied_auth_credential_text(text: str) -> bool:
+    credential = bool(
+        re.search(
+            r"\b(?:credentials?|bearer credentials?|tokens?|access tokens?|passwords?|"
+            r"api[_ -]?keys?|identifiants?|jetons?|mots? de passe|clés? api)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    supplied = bool(
+        re.search(
+            r"\b(?:supplied|provided|passed|given|furnished)\b.{0,35}\b(?:caller|user|operator|client|request)\b"
+            r"|\b(?:caller|user|operator|client)\b.{0,35}\b(?:supplied|provided|passed|given)\b"
+            r"|\b(?:fourni|fournie|fournis|fournies|transmis|transmise)\b.{0,35}"
+            r"\b(?:appelant|utilisateur|opérateur|client|requête)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    auth_use = bool(
+        re.search(
+            r"\b(?:authenticate|authentication|authorize|authorization|sign|verify|"
+            r"authentifier|authentification|autoriser|autorisation|signer|vérifier)\b",
+            text,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:request|requête)\b.{0,35}\b(?:with|using|avec|via)\b.{0,30}"
+            r"\b(?:credentials?|tokens?|passwords?|api[_ -]?keys?|identifiants?|jetons?|mots? de passe|clés? api)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    retention = bool(
+        re.search(
+            r"\b(?:retain|save|store|persist|log|record|reuse|harvest|collect|capture|extract|steal|"
+            r"conserver|sauvegarder|stocker|persister|journaliser|enregistrer|réutiliser|collecter|capturer|extraire|voler)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    return credential and supplied and auth_use and not retention
+
+
+def _managed_secret_read_only_text(text: str) -> bool:
+    managed_source = bool(
+        re.search(
+            r"\b(?:approved|configured|managed|authorized|authorised|trusted)\b.{0,40}"
+            r"\b(?:vault|secret store|secret manager|coffre|coffre de secrets|gestionnaire de secrets)\b"
+            r"|\b(?:vault|secret store|secret manager|coffre|coffre de secrets|gestionnaire de secrets)\b.{0,40}"
+            r"\b(?:approved|configured|managed|authorized|authorised|trusted|configuré|autoris[ée])\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    retrieval = bool(
+        re.search(
+            r"\b(?:read|retrieve|fetch|get|access|lire|récup(?:érer|ère|ères|èrent)|accéder|obtenir)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    abusive_collection = bool(
+        re.search(
+            r"\b(?:retain|save|store|harvest|steal|capture|collect|extract|reuse|persist|"
+            r"conserver|sauvegarder|stocker|collecter|capturer|extraire|réutiliser)\b",
+            text,
+            re.IGNORECASE,
+        )
+        or re.search(
+            r"\b(?:user|operator|caller|free[- ]form|note|prompt|input|content|session|"
+            r"utilisateur|opérateur|appelant|note|contenu|entrée|session)\b.{0,50}"
+            r"\b(?:passwords?|credentials?|tokens?|secrets?|api[_ -]?keys?|"
+            r"mots? de passe|identifiants?|jetons?|secrets?|clés? api)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    return managed_source and retrieval and not abusive_collection
+
+
+def _privilege_escalation_abuse_evidenced(text: str) -> bool:
+    explicit_escalation = bool(
+        re.search(
+            r"\b(?:elevate|escalate|promote|make|turn|élever|promouvoir|transformer)\b"
+            r".{0,60}\b(?:admin(?:istrator)?|root|owner|superuser|administrateur|propriétaire)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    risky_scope = bool(
+        re.search(
+            r"\b(?:without|outside|beyond|exceeding|unauthori[sz]ed|unapproved)\b.{0,60}"
+            r"\b(?:approval|authorization|scope|role|permission|privilege|access)\b"
+            r"|\b(?:sans|hors|au-delà|non autoris[ée])\b.{0,60}"
+            r"\b(?:approbation|autorisation|périmètre|portée|rôle|permission|privilège|accès)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    high_authority_change = bool(
+        re.search(
+            r"\b(?:grant|assign|give|attribuer|accorder)\b.{0,60}"
+            r"\b(?:admin(?:istrator)?|root|owner|superuser|administrateur|propriétaire)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    return explicit_escalation or (high_authority_change and risky_scope)
+
+
 def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
     findings: list[AnalysisFinding] = []
     if INVISIBLE_RE.search(text):
@@ -1820,11 +2189,14 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 decision=FINDING_DECISION_REVIEW,
             )
         )
-    if re.search(
-        r"\b(ask|request|collect|capture|extract|steal)\w*"
-        r".{0,60}\b(passwords?|credentials?|api[_ -]?keys?|tokens?|secrets?)\b",
-        text,
-        re.I,
+    if (
+        operational_pattern_search(
+            r"\b(ask|request|collect|capture|extract|steal)\w*"
+            r".{0,60}\b(passwords?|credentials?|api[_ -]?keys?|tokens?|secrets?)\b",
+            text,
+        )
+        and not _managed_secret_read_only_text(text)
+        and not _caller_supplied_auth_credential_text(text)
     ):
         findings.append(
             _finding(
@@ -1838,11 +2210,14 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 decision=FINDING_DECISION_BLOCK,
             )
         )
-    if re.search(
-        r"\b(demande[rz]?|collecte[rz]?|capture[rz]?|récup[ée]re[rz]?|extraire|vole[rz]?)\w*"
-        r".{0,60}\b(mots? de passe|identifiants?|clés? api|jetons?|secrets?)\b",
-        text,
-        re.I,
+    if (
+        operational_pattern_search(
+            r"\b(demande[rz]?|collecte[rz]?|capture[rz]?|récup(?:érer|ère|ères|èrent|éré|érée|érés|érées)|extraire|vole[rz]?)\w*"
+            r".{0,60}\b(mots? de passe|identifiants?|clés? api|jetons?|secrets?)\b",
+            text,
+        )
+        and not _managed_secret_read_only_text(text)
+        and not _caller_supplied_auth_credential_text(text)
     ):
         findings.append(
             _finding(
@@ -1856,11 +2231,10 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 decision=FINDING_DECISION_BLOCK,
             )
         )
-    if re.search(
+    if operational_pattern_search(
         r"\b(read|access|collect|capture|include|expose|return|lire|accéder|collecter|inclure|exposer)\w*"
         r".{0,50}\b(\.env|environment variables?|include_env|process\.env|variables? d'environnement)\b",
         text,
-        re.I,
     ):
         findings.append(
             _finding(
@@ -1874,11 +2248,10 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 decision=FINDING_DECISION_BLOCK,
             )
         )
-    if re.search(
+    if operational_pattern_search(
         r"\b(ignore|bypass|disable|ignorer?|contourner?|désactiver?)"
         r".{0,40}\b(policy|security|restriction|instruction|politique|sécurité|règle)",
         text,
-        re.I,
     ):
         findings.append(
             _finding(
@@ -1960,21 +2333,22 @@ def _schema_findings(
     for path, name, field in iter_schema_fields(schema):
         lowered = name.lower()
         field_text = _safe_json(field)
-        if lowered in SENSITIVE_PARAMETER_NAMES and not _parameter_expected_by_contract(
-            lowered,
+        sensitive_kind = _sensitive_parameter_kind(name, field_text)
+        if sensitive_kind and not _parameter_expected_by_contract(
+            sensitive_kind,
             profile_capabilities or set(),
         ):
             process_evidenced = (
-                lowered in {"command", "shell", "script"}
+                sensitive_kind in {"command", "shell", "script"}
                 and semantic_facts is not None
                 and "code_execution" in semantic_facts.values("side_effects")
             )
-            if lowered in {"command", "shell", "script"} and not process_evidenced:
+            if sensitive_kind in {"command", "shell", "script"} and not process_evidenced:
                 continue
             severity = "high" if process_evidenced else "medium"
             findings.append(
                 _finding(
-                    f"sensitive_parameter_{lowered}",
+                    f"sensitive_parameter_{sensitive_kind}",
                     "dangerous_parameter",
                     source,
                     severity,
@@ -1990,6 +2364,58 @@ def _schema_findings(
             )
         findings.extend(_text_findings(source, field_text))
     return findings
+
+
+def _sensitive_parameter_kind(name: str, field_text: str) -> str | None:
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", normalized).strip("_").lower()
+    if normalized in SENSITIVE_PARAMETER_NAMES:
+        return normalized
+
+    tokens = {token for token in normalized.split("_") if token}
+    if tokens.intersection({"command", "shell", "script"}):
+        return next(
+            value
+            for value in ("command", "shell", "script")
+            if value in tokens
+        )
+    if normalized in {"upload_uri", "callback_uri", "destination_uri"}:
+        return normalized.replace("_uri", "_url")
+    if (
+        "url" in tokens
+        and tokens.intersection({"upload", "callback", "destination", "webhook"})
+    ):
+        prefix = next(
+            value
+            for value in ("upload", "callback", "destination")
+            if value in tokens
+        ) if tokens.intersection({"upload", "callback", "destination"}) else "destination"
+        return f"{prefix}_url"
+    if normalized in {"include_environment", "include_environment_variables"}:
+        return "include_env"
+    if tokens.intersection({"password", "passwords", "credential", "credentials", "secret", "secrets"}):
+        return "credentials"
+    if (
+        normalized in {"api_key", "apikey"}
+        or normalized.endswith("_api_key")
+        or normalized.endswith("_access_token")
+        or normalized.endswith("_refresh_token")
+        or normalized.endswith("_auth_token")
+        or normalized.endswith("_bearer_token")
+        or normalized in {"access_token", "refresh_token", "auth_token", "bearer_token", "api_token"}
+    ):
+        return "token"
+    if tokens.intersection({"delete", "overwrite"}):
+        return "delete" if "delete" in tokens else "overwrite"
+
+    credential_text = re.search(
+        r"\b(passwords?|credentials?|api[_ -]?keys?|access tokens?|refresh tokens?|bearer tokens?|auth(?:entication|orization)? tokens?|secret values?)\b",
+        field_text,
+        re.IGNORECASE,
+    )
+    if credential_text:
+        return "credentials"
+    return None
 
 
 def _parameter_expected_by_contract(name: str, capabilities: set[str]) -> bool:
@@ -2062,6 +2488,28 @@ def _schema_diff(previous: dict[str, Any], current: dict[str, Any]) -> list[dict
     for name in sorted(current_required - previous_required):
         changes.append({"type": "field_became_required", "name": name, "severity": "low"})
     return changes
+
+
+def _drift_capability_severity(capability: str) -> str:
+    if (
+        capability in {"process.execute", "secret.access"}
+        or capability.endswith(".delete")
+    ):
+        return "critical"
+    if capability.endswith(
+        (
+            ".write",
+            ".send",
+            ".manage",
+            ".initiate",
+            ".refund",
+            ".transfer",
+            ".execute",
+            ".mutate",
+        )
+    ):
+        return "high"
+    return "medium"
 
 
 def _drift_findings(drift: DriftResult) -> list[AnalysisFinding]:
@@ -2162,25 +2610,32 @@ def _schema_field_name(path: str) -> str:
 
 
 def _semantic_text(tool_snapshot: dict[str, Any]) -> str:
-    fragments = [
-        str(tool_snapshot.get("name") or ""),
-        strip_documentation_examples(
-            str(tool_snapshot.get("description") or "")
-        )[:3000],
-    ]
+    # Keep independent metadata sources on separate lines. The semantic model
+    # still sees the complete context, while regex corroboration cannot create
+    # a synthetic relation across unrelated description/schema fragments.
+    fragments: list[str] = []
+
+    def add_fragment(value: str, limit: int) -> None:
+        normalized = normalize_description(value)
+        if normalized:
+            fragments.append(normalized[:limit])
+
+    add_fragment(str(tool_snapshot.get("name") or ""), 240)
+    add_fragment(
+        strip_documentation_examples(str(tool_snapshot.get("description") or "")),
+        3000,
+    )
     for _path, name, field in iter_schema_fields(tool_snapshot.get("input_schema") or {}):
-        fragments.append(name)
-        fragments.append(_schema_field_text(field)[:240])
+        add_fragment(f"{name} {_schema_field_text(field)}", 320)
     for _path, name, field in iter_schema_fields(tool_snapshot.get("output_schema") or {}):
-        fragments.append(name)
-        fragments.append(_schema_field_text(field)[:240])
+        add_fragment(f"{name} {_schema_field_text(field)}", 320)
     annotation_text = _annotation_text(tool_snapshot.get("annotations") or {})
     if annotation_text:
-        fragments.append(annotation_text[:1000])
+        add_fragment(annotation_text, 1000)
     execution_text = _annotation_text(tool_snapshot.get("execution") or {})
     if execution_text:
-        fragments.append(execution_text[:1000])
-    return normalize_description(" ".join(fragment for fragment in fragments if fragment))[:8000]
+        add_fragment(execution_text, 1000)
+    return "\n".join(fragments)[:8000]
 
 
 def _semantic_categories(profile_snapshot: dict[str, Any] | None) -> list[str]:
@@ -2216,15 +2671,33 @@ def _corroborate_semantic_result(
         key=lambda item: item[1],
         reverse=True,
     )
+    fact_supported_categories = {
+        "secret_collection",
+        "data_exfiltration",
+        "hidden_additional_action",
+        "unauthorized_data_access",
+        "privilege_escalation",
+        "cross_tenant_access",
+        "unexpected_destructive_operation",
+        "public_sharing",
+        "bulk_messaging",
+        "server_side_request_forgery",
+        "shell_injection",
+        "unauthorized_financial_transaction",
+    }
     for category, score in candidates:
         if score < SEMANTIC_REVIEW_THRESHOLD:
             continue
         patterns = SEMANTIC_CORROBORATION_PATTERNS.get(category, ())
         pattern_match = any(
-            re.search(pattern, text, re.IGNORECASE)
+            operational_pattern_search(pattern, text)
             for pattern in patterns
         )
-        if pattern_match and _semantic_fact_support(category, facts, text):
+        fact_support = _semantic_fact_support(category, facts, text)
+        if (
+            (pattern_match and fact_support)
+            or (category in fact_supported_categories and fact_support)
+        ):
             return replace(
                 result,
                 best_category=category,
@@ -2247,7 +2720,7 @@ def _semantic_fact_support(
     privileges = facts.values("privileges")
     destinations = facts.values("external_destinations")
     sensitive_transfer_data = data.intersection(
-        {"credentials", "personal_data", "financial_data", "source_code", "location"}
+        {"credentials", "personal_data", "financial_data", "source_code", "location", "sensitive_data"}
     )
     explicit_exfiltration = bool(
         re.search(
@@ -2260,7 +2733,11 @@ def _semantic_fact_support(
     requirements = {
         "prompt_injection": True,
         "security_bypass": True,
-        "secret_collection": "credentials" in data,
+        "secret_collection": (
+            "credentials" in data
+            and not _managed_secret_read_only_text(text)
+            and not _caller_supplied_auth_credential_text(text)
+        ),
         "data_exfiltration": bool(
             (destinations or "external_transfer" in side_effects)
             and (sensitive_transfer_data or explicit_exfiltration)
@@ -2269,15 +2746,33 @@ def _semantic_fact_support(
         # Execution is a capability, not a security defect by itself. Contract
         # consistency and shell-injection evidence decide whether it is risky.
         "command_execution": False,
-        "unauthorized_data_access": bool(resources),
+        "unauthorized_data_access": (
+            bool(resources or actions.intersection({"read", "search", "list"}))
+            and any(
+                operational_pattern_search(pattern, text)
+                for pattern in SEMANTIC_CORROBORATION_PATTERNS["unauthorized_data_access"]
+            )
+        ),
         "user_deception": True,
-        "privilege_escalation": bool(privileges) and "authorize" in actions,
+        "privilege_escalation": (
+            bool(privileges)
+            and "authorize" in actions
+            and _privilege_escalation_abuse_evidenced(text)
+        ),
         "cross_tenant_access": "cross_tenant" in scopes,
         "unexpected_destructive_operation": "destructive" in side_effects,
         "public_sharing": "public_exposure" in side_effects or "public" in scopes,
-        "bulk_messaging": "bulk" in scopes and "message" in resources,
+        "bulk_messaging": (
+            "bulk" in scopes and "message" in resources and "send" in actions
+        ),
         "server_side_request_forgery": bool(destinations or "network_endpoint" in resources),
-        "shell_injection": "process" in resources,
+        "shell_injection": (
+            "process" in resources
+            and any(
+                operational_pattern_search(pattern, text)
+                for pattern in SEMANTIC_CORROBORATION_PATTERNS["shell_injection"]
+            )
+        ),
         "unauthorized_financial_transaction": "financial_transaction" in side_effects,
     }
     return requirements.get(category, True)

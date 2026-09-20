@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.models.control_plane import ControlPlaneConfigRevision, ControlPlaneUser
 from app.models.mcp_server import MCPServer
 from app.models.mcp_tool import MCPTool
-from app.models.tool_analysis import ToolProtocolObservation
+from app.models.tool_analysis import ToolObservationReviewApproval, ToolProtocolObservation
 from app.schemas.control_plane import AuthorityContext, ControlPlaneConfigContent
 from app.schemas.security_pack import CreateToolContractDraftRequest
 from app.services.control_plane_audit import record_control_plane_audit
@@ -579,6 +579,21 @@ def create_tool_contract_draft(
     if server is None or server.status == "archived":
         raise SecurityPackOnboardingError("tool_server_unavailable")
     draft, content = _resolve_draft(db, payload, actor)
+    refreshed_content = _refresh_stale_draft_observation_approvals(
+        db,
+        draft=draft,
+        content=content,
+        actor=actor,
+    )
+    if refreshed_content is not content:
+        draft = patch_draft_revision(
+            db,
+            draft_id=draft.id,
+            content=refreshed_content,
+            actor=actor,
+            change_summary=payload.change_summary,
+        )
+        content = validate_config_content(draft.content)
     registry = SecurityPackRegistry(content.security_packs)
     try:
         pack, template = registry.template(payload.template_id)
@@ -779,6 +794,75 @@ def add_declarative_security_pack(
         content=next_content,
         actor=actor,
         change_summary=change_summary,
+    )
+
+
+def _refresh_stale_draft_observation_approvals(
+    db: Session,
+    *,
+    draft: ControlPlaneConfigRevision,
+    content: ControlPlaneConfigContent,
+    actor: ControlPlaneUser,
+) -> ControlPlaneConfigContent:
+    approvals = tuple(content.tool_observation_approvals or ())
+    if not approvals:
+        return content
+
+    contracts = {
+        (contract.server_ref, contract.tool_name): contract
+        for contract in content.tool_security_contracts or ()
+    }
+    refreshed = []
+    changed = False
+    for approval in approvals:
+        current_review = db.scalar(
+            select(ToolObservationReviewApproval).where(
+                ToolObservationReviewApproval.observation_id
+                == approval.tool_observation_id,
+                ToolObservationReviewApproval.tool_fingerprint
+                == approval.tool_fingerprint,
+                ToolObservationReviewApproval.contract_hash
+                == approval.contract_hash,
+                ToolObservationReviewApproval.evidence_bundle_hash
+                == approval.evidence_bundle_hash,
+                ToolObservationReviewApproval.revision_id == draft.id,
+                ToolObservationReviewApproval.active.is_(True),
+            )
+        )
+        if approval.revision_id == draft.id and current_review is not None:
+            refreshed.append(approval)
+            continue
+
+        observation = db.get(ToolProtocolObservation, approval.tool_observation_id)
+        if observation is None:
+            raise SecurityPackOnboardingError("approval_observation_missing")
+        if (
+            observation.server_ref != approval.server_ref
+            or observation.upstream_protocol_profile_id
+            != approval.upstream_protocol_profile_id
+            or observation.tool_fingerprint != approval.tool_fingerprint
+        ):
+            raise SecurityPackOnboardingError("approval_observation_mismatch")
+        contract = contracts.get((approval.server_ref, observation.tool_name))
+        if contract is None or contract.contract_hash != approval.contract_hash:
+            raise SecurityPackOnboardingError("approval_contract_hash_mismatch")
+        try:
+            refreshed_approval = approve_tool_observation(
+                db,
+                observation_id=observation.id,
+                contract=contract,
+                admin_id=actor.id,
+                revision_id=draft.id,
+            )
+        except ValueError as exc:
+            raise SecurityPackOnboardingError(str(exc)) from exc
+        refreshed.append(refreshed_approval)
+        changed = True
+
+    if not changed:
+        return content
+    return content.model_copy(
+        update={"tool_observation_approvals": tuple(refreshed)}
     )
 
 

@@ -267,12 +267,14 @@ def _response_error_code(payload: dict[str, Any]) -> str | None:
     error = payload.get("error")
     if not isinstance(error, dict):
         return None
+    message = error.get("message")
+    if isinstance(message, str) and message and message != "tool_call_blocked":
+        return message[:128]
     data = error.get("data")
     if isinstance(data, dict):
         value = data.get("skip_reason") or data.get("rule_id")
         if isinstance(value, str) and value:
             return value[:128]
-    message = error.get("message")
     return str(message)[:128] if message else None
 
 

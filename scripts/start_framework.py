@@ -59,6 +59,11 @@ def main() -> int:
             )
             return 1
 
+        mcp_lab = manager.ensure_mcp_lab(auto_start=True)
+        if mcp_lab.status != "healthy":
+            print(json.dumps({"ready": False, "mcp_lab": mcp_lab.as_dict()}, indent=2))
+            return 1
+
         backend = manager.start_backend()
         if backend.status != "healthy":
             print(json.dumps({"ready": False, "backend": backend.as_dict()}, indent=2))
@@ -66,8 +71,11 @@ def main() -> int:
 
         gateway = manager.ensure_gateway(auto_start=True)
         status = manager.status()
-        print(json.dumps(status.as_dict(), indent=2))
-        if gateway.status != "healthy" or not status.ready:
+        status_payload = status.as_dict()
+        status_payload["mcp_lab"] = mcp_lab.as_dict()
+        status_payload["ready"] = status.ready and mcp_lab.status == "healthy"
+        print(json.dumps(status_payload, indent=2))
+        if gateway.status != "healthy" or not status_payload["ready"]:
             return 1
 
         print("Framework ready. Press Ctrl+C to stop processes started by this launcher.")

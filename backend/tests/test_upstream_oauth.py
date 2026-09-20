@@ -233,6 +233,33 @@ class UpstreamOAuthTests(unittest.TestCase):
             "refresh-token-next",
         )
 
+    def test_timezone_aware_expiry_refreshes_safely(self) -> None:
+        configuration = discover_oauth_configuration(
+            mcp_endpoint=self.endpoint,
+            client_id="framework-client",
+            requested_scopes=[],
+        )
+        write_upstream_token_bundle(
+            "oauth/tokens/test.json",
+            {
+                "access_token": "expired-token",
+                "refresh_token": "refresh-token-rotated",
+                "expires_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+                "resource": self.endpoint,
+                "scopes": ["files:read"],
+            },
+        )
+        self.assertEqual(
+            resolve_oauth_access_token(
+                credential_ref="oauth/tokens/test.json",
+                oauth_config=configuration,
+            ),
+            "access-token-refreshed",
+        )
+        refreshed = read_upstream_token_bundle("oauth/tokens/test.json")
+        self.assertNotEqual(refreshed["expires_at"], "2000-01-01T00:00:00+00:00")
+        self.assertEqual(refreshed["refresh_token"], "refresh-token-next")
+
     def test_expired_token_without_refresh_requires_reauthorization(self) -> None:
         configuration = discover_oauth_configuration(
             mcp_endpoint=self.endpoint,

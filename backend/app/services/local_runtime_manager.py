@@ -213,6 +213,26 @@ class LocalRuntimeManager:
             detail="gateway_startup_timeout",
         )
 
+    def ensure_mcp_lab(self, *, auto_start: bool = True) -> LocalRuntimeComponentStatus:
+        current = self.mcp_lab_status()
+        if current.status == "healthy" or not auto_start:
+            return current
+        self._start_child("mcp_lab", mcp_lab_command(self._python()))
+        if self._wait_until(lambda: self.mcp_lab_status().status == "healthy"):
+            return LocalRuntimeComponentStatus(
+                component="mcp_lab",
+                status="healthy",
+                endpoint=mcp_lab_base_url(),
+                managed_by_framework=True,
+            )
+        return LocalRuntimeComponentStatus(
+            component="mcp_lab",
+            status="unavailable",
+            endpoint=mcp_lab_base_url(),
+            managed_by_framework=True,
+            detail="mcp_lab_startup_timeout",
+        )
+
     def ensure_identity_provider(
         self,
         *,
@@ -292,6 +312,14 @@ class LocalRuntimeManager:
             managed_by_framework=self._is_owned_component("gateway"),
         )
 
+    def mcp_lab_status(self) -> LocalRuntimeComponentStatus:
+        return _http_status(
+            "mcp_lab",
+            f"{mcp_lab_base_url()}/health",
+            self._check_url,
+            managed_by_framework=self._is_owned_component("mcp_lab"),
+        )
+
     def identity_provider_status(self) -> LocalRuntimeComponentStatus:
         endpoint = settings.agent_identity_jwks_url
         if not endpoint or endpoint.startswith("<"):
@@ -354,6 +382,7 @@ class LocalRuntimeManager:
                 "opa",
                 "gateway",
                 "identity_provider",
+                "mcp_lab",
             }:
                 continue
             return_code = child.process.poll()
@@ -366,7 +395,7 @@ class LocalRuntimeManager:
 
     def recover_required_child(self, failure: dict[str, Any]) -> bool:
         component = str(failure.get("component") or "")
-        if component not in {"backend", "opa", "gateway", "identity_provider"}:
+        if component not in {"backend", "opa", "gateway", "identity_provider", "mcp_lab"}:
             return False
         attempts = settings.local_runtime_restart_attempts
         used = self.restart_counts.get(component, 0)
@@ -384,8 +413,10 @@ class LocalRuntimeManager:
                 status = self.ensure_opa(auto_start=True)
             elif component == "gateway":
                 status = self.ensure_gateway(auto_start=True)
-            else:
+            elif component == "identity_provider":
                 status = self.ensure_identity_provider(auto_start=True)
+            else:
+                status = self.ensure_mcp_lab(auto_start=True)
         except Exception:
             return False
         return status.status == "healthy"
@@ -554,6 +585,10 @@ def gateway_base_url() -> str:
     return f"http://{settings.mcp_gateway_host}:{settings.mcp_gateway_port}"
 
 
+def mcp_lab_base_url() -> str:
+    return "http://127.0.0.1:9000"
+
+
 def opa_command() -> list[str] | None:
     if not OPA_EXE.exists():
         return None
@@ -592,6 +627,21 @@ def gateway_command(python_executable: Path) -> list[str]:
         settings.mcp_gateway_host,
         "--port",
         str(settings.mcp_gateway_port),
+    ]
+
+
+def mcp_lab_command(python_executable: Path) -> list[str]:
+    return [
+        str(python_executable),
+        "-m",
+        "uvicorn",
+        "server:app",
+        "--app-dir",
+        str(PROJECT_ROOT / "mcp-lab" / "http_server"),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "9000",
     ]
 
 

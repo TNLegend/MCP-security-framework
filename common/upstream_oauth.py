@@ -111,7 +111,7 @@ def consume_oauth_attempt(*, attempt_directory: Path, state: str) -> dict[str, A
         raise UpstreamOAuthError("upstream_oauth_state_invalid") from exc
     try:
         payload = json.loads(raw.decode("utf-8"))
-        expires_at = datetime.fromisoformat(str(payload["expires_at"]))
+        expires_at = _parse_iso_utc_naive(payload["expires_at"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise UpstreamOAuthError("upstream_oauth_state_invalid") from exc
     if expires_at <= _utcnow():
@@ -479,7 +479,7 @@ def _token_bundle(
 
 def _bundle_expiry(bundle: dict[str, Any]) -> datetime:
     try:
-        value = datetime.fromisoformat(str(bundle["expires_at"]))
+        value = _parse_iso_utc_naive(bundle["expires_at"])
     except (KeyError, TypeError, ValueError) as exc:
         raise UpstreamOAuthError("upstream_oauth_token_invalid") from exc
     return value
@@ -543,6 +543,13 @@ def _valid_client_id(value: str) -> bool:
         and 1 <= len(value) <= 2048
         and not any(character.isspace() or ord(character) < 32 for character in value)
     )
+
+
+def _parse_iso_utc_naive(value: Any) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed
 
 
 def _utcnow() -> datetime:

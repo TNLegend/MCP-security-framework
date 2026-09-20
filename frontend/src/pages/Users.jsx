@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Pagination, usePagination } from "../components/Pagination";
 import {
@@ -39,10 +39,35 @@ function Users({ users = [], loading = false, onRefresh }) {
   });
   const [resetErrors, setResetErrors] = useState({});
   const [actionDialog, setActionDialog] = useState(null);
+  const mutationLockRef = useRef(false);
   const userPagination = usePagination(users, String(users.length));
+
+  useEffect(() => {
+    if (!resetTarget && !actionDialog) {
+      return undefined;
+    }
+    function handleEscape(event) {
+      if (event.key !== "Escape" || busyAction || mutationLockRef.current) {
+        return;
+      }
+      event.preventDefault();
+      if (resetTarget) {
+        setResetTarget(null);
+        setResetForm({ password: "", confirmation: "", reason: "" });
+        setResetErrors({});
+      } else {
+        setActionDialog(null);
+      }
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [actionDialog, busyAction, resetTarget]);
 
   async function create(event) {
     event.preventDefault();
+    if (mutationLockRef.current) {
+      return;
+    }
     setMessage("");
     setError("");
     const errors = validateUserCreate(form);
@@ -56,6 +81,7 @@ function Users({ users = [], loading = false, onRefresh }) {
     ) {
       return;
     }
+    mutationLockRef.current = true;
     setCreating(true);
     try {
       await createUser({
@@ -78,11 +104,12 @@ function Users({ users = [], loading = false, onRefresh }) {
       setError(err.message || "User creation failed");
     } finally {
       setCreating(false);
+      mutationLockRef.current = false;
     }
   }
 
   async function run(action, user) {
-    if (busyAction) {
+    if (busyAction || mutationLockRef.current) {
       return;
     }
     setMessage("");
@@ -138,14 +165,21 @@ function Users({ users = [], loading = false, onRefresh }) {
   }
 
   async function runMutation(key, mutate) {
+    if (mutationLockRef.current) {
+      return false;
+    }
+    mutationLockRef.current = true;
     setBusyAction(key);
     try {
       await mutate();
       await onRefresh?.();
+      return true;
     } catch (err) {
       setError(err.message || "User operation failed");
+      return false;
     } finally {
       setBusyAction("");
+      mutationLockRef.current = false;
     }
   }
 
@@ -167,6 +201,9 @@ function Users({ users = [], loading = false, onRefresh }) {
 
   async function submitPasswordReset(event) {
     event.preventDefault();
+    if (mutationLockRef.current) {
+      return;
+    }
     setMessage("");
     setError("");
     const errors = validatePasswordReset(resetForm);
@@ -175,6 +212,7 @@ function Users({ users = [], loading = false, onRefresh }) {
       setResetForm({ ...resetForm, password: "", confirmation: "" });
       return;
     }
+    mutationLockRef.current = true;
     setBusyAction(`reset:${resetTarget.id}`);
     try {
       await resetUserPassword(
@@ -190,12 +228,13 @@ function Users({ users = [], loading = false, onRefresh }) {
       setResetForm((current) => ({ ...current, password: "", confirmation: "" }));
     } finally {
       setBusyAction("");
+      mutationLockRef.current = false;
     }
   }
 
   async function submitReasonAction(event) {
     event.preventDefault();
-    if (!actionDialog) {
+    if (!actionDialog || mutationLockRef.current) {
       return;
     }
     const reasonError = validateReason(actionDialog.reason);

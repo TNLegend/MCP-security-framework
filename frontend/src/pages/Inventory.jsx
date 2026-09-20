@@ -62,6 +62,26 @@ function Inventory({
   const [inventorySearch, setInventorySearch] = useState("");
   const [buildSourceFilter, setBuildSourceFilter] = useState("ALL");
 
+  useEffect(() => {
+    if (!archiveDialog && !trustDialog) {
+      return undefined;
+    }
+    function handleEscape(event) {
+      if (event.key !== "Escape" || archiving || trustChanging) {
+        return;
+      }
+      event.preventDefault();
+      if (archiveDialog) {
+        setArchiveDialog(null);
+      }
+      if (trustDialog) {
+        setTrustDialog(null);
+      }
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [archiveDialog, archiving, trustChanging, trustDialog]);
+
   const visibleServers = useMemo(
     () => includeArchived ? servers : servers.filter((server) => server.status !== "archived"),
     [includeArchived, servers],

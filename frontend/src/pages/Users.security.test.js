@@ -25,6 +25,21 @@ test("administrative reasons use the modal instead of window.prompt", () => {
   assert.match(source, /actionDialog/);
 });
 
+test("user modals close on Escape while no mutation is busy", () => {
+  assert.match(source, /window\.addEventListener\("keydown", handleEscape\)/);
+  assert.match(source, /event\.key !== "Escape" \|\| busyAction/);
+  assert.match(source, /setActionDialog\(null\)/);
+  assert.match(source, /setResetTarget\(null\)/);
+});
+
+test("user mutations use a synchronous single-flight guard", () => {
+  assert.match(source, /useRef/);
+  assert.match(source, /mutationLockRef = useRef\(false\)/);
+  assert.match(source, /if \(mutationLockRef\.current\)/);
+  assert.match(source, /mutationLockRef\.current = true/);
+  assert.match(source, /mutationLockRef\.current = false/);
+});
+
 test("role escalation requires explicit confirmation", () => {
   assert.match(source, /role === "ADMIN"/);
   assert.match(source, /window\.confirm/);
