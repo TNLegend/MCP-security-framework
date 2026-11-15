@@ -16,7 +16,7 @@ from app.services.control_plane_auth import (
     require_authenticated_user,
 )
 from app.services.server_security_metadata import refresh_server_security_status
-from app.services.tool_analysis import ToolReviewService
+from app.services.tda_application.review_service import ToolReviewService
 
 router = APIRouter(
     prefix="/control-plane/tool-analysis",

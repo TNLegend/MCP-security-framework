@@ -30,7 +30,7 @@ def _demo_server_id(proxy: MCPProxy) -> int:
 def _demo_cases(*, server_id: int, session_token: str) -> list[tuple[str, dict]]:
     return [
         (
-            "Case 1 - allowed contract read",
+            "Case 1 - contract read (requires approval)",
             {
                 "server_id": server_id,
                 "session_token": session_token,
@@ -52,7 +52,7 @@ def _demo_cases(*, server_id: int, session_token: str) -> list[tuple[str, dict]]
             },
         ),
         (
-            "Case 3 - allowed contract listing",
+            "Case 3 - directory listing (requires approval)",
             {
                 "server_id": server_id,
                 "session_token": session_token,
@@ -72,6 +72,8 @@ def main() -> None:
     print("2. MCP lab server must be running at http://127.0.0.1:9000/mcp")
     print("3. Discovery must have been run at least once")
     print("4. Local identity provider must be running with the configured JWKS URL")
+    print("5. The demo agent must have a published identity binding and capability grants")
+    print("6. ALLOW cases also require approved observations and published tool contracts")
     print("=" * 50)
 
     proxy = MCPProxy()

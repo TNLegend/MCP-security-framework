@@ -1,0 +1,252 @@
+{
+  "schema": "TDA_SEVEN_MODULE_CONTRACT_REGISTRY",
+  "version": "1.0.1-closure-design",
+  "date": "2026-11-01",
+  "authority_state": "DESIGN_ONLY_NO_PRODUCTION_INTEGRATION",
+  "existing_status_values": [
+    "APPROVED",
+    "ADMIN_ALLOWED",
+    "REVIEW_REQUIRED",
+    "QUARANTINED",
+    "BLOCKED"
+  ],
+  "envelope_schema": "module_envelope.schema.json",
+  "shared": {
+    "source_ref": "snapshot_id + JSON Pointer + Unicode codepoint offsets + original excerpt",
+    "evidence_claim_not_authority": true,
+    "observation_types": [
+      "TECHNICAL_ANOMALY",
+      "ESTABLISHED_DIRECTIVE",
+      "SEMANTIC_HYPOTHESIS",
+      "INFORMATION_LIMIT",
+      "ANALYSIS_FAILURE",
+      "CONTRACT_OBSERVATION",
+      "VERSION_OBSERVATION"
+    ],
+    "evidence_support": [
+      "MECHANICAL_VERIFIED",
+      "LINGUISTICALLY_SUPPORTED",
+      "MODEL_HYPOTHESIS",
+      "UNRESOLVED"
+    ],
+    "completeness_scoped": true,
+    "modes": [
+      "SHADOW",
+      "ADVISORY",
+      "REQUIRED"
+    ],
+    "reasons": [
+      "NOT_PRESENT",
+      "NOT_RESOLVED",
+      "NOT_ANALYZED",
+      "NOT_APPLICABLE",
+      "UNSUPPORTED",
+      "INCOMPLETE"
+    ],
+    "transfer_event_boundary_owned_by": "M6",
+    "status_owner": "CURRENT_V0_AUTHORITY_ONLY",
+    "current_tool_execution_control": "Proxy/OPA/dispatch_admission",
+    "final_qualification": "Q1/Q2_UNTOUCHED_AND_INDEPENDENT_RATIFICATION_PENDING"
+  },
+  "modules": [
+    {
+      "id": "M1",
+      "responsibility": "acquisition_provenance",
+      "depends_on": [],
+      "output_result_keys": [
+        "snapshot_metadata",
+        "source_fields",
+        "exposed_projection",
+        "hash_domains",
+        "derived_views"
+      ],
+      "required_domain_separation": [
+        "source_context",
+        "raw_sha256",
+        "exposed_projection_sha256"
+      ],
+      "experiments": [
+        "snapshot_roundtrip",
+        "missing_fields",
+        "limits",
+        "projection_equivalence",
+        "provenance"
+      ],
+      "authority_ceiling": "NOT_AUTHORITATIVE",
+      "algorithm_status": "DETERMINISTIC_SELECTED"
+    },
+    {
+      "id": "M2",
+      "responsibility": "structure_obfuscation",
+      "depends_on": [
+        "M1"
+      ],
+      "output_result_keys": [
+        "validation_results",
+        "obfuscation_signals",
+        "decoded_views"
+      ],
+      "required_domain_separation": [
+        "dialect_id",
+        "structural_status",
+        "transform_trace"
+      ],
+      "experiments": [
+        "schema_conformance",
+        "unicode_legitimate",
+        "budget_isolation",
+        "no_network"
+      ],
+      "authority_ceiling": "NOT_AUTHORITATIVE",
+      "algorithm_status": "DETERMINISTIC_SELECTED_WITH_TESTS"
+    },
+    {
+      "id": "M3",
+      "responsibility": "instruction_injection",
+      "depends_on": [
+        "M1",
+        "M2",
+        "M5"
+      ],
+      "output_result_keys": [
+        "directives",
+        "raw_signals"
+      ],
+      "required_domain_separation": [
+        "claimed_authority",
+        "addressee",
+        "activation_context",
+        "framing",
+        "scope"
+      ],
+      "experiments": [
+        "precision_recall_by_family",
+        "benign_fpr",
+        "attack_success_E2E",
+        "review_burden"
+      ],
+      "authority_ceiling": "AT_MOST_REVIEW_ADVISORY",
+      "algorithm_status": "ENGINE_UNSELECTED"
+    },
+    {
+      "id": "M4",
+      "responsibility": "claimed_capabilities",
+      "depends_on": [
+        "M1",
+        "M2",
+        "M5"
+      ],
+      "output_result_keys": [
+        "events",
+        "legacy_transfer_signal"
+      ],
+      "required_domain_separation": [
+        "event_ids",
+        "typed_links",
+        "payload",
+        "destination",
+        "framing",
+        "polarity",
+        "authorized_boundary_NOT_EVALUATED"
+      ],
+      "experiments": [
+        "relation_precision_recall",
+        "invented_links",
+        "semantic_coverage",
+        "risk_coverage",
+        "contract_impact"
+      ],
+      "authority_ceiling": "NOT_AUTHORITATIVE",
+      "algorithm_status": "ENGINE_UNSELECTED"
+    },
+    {
+      "id": "M5",
+      "responsibility": "inventory_identity",
+      "depends_on": [
+        "M1"
+      ],
+      "output_result_keys": [
+        "catalog_identity",
+        "reference_resolutions"
+      ],
+      "required_domain_separation": [
+        "authority_id",
+        "registration_id",
+        "tool_name",
+        "protocol_profile_id",
+        "revision",
+        "generation"
+      ],
+      "experiments": [
+        "exact_resolution",
+        "alias_ambiguity",
+        "catalog_races",
+        "cache_revocation"
+      ],
+      "authority_ceiling": "NOT_AUTHORITATIVE",
+      "algorithm_status": "DETERMINISTIC_SELECTED_WITH_TESTS"
+    },
+    {
+      "id": "M6",
+      "responsibility": "contracts_drift",
+      "depends_on": [
+        "M1",
+        "M2",
+        "M3",
+        "M4",
+        "M5"
+      ],
+      "output_result_keys": [
+        "contract_assessments",
+        "drift_observations"
+      ],
+      "required_domain_separation": [
+        "signed_contract_revision",
+        "contract_hash",
+        "fragment",
+        "comparison_orientation",
+        "unsupported"
+      ],
+      "experiments": [
+        "subschema_witness",
+        "exact_drift",
+        "semantic_ablation",
+        "signature_equivalence"
+      ],
+      "authority_ceiling": "NOT_AUTHORITATIVE",
+      "algorithm_status": "FORMAL_FRAGMENT_SELECTED_WITH_TESTS"
+    },
+    {
+      "id": "M7",
+      "responsibility": "policy_admission",
+      "depends_on": [
+        "M1",
+        "M2",
+        "M3",
+        "M4",
+        "M5",
+        "M6"
+      ],
+      "output_result_keys": [
+        "policy_assessment",
+        "required_preconditions",
+        "vetoes"
+      ],
+      "required_domain_separation": [
+        "policy_version",
+        "identity_context",
+        "review_path",
+        "exposure_vs_dispatch"
+      ],
+      "experiments": [
+        "no_inadvertent_ALLOW",
+        "ADMIN_E2E",
+        "cache_revocation",
+        "fail_closed",
+        "policy_diff"
+      ],
+      "authority_ceiling": "NON_AUTHORITATIVE_DESIGN_ONLY",
+      "algorithm_status": "PRESERVE_OPA_EXISTING"
+    }
+  ]
+}

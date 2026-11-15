@@ -21,7 +21,8 @@ except ModuleNotFoundError:
 
 ASSERTION_TYPE = "mcp-identity+jwt"
 ASSERTION_ALGORITHM = "EdDSA"
-RUNTIME_SECRETS_ROOT = REPO_ROOT / ".runtime" / "secrets"
+from common.project_paths import runtime_data_root
+RUNTIME_SECRETS_ROOT = runtime_data_root(REPO_ROOT) / "secrets"
 
 
 class InternalIdentityAssertionError(Exception):

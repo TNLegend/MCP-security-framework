@@ -226,6 +226,9 @@ def empty_latest_configuration() -> ControlPlaneConfigContent:
 class ConfigRevisionPatchRequest(BaseModel):
     content: ControlPlaneConfigContent
     change_summary: str = Field(min_length=3, max_length=2000)
+    # Compare-and-swap: prevent one editor overwriting another editor's
+    # newer configuration without an explicit reload/review.
+    expected_content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
     model_config = ConfigDict(extra="forbid")
 

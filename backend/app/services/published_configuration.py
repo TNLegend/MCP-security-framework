@@ -257,11 +257,13 @@ class PublishedConfigurationProvider:
     def active_revision_metadata(self) -> ActiveRevisionMetadata:
         return self.load_active_snapshot().active_revision_metadata()
 
-    def load_active_snapshot(self) -> PublishedConfigurationSnapshot:
-        state = self.db.get(ControlPlaneState, 1)
+    def load_active_snapshot(self, *, fresh: bool = False) -> PublishedConfigurationSnapshot:
+        # Admission requests a fresh DB read after its publication lock.
+        # Other callers retain their existing in-transaction ORM semantics.
+        state = self.db.get(ControlPlaneState, 1, populate_existing=fresh)
         if state is None or state.active_revision_id is None:
             raise PublishedConfigurationError("active_config_missing")
-        revision = self.db.get(ControlPlaneConfigRevision, state.active_revision_id)
+        revision = self.db.get(ControlPlaneConfigRevision, state.active_revision_id, populate_existing=fresh)
         if revision is not None:
             latest_activated_number = self.db.scalar(
                 select(func.max(ControlPlaneConfigRevision.revision_number)).where(
@@ -377,6 +379,9 @@ class PublishedConfigurationProvider:
             select(ControlPlaneConfigRevision).where(
                 ControlPlaneConfigRevision.content_hash == revision.previous_revision_hash,
                 ControlPlaneConfigRevision.revision_number < revision.revision_number,
+                # A draft can contain exactly the same content hash as a
+                # signed predecessor, but it is not an activation-chain link.
+                ControlPlaneConfigRevision.status.in_({"PUBLISHED", "ARCHIVED"}),
             ).order_by(ControlPlaneConfigRevision.revision_number.desc())
         )
         if predecessor is None:

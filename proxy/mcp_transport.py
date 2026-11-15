@@ -1,18 +1,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from http.client import IncompleteRead
+import socket
 import queue
 import threading
+from time import monotonic
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
+from common.pinned_http import pinned_urlopen
 
 from common.canonical_json import canonical_json_bytes
-from proxy.strict_json import MAX_JSON_BYTES, StrictJSONError, parse_strict_json
+from proxy.strict_json import (
+    MAX_JSON_BYTES,
+    MAX_UPSTREAM_RESPONSE_JSON_BYTES,
+    MAX_UPSTREAM_RESPONSE_STRING_LENGTH,
+    StrictJSONError,
+    parse_strict_json,
+)
 
 
-MAX_SSE_EVENT_BYTES = min(MAX_JSON_BYTES, 262_144)
+# An upstream SSE event includes framing in addition to the bounded JSON.
+MAX_SSE_EVENT_BYTES = MAX_UPSTREAM_RESPONSE_JSON_BYTES + 4_096
 MAX_SSE_EVENTS_PER_RESPONSE = 256
 MAX_LEGACY_PENDING_REQUESTS = 32
 
@@ -32,20 +43,134 @@ class SSEEvent:
     event_id: str | None = None
 
 
-def iter_sse_events(response: Any, *, max_event_bytes: int = MAX_SSE_EVENT_BYTES):
+def _iter_sse_raw_lines(
+    response: Any, *, max_line_bytes: int, deadline_monotonic: float | None,
+):
+    """Stream lines without letting a slow, unterminated line reset a deadline."""
+    if deadline_monotonic is None:
+        # Preserve the historical stream contract for endpoint discovery and
+        # callers that do not supply an absolute request deadline.
+        while True:
+            try:
+                line = response.readline(max_line_bytes + 1)
+            except TimeoutError as exc:
+                raise TransportProtocolError("sse_read_timeout") from exc
+            except OSError as exc:
+                raise TransportProtocolError("sse_read_failed") from exc
+            yield line
+            if not line:
+                return
+
+    # read1 returns available bytes rather than waiting for a whole line or
+    # requested byte count. The fallback reads a single byte, never a full
+    # newline-delimited line, on custom streams without read1/read.
+    # Inspect methods declared by the concrete stream type. Generic Mock
+    # objects dynamically fabricate any attribute (including read1/read),
+    # even when only readline was actually configured by a caller.
+    if callable(getattr(type(response), "read1", None)):
+        reader = response.read1
+    elif callable(getattr(type(response), "read", None)):
+        reader = response.read
+    else:
+        reader = lambda _size: response.readline(1)
+    pending = bytearray()
+    # A byte-drip inside http.client's chunk-size reader can block even
+    # read1() across repeated short socket.recv calls. A per-recv timeout
+    # does not impose an absolute end-to-end deadline. Abort the underlying
+    # socket at the deadline, independently of Python's framing parser.
+    raw_socket = getattr(
+        getattr(getattr(response, "fp", None), "raw", None), "_sock", None,
+    )
+    deadline_watchdog = None
+    watchdog_expired = threading.Event()
+    if raw_socket is not None:
+        def _expire_socket(socket_to_abort=raw_socket):
+            # The close may interrupt a Windows socket read before the
+            # reader observes the next monotonic tick. Record *who*
+            # interrupted it so we do not misclassify the deadline as a
+            # generic read failure.
+            watchdog_expired.set()
+            try:
+                socket_to_abort.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+        deadline_watchdog = threading.Timer(
+            max(0.001, deadline_monotonic - monotonic()), _expire_socket,
+        )
+        deadline_watchdog.daemon = True
+        deadline_watchdog.start()
+    try:
+        while True:
+            remaining = deadline_monotonic - monotonic()
+            if remaining <= 0:
+                raise TransportProtocolError("mcp_sse_response_deadline_exceeded")
+            try:
+                if raw_socket is not None:
+                    fileno = getattr(raw_socket, "fileno", None)
+                    descriptor = fileno() if callable(fileno) else None
+                    if isinstance(descriptor, int) and descriptor < 0:
+                        # HTTPResponse closes its raw socket once a finite
+                        # Content-Length has been consumed. Still ask its
+                        # reader for EOF and drain/validate buffered frames.
+                        raw_socket = None
+                    else:
+                        raw_socket.settimeout(max(0.001, remaining))
+                chunk = reader(min(8192, max_line_bytes + 1))
+            except (TimeoutError, OSError, IncompleteRead) as exc:
+                if watchdog_expired.is_set() or monotonic() >= deadline_monotonic:
+                    raise TransportProtocolError(
+                        "mcp_sse_response_deadline_exceeded"
+                    ) from exc
+                if isinstance(exc, TimeoutError):
+                    raise TransportProtocolError("sse_read_timeout") from exc
+                raise TransportProtocolError("sse_read_failed") from exc
+            if monotonic() >= deadline_monotonic:
+                raise TransportProtocolError("mcp_sse_response_deadline_exceeded")
+            if not isinstance(chunk, bytes):
+                raise TransportProtocolError("sse_read_invalid_bytes")
+            if not chunk:
+                remaining_body = getattr(response, "length", None)
+                if isinstance(remaining_body, int) and remaining_body > 0:
+                    raise TransportProtocolError("mcp_sse_response_incomplete_body")
+                if pending:
+                    yield bytes(pending)
+                yield b""
+                return
+            pending.extend(chunk)
+            while True:
+                end = pending.find(b"\n")
+                if end < 0:
+                    break
+                if end + 1 > max_line_bytes + 1:
+                    raise TransportProtocolError("sse_event_too_large")
+                line = bytes(pending[:end + 1])
+                del pending[:end + 1]
+                yield line
+            if len(pending) > max_line_bytes:
+                raise TransportProtocolError("sse_event_too_large")
+    finally:
+        if deadline_watchdog is not None:
+            deadline_watchdog.cancel()
+
+def iter_sse_events(
+    response: Any, *,
+    max_event_bytes: int = MAX_SSE_EVENT_BYTES,
+    deadline_monotonic: float | None = None,
+):
     event_name = "message"
     event_id: str | None = None
     data_parts: list[str] = []
     bytes_seen = 0
     saw_field = False
 
-    while True:
-        try:
-            raw_line = response.readline(max_event_bytes + 1)
-        except TimeoutError as exc:
-            raise TransportProtocolError("sse_read_timeout") from exc
-        except OSError as exc:
-            raise TransportProtocolError("sse_read_failed") from exc
+    for raw_line in _iter_sse_raw_lines(
+        response,
+        max_line_bytes=max_event_bytes,
+        deadline_monotonic=deadline_monotonic,
+    ):
+        if deadline_monotonic is not None and monotonic() >= deadline_monotonic:
+            raise TransportProtocolError("mcp_sse_response_deadline_exceeded")
         if raw_line == b"":
             if saw_field or data_parts:
                 raise TransportProtocolError("sse_stream_closed_mid_event")
@@ -133,9 +258,11 @@ class StreamableHTTPResponseDecoder:
         self,
         *,
         expected_request_id: Any,
-        max_response_bytes: int = MAX_JSON_BYTES,
+        max_response_bytes: int = MAX_UPSTREAM_RESPONSE_JSON_BYTES,
         max_sse_event_bytes: int = MAX_SSE_EVENT_BYTES,
+        deadline_monotonic: float | None = None,
     ) -> None:
+        self.deadline_monotonic = deadline_monotonic
         self.expected_request_id = expected_request_id
         self.max_response_bytes = max_response_bytes
         self.max_sse_event_bytes = max_sse_event_bytes
@@ -152,24 +279,70 @@ class StreamableHTTPResponseDecoder:
         raise TransportProtocolError("mcp_response_content_type_unsupported")
 
     def _decode_json_response(self, response: Any) -> dict[str, Any]:
-        try:
-            body = response.read(self.max_response_bytes + 1)
-        except TimeoutError as exc:
-            raise TransportProtocolError("mcp_response_timeout") from exc
+        # read(n) may wait for n bytes even as a server slowly drips chunks;
+        # read1 (when available) returns the next available buffered chunk.
+        # Recheck the absolute deadline after every chunk, not just SSE.
+        chunks: list[bytes] = []
+        size = 0
+        read_next = getattr(response, "read1", None) or response.read
+        while True:
+            if self.deadline_monotonic is not None and monotonic() >= self.deadline_monotonic:
+                raise TransportProtocolError("mcp_jsonrpc_response_deadline_exceeded")
+            try:
+                if self.deadline_monotonic is not None:
+                    # urllib's HTTPResponse is backed by a buffered socket.
+                    # Clamp each individual blocking read to the remaining
+                    # end-to-end budget, not the original socket idle timeout.
+                    raw_socket = getattr(
+                        getattr(getattr(response, "fp", None), "raw", None),
+                        "_sock", None,
+                    )
+                    if raw_socket is not None:
+                        remaining = self.deadline_monotonic - monotonic()
+                        if remaining <= 0:
+                            raise TransportProtocolError(
+                                "mcp_jsonrpc_response_deadline_exceeded"
+                            )
+                        raw_socket.settimeout(max(0.001, remaining))
+                chunk = read_next(min(8192, self.max_response_bytes + 1 - size))
+            except TimeoutError as exc:
+                raise TransportProtocolError("mcp_response_timeout") from exc
+            except OSError as exc:
+                raise TransportProtocolError("mcp_response_read_failed") from exc
+            if self.deadline_monotonic is not None and monotonic() >= self.deadline_monotonic:
+                raise TransportProtocolError("mcp_jsonrpc_response_deadline_exceeded")
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > self.max_response_bytes:
+                raise TransportProtocolError("mcp_jsonrpc_response_too_large")
+            chunks.append(chunk)
+        body = b"".join(chunks)
         if not body:
             raise TransportProtocolError("mcp_jsonrpc_response_empty")
-        if len(body) > self.max_response_bytes:
-            raise TransportProtocolError("mcp_jsonrpc_response_too_large")
         try:
-            message = parse_strict_json(body)
+            message = parse_strict_json(
+                body,
+                max_bytes=min(self.max_response_bytes, MAX_UPSTREAM_RESPONSE_JSON_BYTES),
+                max_string_length=MAX_UPSTREAM_RESPONSE_STRING_LENGTH,
+            )
         except StrictJSONError as exc:
             raise TransportProtocolError("mcp_jsonrpc_response_invalid_json") from exc
         return self._validate_response_message(message)
 
     def _decode_sse_response(self, response: Any) -> dict[str, Any]:
         final_response: dict[str, Any] | None = None
+        # Chunked SSE streams may remain open after the final JSON-RPC event.
+        # Finite, close-delimited streams are drained to detect extra replies.
+        transfer_encodings = (response.headers.get("Transfer-Encoding", "") or "").lower()
+        persistent_chunked_stream = "chunked" in {
+            encoding.strip() for encoding in transfer_encodings.split(",")
+        }
         for index, event in enumerate(
-            iter_sse_events(response, max_event_bytes=self.max_sse_event_bytes)
+            iter_sse_events(
+                response, max_event_bytes=self.max_sse_event_bytes,
+                deadline_monotonic=self.deadline_monotonic,
+            )
         ):
             if index >= MAX_SSE_EVENTS_PER_RESPONSE:
                 raise TransportProtocolError("mcp_sse_response_event_limit_exceeded")
@@ -178,7 +351,11 @@ class StreamableHTTPResponseDecoder:
             if event.event != "message":
                 raise TransportProtocolError("mcp_sse_response_unexpected_event")
             try:
-                parsed = parse_strict_json(event.data.encode("utf-8"))
+                parsed = parse_strict_json(
+                    event.data.encode("utf-8"),
+                    max_bytes=MAX_UPSTREAM_RESPONSE_JSON_BYTES,
+                    max_string_length=MAX_UPSTREAM_RESPONSE_STRING_LENGTH,
+                )
             except StrictJSONError as exc:
                 raise TransportProtocolError("mcp_sse_response_invalid_json") from exc
             for message in _jsonrpc_messages(parsed):
@@ -187,6 +364,10 @@ class StreamableHTTPResponseDecoder:
                     if final_response is not None:
                         raise TransportProtocolError("mcp_sse_duplicate_final_response")
                     final_response = response_message
+            # On a persistent chunked SSE stream there is no required EOF.
+            # A complete, validated final event is sufficient to finish the call.
+            if final_response is not None and persistent_chunked_stream:
+                return final_response
         if final_response is None:
             raise TransportProtocolError("mcp_sse_response_missing_final_response")
         return final_response
@@ -337,7 +518,7 @@ class LegacyHTTPSSETransport:
     def _open_url(self, request: Request) -> Any:
         if self._opener is not None:
             return self._opener.open(request, timeout=self.timeout_seconds)
-        return urlopen(request, timeout=self.timeout_seconds)
+        return pinned_urlopen(request, timeout=self.timeout_seconds)
 
     def _post_message(self, payload: dict[str, Any], *, headers: dict[str, str]) -> None:
         if not self.post_endpoint:
@@ -377,7 +558,11 @@ class LegacyHTTPSSETransport:
                 if event.event != "message" or not event.data:
                     raise TransportProtocolError("legacy_sse_unexpected_event")
                 try:
-                    parsed = parse_strict_json(event.data.encode("utf-8"))
+                    parsed = parse_strict_json(
+                    event.data.encode("utf-8"),
+                    max_bytes=MAX_UPSTREAM_RESPONSE_JSON_BYTES,
+                    max_string_length=MAX_UPSTREAM_RESPONSE_STRING_LENGTH,
+                )
                 except StrictJSONError as exc:
                     raise TransportProtocolError("legacy_sse_message_invalid_json") from exc
                 for message in _jsonrpc_messages(parsed):

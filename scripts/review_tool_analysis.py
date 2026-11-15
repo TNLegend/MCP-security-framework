@@ -9,7 +9,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.db.database import SessionLocal  # noqa: E402
-from app.services.tool_analysis import ToolReviewService  # noqa: E402
+from app.services.tda_application.review_service import ToolReviewService  # noqa: E402
 
 
 def main() -> int:

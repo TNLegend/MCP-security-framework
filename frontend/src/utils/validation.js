@@ -263,6 +263,7 @@ export function oauthMcpRegistrationPayload(form) {
   const clientId = String(form.clientId || "").trim();
   const scopes = String(form.requestedScopes || "").trim();
   const clientSecret = String(form.clientSecret || "");
+  const expectedIssuer = String(form.expectedAuthorizationServer || "").trim();
   if (clientId && (clientId.length > LIMITS.oauthClientIdMax || /\s/.test(clientId))) {
     errors.clientId = "OAuth client ID must not contain whitespace.";
   }
@@ -278,6 +279,23 @@ export function oauthMcpRegistrationPayload(form) {
   if (clientSecret.length > LIMITS.oauthClientSecretMax || /[\x00-\x1f]/.test(clientSecret)) {
     errors.clientSecret = "OAuth client secret is invalid.";
   }
+  if (clientSecret && !expectedIssuer) {
+    errors.expectedAuthorizationServer = "Expected OAuth issuer is required when supplying a client secret.";
+  }
+  if (expectedIssuer) {
+    try {
+      const issuer = new URL(expectedIssuer);
+      if (
+        issuer.username || issuer.password || issuer.search || issuer.hash ||
+        (issuer.protocol !== "https:" &&
+          !(issuer.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(issuer.hostname)))
+      ) {
+        errors.expectedAuthorizationServer = "Use a valid HTTPS issuer (HTTP only for loopback testing).";
+      }
+    } catch {
+      errors.expectedAuthorizationServer = "Expected OAuth issuer URL is invalid.";
+    }
+  }
   if (Object.keys(errors).length > 0) {
     return { errors };
   }
@@ -289,6 +307,7 @@ export function oauthMcpRegistrationPayload(form) {
       client_id: clientId || null,
       requested_scopes: scopes,
       client_secret: clientSecret || null,
+      expected_authorization_server: expectedIssuer || null,
     },
   };
 }

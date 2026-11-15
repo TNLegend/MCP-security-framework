@@ -8,6 +8,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from common.canonical_json import canonical_json_bytes
 from common.mcp_endpoint import MCPEndpointValidationError, validate_mcp_endpoint
+from common.pinned_http import build_pinned_opener
 from proxy.mcp_transport import (
     LegacyHTTPSSETransport,
     StreamableHTTPResponseDecoder,
@@ -15,10 +16,6 @@ from proxy.mcp_transport import (
     TransportProtocolError,
 )
 from proxy.protocol_profiles import (
-    LEGACY_PROFILE_ID,
-    LEGACY_PROTOCOL_VERSION,
-    MODERN_PROFILE_ID,
-    MODERN_PROTOCOL_VERSION,
     ProtocolProfileError,
     ProtocolProfileRegistry,
 )
@@ -94,7 +91,7 @@ class ProtocolNegotiator:
         self._upstream_headers = {"User-Agent": MCP_CLIENT_USER_AGENT}
         if bearer_token:
             self._upstream_headers["Authorization"] = f"Bearer {bearer_token}"
-        self._opener = build_opener(NoRedirectHandler)
+        self._opener = build_pinned_opener()
         self.revision_registry = ProtocolRevisionRegistry()
         self.profile_registry = ProtocolProfileRegistry()
 

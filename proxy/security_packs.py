@@ -4,7 +4,7 @@ import math
 import re
 from typing import Any, Iterable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from common.canonical_json import sha256_canonical_json
 
@@ -68,6 +68,11 @@ class PackCapability(BaseModel):
     verb: str
     destructive: bool = False
     external_effect: bool = False
+    # Explicit data-production semantics; None is UNKNOWN, never False.
+    # Omit absent metadata from historical signed manifest hashes.
+    produces_data: StrictBool | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     requires_resource: bool = True
     allowed_resource_types: tuple[str, ...] = ()
     lifecycle: Literal["ACTIVE", "DEPRECATED"] = "ACTIVE"
@@ -133,11 +138,16 @@ class TemplateArgumentConstraint(BaseModel):
     value: Any
     required: bool = True
     argument_hints: tuple[str, ...] = ()
+    # Optional semantic assertion: this field determines which effect the
+    # MCP performs, so only a required exact-value constraint may govern it.
+    effect_selector: bool = Field(default=False, exclude_if=lambda value: not value)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     @model_validator(mode="after")
     def validate_constraint(self) -> "TemplateArgumentConstraint":
+        if self.effect_selector and (not self.required or self.operator != "EQ"):
+            raise ValueError("effect_selector_requires_exact_required_constraint")
         if not SECURITY_ID_PATTERN.fullmatch(self.key):
             raise ValueError("invalid template argument constraint key")
         if self.operator in {"EQ", "NE"}:
@@ -165,9 +175,32 @@ class TemplateArgumentConstraint(BaseModel):
         return self
 
 
+class TemplateArgumentRole(BaseModel):
+    """Explicit reviewed semantic assertion for a mapped argument.
+
+    Resource roles are already declared in TemplateBinding and selectors in
+    TemplateArgumentConstraint(effect_selector=True); only remaining leaves
+    require independent DATA or unsupported PROGRAM assertions.
+    """
+    key: str
+    role: Literal["DATA", "PROGRAM"]
+    argument_hints: tuple[str, ...] = ()
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def validate_role(self) -> "TemplateArgumentRole":
+        if not SECURITY_ID_PATTERN.fullmatch(self.key):
+            raise ValueError("invalid template argument role key")
+        return self
+
+
 class TemplateResultControl(BaseModel):
     classification: Literal["UNSPECIFIED", "INTERNAL", "SENSITIVE", "SECRET"] = "UNSPECIFIED"
     track_for_exfiltration: bool = False
+    produces_data: StrictBool | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -204,6 +237,11 @@ class ToolContractTemplate(BaseModel):
     declared_reference_precision: Literal["EXPLICIT"] = "EXPLICIT"
     effects: tuple[TemplateEffect, ...] = ()
     constraints: tuple[TemplateArgumentConstraint, ...] = ()
+    # Omitted from historical Security Pack/template hashes. An opt-in
+    # reviewer must map EVERY remaining DATA or PROGRAM input explicitly.
+    argument_roles: tuple[TemplateArgumentRole, ...] = Field(
+        default_factory=tuple, exclude_if=lambda entries: not entries
+    )
     result_control: TemplateResultControl = TemplateResultControl()
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -238,6 +276,11 @@ class ToolContractTemplate(BaseModel):
             raise ValueError("template constraint keys must be unique")
         if set(constraint_keys).intersection(binding_keys):
             raise ValueError("template constraint keys cannot collide with binding keys")
+        role_keys = [entry.key for entry in self.argument_roles]
+        if len(set(role_keys)) != len(role_keys):
+            raise ValueError("duplicate template argument role key")
+        if set(role_keys).intersection(set(constraint_keys) | set(binding_keys)):
+            raise ValueError("template argument roles cannot override resource or selector keys")
         return self
 
     def resolved_effects(self) -> tuple[TemplateEffect, ...]:

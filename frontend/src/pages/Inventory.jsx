@@ -46,6 +46,7 @@ function Inventory({
   const [oauthClientId, setOauthClientId] = useState("");
   const [oauthScopes, setOauthScopes] = useState("");
   const [oauthClientSecret, setOauthClientSecret] = useState("");
+  const [oauthExpectedIssuer, setOauthExpectedIssuer] = useState("");
   const [oauthCallbackUri, setOauthCallbackUri] = useState("");
   const [discovering, setDiscovering] = useState(false);
   const [discoverResult, setDiscoverResult] = useState("");
@@ -382,6 +383,25 @@ function Inventory({
                 <FieldError id="oauth-scopes-error" message={discoverFieldErrors.requestedScopes} />
               </label>
               <label>
+                Expected authorization server (required with a client secret)
+                <input
+                  aria-describedby="oauth-expected-issuer-error"
+                  aria-invalid={Boolean(discoverFieldErrors.expectedAuthorizationServer)}
+                  maxLength={2048}
+                  onChange={(event) => {
+                    setOauthExpectedIssuer(event.target.value);
+                    setDiscoverFieldErrors((current) => clearFieldError(current, "expectedAuthorizationServer"));
+                  }}
+                  placeholder="https://issuer.example.com"
+                  type="url"
+                  value={oauthExpectedIssuer}
+                />
+                <FieldError
+                  id="oauth-expected-issuer-error"
+                  message={discoverFieldErrors.expectedAuthorizationServer}
+                />
+              </label>
+              <label>
                 OAuth client secret
                 <input
                   aria-describedby="oauth-client-secret-error"
@@ -624,6 +644,7 @@ function Inventory({
         clientId: oauthClientId,
         requestedScopes: oauthScopes,
         clientSecret: oauthClientSecret,
+        expectedAuthorizationServer: oauthExpectedIssuer,
       });
       setDiscoverFieldErrors(errors);
       if (Object.keys(errors).length > 0) {
@@ -662,7 +683,11 @@ function Inventory({
       setDiscoverFieldErrors({});
       await onRefresh?.();
     } catch (err) {
-      setDiscoverError(err.message || "Discovery failed");
+      setDiscoverError(
+        err.code === "request_timeout"
+          ? "Discovery may still be running on the backend. Refresh the inventory before retrying to avoid duplicate work."
+          : (err.message || "Discovery failed"),
+      );
     } finally {
       setDiscovering(false);
     }
@@ -708,7 +733,11 @@ function Inventory({
       );
       await onRefresh?.();
     } catch (err) {
-      setDiscoverError(err.message || "Discovery failed.");
+      setDiscoverError(
+        err.code === "request_timeout"
+          ? "Rediscovery may still be running on the backend. Refresh the inventory before retrying."
+          : (err.message || "Discovery failed."),
+      );
     } finally {
       setDiscovering(false);
     }

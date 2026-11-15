@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from hashlib import sha256
+from hmac import compare_digest
 from uuid import uuid4
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,8 +15,8 @@ from common.mcp_endpoint import is_exact_local_lab_endpoint
 from common.upstream_auth import (
     AUTH_MODE_OAUTH,
     UPSTREAM_SECRET_DIR,
-    UpstreamAuthError,
     delete_upstream_secret,
+    oauth_credential_lock,
     write_upstream_secret,
 )
 from common.upstream_oauth import (
@@ -25,6 +27,7 @@ from common.upstream_oauth import (
     exchange_authorization_code,
     normalize_requested_scopes,
     register_dynamic_oauth_client,
+    validate_authorization_response_issuer,
 )
 from app.core.config import settings
 from app.db.database import get_db
@@ -97,6 +100,16 @@ def register_oauth_server(
             } if isinstance(previous_client_id, str) else {}),
             "requested_scopes": normalize_requested_scopes(payload.requested_scopes),
             **({"client_secret_ref": client_secret_ref} if isinstance(client_secret_ref, str) else {}),
+            **({"expected_authorization_server": payload.expected_authorization_server}
+               if payload.expected_authorization_server
+               else {"expected_authorization_server": previous_configuration["expected_authorization_server"]}
+               if isinstance(previous_configuration.get("expected_authorization_server"), str)
+               and (not payload.client_id or payload.client_id == previous_client_id)
+               else {}),
+            **({"authorization_server": previous_configuration["authorization_server"]}
+               if isinstance(previous_configuration.get("authorization_server"), str)
+               and (not payload.client_id or payload.client_id == previous_client_id)
+               else {}),
         }
         server.oauth_status = "OAUTH_CONFIGURED"
         server.oauth_last_error = None
@@ -144,6 +157,8 @@ def register_oauth_server(
             oauth_config={
                 **({"client_id": payload.client_id} if payload.client_id else {}),
                 "requested_scopes": normalize_requested_scopes(payload.requested_scopes),
+                **({"expected_authorization_server": payload.expected_authorization_server}
+                   if payload.expected_authorization_server else {}),
             },
             oauth_status="OAUTH_CONFIGURED",
             status="active",
@@ -203,7 +218,7 @@ def begin_oauth_connection(
     current: AuthenticatedControlPlaneUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    server = _oauth_server(db, server_id)
+    server = _oauth_server(db, server_id, lock=True)
     bootstrap = server.oauth_config or {}
     dynamic_client_secret_ref: str | None = None
     try:
@@ -214,6 +229,23 @@ def begin_oauth_connection(
             requested_scopes=list(bootstrap.get("requested_scopes") or []),
         )
         client_secret_ref = bootstrap.get("client_secret_ref")
+        previous_issuer = bootstrap.get("authorization_server")
+        current_issuer = configuration.get("authorization_server")
+        expected_issuer = bootstrap.get("expected_authorization_server") or previous_issuer
+        if client_secret_ref and not expected_issuer:
+            # Remote MCP metadata alone may not select an issuer that
+            # receives an independently pre-registered client secret.
+            raise UpstreamOAuthError("upstream_oauth_expected_issuer_binding_missing")
+        if expected_issuer and expected_issuer != current_issuer:
+            raise UpstreamOAuthError("upstream_oauth_client_authority_changed")
+        if (
+            isinstance(previous_issuer, str)
+            and previous_issuer
+            and previous_issuer != current_issuer
+        ):
+            # An OAuth client registration/secret is scoped to its AS.
+            # A new issuer requires an explicit new client registration.
+            raise UpstreamOAuthError("upstream_oauth_client_authority_changed")
         if "client_id" not in configuration:
             registration_endpoint = configuration.get("registration_endpoint")
             if not isinstance(registration_endpoint, str):
@@ -231,6 +263,9 @@ def begin_oauth_connection(
                 client_secret_ref = dynamic_client_secret_ref
         if isinstance(client_secret_ref, str) and client_secret_ref:
             configuration["client_secret_ref"] = client_secret_ref
+        # Every authorization flow starts a new credential generation.
+        # A token issued for an older configuration can never be promoted.
+        configuration["credential_generation"] = str(uuid4())
         _state, authorization_url, expires_at = create_oauth_attempt(
             attempt_directory=OAUTH_ATTEMPT_DIR,
             server_id=server.id,
@@ -242,6 +277,11 @@ def begin_oauth_connection(
             client_secret_ref=configuration.get("client_secret_ref"),
             resource=configuration["resource"],
             scopes=configuration["scopes"],
+            authorization_server=configuration["authorization_server"],
+            credential_generation=configuration["credential_generation"],
+            authorization_response_iss_parameter_supported=configuration.get(
+                "authorization_response_iss_parameter_supported", False
+            ),
         )
     except UpstreamOAuthError as exc:
         if dynamic_client_secret_ref:
@@ -260,7 +300,12 @@ def begin_oauth_connection(
         db.commit()
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
-    server.oauth_config = configuration
+    # Bind the currently authorized flow to this exact server. Only a hash
+    # of the random OAuth state is persisted; new connects supersede old.
+    server.oauth_config = {
+        **configuration,
+        "active_attempt_state_sha256": sha256(_state.encode("ascii")).hexdigest(),
+    }
     server.oauth_status = "AUTHORIZATION_PENDING"
     server.oauth_last_error = None
     record_control_plane_audit(
@@ -288,15 +333,25 @@ def complete_oauth_connection(
     state: str | None = Query(default=None, max_length=256),
     code: str | None = Query(default=None, max_length=8192),
     error: str | None = Query(default=None, max_length=128),
+    iss: str | None = Query(default=None, max_length=2048),
     db: Session = Depends(get_db),
+    request: Request = None,
 ):
+    # FastAPI normally chooses one value for repeated parameters. Reject
+    # ambiguity before consuming state or issuing any token request.
+    if request is not None:
+        for parameter in ("state", "code", "error", "iss"):
+            if len(request.query_params.getlist(parameter)) > 1:
+                return _callback_redirect("failed")
     try:
         attempt = consume_oauth_attempt(attempt_directory=OAUTH_ATTEMPT_DIR, state=state or "")
     except UpstreamOAuthError:
         return _callback_redirect("failed")
 
     server_id = int(attempt["server_id"])
-    server = db.get(MCPServer, server_id)
+    # Hold PostgreSQL row lock through exchange and commit. A disconnect or
+    # reconfiguration cannot interleave with token writes and revive a flow.
+    server = db.get(MCPServer, server_id, with_for_update=True)
     actor = db.get(ControlPlaneUser, attempt["actor_user_id"])
     if (
         server is None
@@ -309,7 +364,35 @@ def complete_oauth_connection(
     ):
         return _callback_redirect("failed", server_id)
 
+    active_state_hash = (server.oauth_config or {}).get("active_attempt_state_sha256")
+    received_hash = sha256((state or "").encode("utf-8")).hexdigest()
+    if (
+        server.oauth_status != "AUTHORIZATION_PENDING"
+        or not isinstance(active_state_hash, str)
+        or len(active_state_hash) != 64
+        or not compare_digest(active_state_hash, received_hash)
+        or attempt.get("authorization_server") != (server.oauth_config or {}).get("authorization_server")
+        or attempt.get("client_id") != (server.oauth_config or {}).get("client_id")
+        or attempt.get("resource") != (server.oauth_config or {}).get("resource")
+    ):
+        return _callback_redirect("failed", server_id)
+
+    try:
+        validate_authorization_response_issuer(attempt=attempt, iss=iss)
+    except UpstreamOAuthError as exc:
+        server.oauth_config = {k: v for k, v in (server.oauth_config or {}).items() if k != "active_attempt_state_sha256"}
+        server.oauth_status = "OAUTH_ERROR"
+        server.oauth_last_error = str(exc)
+        record_control_plane_audit(
+            db, actor=actor, action="UPSTREAM_OAUTH_CONNECT_FAILED",
+            target_type="mcp_server", target_id=str(server.id), result="FAILED",
+            after_json={"endpoint": server.endpoint, "error_code": str(exc)},
+        )
+        db.commit()
+        return _callback_redirect("failed", server_id)
+
     if error or not code:
+        server.oauth_config = {k: v for k, v in (server.oauth_config or {}).items() if k != "active_attempt_state_sha256"}
         server.oauth_status = "OAUTH_ERROR"
         server.oauth_last_error = "upstream_oauth_authorization_denied"
         record_control_plane_audit(
@@ -325,12 +408,14 @@ def complete_oauth_connection(
         return _callback_redirect("failed", server_id)
 
     try:
-        exchange_authorization_code(
-            code=code,
-            attempt=attempt,
-            credential_ref=server.credential_ref,
-        )
+        with oauth_credential_lock(server.credential_ref):
+            exchange_authorization_code(
+                code=code,
+                attempt=attempt,
+                credential_ref=server.credential_ref,
+            )
     except UpstreamOAuthError as exc:
+        server.oauth_config = {k: v for k, v in (server.oauth_config or {}).items() if k != "active_attempt_state_sha256"}
         server.oauth_status = "OAUTH_ERROR"
         server.oauth_last_error = str(exc)
         record_control_plane_audit(
@@ -345,6 +430,7 @@ def complete_oauth_connection(
         db.commit()
         return _callback_redirect("failed", server_id)
 
+    server.oauth_config = {k: v for k, v in (server.oauth_config or {}).items() if k != "active_attempt_state_sha256"}
     server.oauth_status = "CONNECTED"
     server.oauth_connected_at = datetime.now(UTC).replace(tzinfo=None)
     server.oauth_last_error = None
@@ -367,9 +453,16 @@ def disconnect_oauth_server(
     current: AuthenticatedControlPlaneUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    server = _oauth_server(db, server_id)
+    server = _oauth_server(db, server_id, lock=True)
     if server.credential_ref:
-        delete_upstream_secret(server.credential_ref)
+        with oauth_credential_lock(server.credential_ref):
+            delete_upstream_secret(server.credential_ref)
+    # Revoking the active generation is persistent and fail-closed even if
+    # the OAuth state file is later delivered by the authorization server.
+    server.oauth_config = {
+        k: v for k, v in (server.oauth_config or {}).items()
+        if k != "active_attempt_state_sha256"
+    }
     server.oauth_status = "OAUTH_CONFIGURED"
     server.oauth_connected_at = None
     server.oauth_last_error = None
@@ -386,8 +479,11 @@ def disconnect_oauth_server(
     return OAuthConnectionStatus(server_id=server.id, oauth_status=server.oauth_status)
 
 
-def _oauth_server(db: Session, server_id: int) -> MCPServer:
-    server = db.get(MCPServer, server_id)
+def _oauth_server(db: Session, server_id: int, *, lock: bool = False) -> MCPServer:
+    server = (
+        db.get(MCPServer, server_id, with_for_update=True)
+        if lock else db.get(MCPServer, server_id)
+    )
     if server is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="mcp_server_not_found")
     if server.auth_mode != AUTH_MODE_OAUTH:

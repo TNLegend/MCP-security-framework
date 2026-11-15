@@ -22,10 +22,8 @@ from app.schemas.control_plane import AuthorityContext, ControlPlaneConfigConten
 from app.schemas.security_pack import CreateToolContractDraftRequest
 from app.services.control_plane_audit import record_control_plane_audit
 from app.services.control_plane_config import (
-    ControlPlaneConfigError,
     active_revision,
     create_draft_from_revision,
-    create_revision,
     patch_draft_revision,
 )
 from app.services.published_configuration import (
@@ -38,11 +36,9 @@ from app.services.security_pack_lifecycle import (
     content_with_declarative_manifest,
 )
 from app.services.server_security_metadata import refresh_server_security_status
-from app.services.tool_analysis import (
-    ToolAnalysisService,
-    mark_tool_contract_pending_publication,
-)
-from app.services.tool_observation_approval import approve_tool_observation
+from app.services.tda_application.analysis_service import ToolAnalysisService, mark_tool_contract_pending_publication
+from app.services.tda_application.queries import latest_protocol_observation
+from app.services.tda_application.observation_approval import approve_tool_observation
 from proxy.protocol_profiles import LEGACY_PROFILE_ID
 from proxy.resource_adapters_v2 import AdapterRegistry
 from proxy.trusted_adapter_packages import adapter_starter_catalog
@@ -53,19 +49,24 @@ from proxy.security_packs import (
     ToolContractTemplate,
 )
 from common.mcp_endpoint import server_ref_for_server
+from proxy.schema_bounds import SchemaBound, SchemaBoundsError, apply_schema_bounds
 from proxy.tool_security_v2 import (
     ArgumentConstraint,
+    ArgumentRole,
     AuthorityResourceScope,
     FixedResourceReference,
     ReferencePrecision,
     ResourceBinding,
     ResultControl,
     ScopeMatchMode,
+    SecurityModelError,
     SupportedSchemaProfileV1,
     ToolEffect,
     security_schema_projection,
+    constrain_declared_selector_values,
     ToolSecurityContract,
     validate_contract_for_schema,
+    compile_executable_contract_schema,
 )
 
 
@@ -172,7 +173,11 @@ def suggest_templates_for_tool(
     registry = SecurityPackRegistry(
         content.security_packs if content else ()
     )
-    schema_paths = _schema_paths(tool.input_schema)
+    # Template suggestions are read-only hints, NOT authorization. Unsupported
+    # bounds must not prevent showing the generic contract editor where an
+    # administrator can explicitly narrow them. Strict validation still runs
+    # in create_tool_contract_draft, publication and the runtime Proxy.
+    schema_paths = _suggestion_schema_paths(tool.input_schema)
     searchable = " ".join(
         (
             tool.name,
@@ -218,7 +223,7 @@ def adapter_guidance_for_tool(
     *,
     content: ControlPlaneConfigContent | None = None,
 ) -> dict[str, Any]:
-    schema_paths = _schema_paths(tool.input_schema)
+    schema_paths = _suggestion_schema_paths(tool.input_schema)
     suggestions = suggest_templates_for_tool(tool, content=content)
     searchable = " ".join(
         (
@@ -540,16 +545,25 @@ def reanalyze_tool_with_published_contract(
         server.preferred_upstream_profile or LEGACY_PROFILE_ID,
     )
     analysis_service = ToolAnalysisService()
-    statuses = tuple(
-        analysis_service.observe_and_analyze(
-            db=db,
-            tool=tool,
-            server_ref=server_ref,
-            profile_snapshot=profile_snapshot,
-            upstream_protocol_profile_id=profile_id,
-        ).analysis_status
-        for profile_id in dict.fromkeys(value for value in profile_ids if value)
-    )
+    statuses: list[str] = []
+    for profile_id in dict.fromkeys(value for value in profile_ids if value):
+        source = latest_protocol_observation(
+            db, tool_id=tool.id, upstream_protocol_profile_id=profile_id,
+        )
+        if source is None or source.analysis_state == "STALE":
+            raise SecurityPackOnboardingError("profile_discovery_observation_missing")
+        try:
+            analysis = analysis_service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref=server_ref,
+                profile_snapshot=profile_snapshot,
+                upstream_protocol_profile_id=profile_id,
+                source_observation=source,
+            )
+        except ValueError as exc:
+            raise SecurityPackOnboardingError(str(exc)) from exc
+        statuses.append(analysis.analysis_status)
     refresh_server_security_status(db, server.id)
     record_control_plane_audit(
         db,
@@ -564,7 +578,7 @@ def reanalyze_tool_with_published_contract(
     return {
         "tool_id": tool.id,
         "revision_id": snapshot.revision_id,
-        "analysis_statuses": statuses,
+        "analysis_statuses": tuple(statuses),
     }
 
 
@@ -575,6 +589,13 @@ def create_tool_contract_draft(
     payload: CreateToolContractDraftRequest,
     actor: ControlPlaneUser,
 ) -> dict[str, Any]:
+    # Enforce a common lock hierarchy with F11 inventory publication:
+    # catalog scope -> config revision -> Runtime review/admission authority.
+    # _resolve_draft and patch_draft_revision may lock configuration; if
+    # this catalog lock were deferred to approve_tool_observation, the
+    # reverse config->catalog ordering could deadlock staged activation.
+    from app.services.discovery_generation import lock_review_catalog_scope
+    lock_review_catalog_scope(db, tool_id=tool.id)
     server = db.get(MCPServer, tool.server_id)
     if server is None or server.status == "archived":
         raise SecurityPackOnboardingError("tool_server_unavailable")
@@ -599,7 +620,20 @@ def create_tool_contract_draft(
         pack, template = registry.template(payload.template_id)
     except SecurityPackError as exc:
         raise SecurityPackOnboardingError(exc.code) from exc
-    schema_paths = set(_schema_paths(tool.input_schema))
+    # The signed pack template, not a provider name heuristic, declares
+    # which mapped argument switches effects. Use its required EQ constraints
+    # to safely narrow the schema BEFORE checking selector syntax.
+    selector_values = {
+        payload.argument_mappings[item.key]: item.value
+        for item in template.constraints
+        if item.effect_selector and item.key in payload.argument_mappings
+    }
+    schema_paths = set(_schema_paths(
+        tool.input_schema,
+        schema_bounds=payload.schema_bounds,
+        selector_values=selector_values,
+        signed_argument_roles=bool(template.argument_roles),
+    ))
     contract = _build_contract(
         tool=tool,
         server=server,
@@ -607,6 +641,7 @@ def create_tool_contract_draft(
         mappings=payload.argument_mappings,
         fixed_resources=payload.fixed_resources,
         schema_paths=schema_paths,
+        schema_bounds=payload.schema_bounds,
     )
     adapter_registry = AdapterRegistry(
         capability_catalog_version="2",
@@ -614,9 +649,9 @@ def create_tool_contract_draft(
         security_packs=content.security_packs,
     )
     try:
-        resolutions = validate_contract_for_schema(
+        _executable_schema, resolutions = compile_executable_contract_schema(
             contract,
-            security_schema_projection(tool.input_schema or {}),
+            tool.input_schema or {},
             capability_catalog=adapter_registry.capabilities,
             resource_type_registry=adapter_registry.resource_types,
             adapter_resolver=adapter_registry,
@@ -624,6 +659,39 @@ def create_tool_contract_draft(
     except Exception as exc:
         code = getattr(exc, "code", "contract_or_schema_invalid")
         raise SecurityPackOnboardingError(code) from exc
+
+    # A shared tool row is not the source of truth for every upstream profile.
+    # Compile the SAME contract against each genuinely discovered definition
+    # and refuse incompatible schemas, instead of silently projecting the
+    # last imported profile's inputs onto other profiles.
+    profile_ids_to_review = tuple(server.supported_protocol_profiles or ()) or (
+        server.preferred_upstream_profile,
+    )
+    for profile_id in dict.fromkeys(p for p in profile_ids_to_review if p):
+        source = latest_protocol_observation(
+            db, tool_id=tool.id, upstream_protocol_profile_id=profile_id,
+        )
+        if source is None or source.analysis_state == "STALE":
+            raise SecurityPackOnboardingError("profile_discovery_observation_missing")
+        observed_schema = (source.canonical_tool_definition or {}).get("input_schema")
+        if not isinstance(observed_schema, dict):
+            raise SecurityPackOnboardingError("profile_observation_schema_invalid")
+        try:
+            _profile_executable_schema, profile_resolutions = compile_executable_contract_schema(
+                contract,
+                observed_schema,
+                capability_catalog=adapter_registry.capabilities,
+                resource_type_registry=adapter_registry.resource_types,
+                adapter_resolver=adapter_registry,
+            )
+        except Exception as exc:
+            raise SecurityPackOnboardingError(
+                "contract_incompatible_with_observed_profile"
+            ) from exc
+        if profile_resolutions != resolutions:
+            raise SecurityPackOnboardingError(
+                "profile_adapter_resolution_mismatch"
+            )
 
     contracts = [
         value
@@ -681,14 +749,24 @@ def create_tool_contract_draft(
     )
     analysis_statuses: list[str] = []
     approvals = list(next_content.tool_observation_approvals or ())
+    analysis_service = ToolAnalysisService()
     for profile_id in dict.fromkeys(value for value in profile_ids if value):
-        analysis = ToolAnalysisService().observe_and_analyze(
-            db=db,
-            tool=tool,
-            server_ref=contract.server_ref,
-            profile_snapshot=profile_snapshot,
-            upstream_protocol_profile_id=profile_id,
+        source = latest_protocol_observation(
+            db, tool_id=tool.id, upstream_protocol_profile_id=profile_id,
         )
+        if source is None or source.analysis_state == "STALE":
+            raise SecurityPackOnboardingError("profile_discovery_observation_missing")
+        try:
+            analysis = analysis_service.observe_and_analyze(
+                db=db,
+                tool=tool,
+                server_ref=contract.server_ref,
+                profile_snapshot=profile_snapshot,
+                upstream_protocol_profile_id=profile_id,
+                source_observation=source,
+            )
+        except ValueError as exc:
+            raise SecurityPackOnboardingError(str(exc)) from exc
         analysis_statuses.append(analysis.analysis_status)
         if not payload.approve_observations:
             continue
@@ -804,66 +882,13 @@ def _refresh_stale_draft_observation_approvals(
     content: ControlPlaneConfigContent,
     actor: ControlPlaneUser,
 ) -> ControlPlaneConfigContent:
-    approvals = tuple(content.tool_observation_approvals or ())
-    if not approvals:
-        return content
-
-    contracts = {
-        (contract.server_ref, contract.tool_name): contract
-        for contract in content.tool_security_contracts or ()
-    }
-    refreshed = []
-    changed = False
-    for approval in approvals:
-        current_review = db.scalar(
-            select(ToolObservationReviewApproval).where(
-                ToolObservationReviewApproval.observation_id
-                == approval.tool_observation_id,
-                ToolObservationReviewApproval.tool_fingerprint
-                == approval.tool_fingerprint,
-                ToolObservationReviewApproval.contract_hash
-                == approval.contract_hash,
-                ToolObservationReviewApproval.evidence_bundle_hash
-                == approval.evidence_bundle_hash,
-                ToolObservationReviewApproval.revision_id == draft.id,
-                ToolObservationReviewApproval.active.is_(True),
-            )
-        )
-        if approval.revision_id == draft.id and current_review is not None:
-            refreshed.append(approval)
-            continue
-
-        observation = db.get(ToolProtocolObservation, approval.tool_observation_id)
-        if observation is None:
-            raise SecurityPackOnboardingError("approval_observation_missing")
-        if (
-            observation.server_ref != approval.server_ref
-            or observation.upstream_protocol_profile_id
-            != approval.upstream_protocol_profile_id
-            or observation.tool_fingerprint != approval.tool_fingerprint
-        ):
-            raise SecurityPackOnboardingError("approval_observation_mismatch")
-        contract = contracts.get((approval.server_ref, observation.tool_name))
-        if contract is None or contract.contract_hash != approval.contract_hash:
-            raise SecurityPackOnboardingError("approval_contract_hash_mismatch")
-        try:
-            refreshed_approval = approve_tool_observation(
-                db,
-                observation_id=observation.id,
-                contract=contract,
-                admin_id=actor.id,
-                revision_id=draft.id,
-            )
-        except ValueError as exc:
-            raise SecurityPackOnboardingError(str(exc)) from exc
-        refreshed.append(refreshed_approval)
-        changed = True
-
-    if not changed:
-        return content
-    return content.model_copy(
-        update={"tool_observation_approvals": tuple(refreshed)}
-    )
+    # Onboarding one tool is not an explicit review of every other tool in
+    # the draft. Reuse exact authority only; never mint a fresh approval with
+    # the draft author's identity or a new evidence bundle here.
+    from app.services.control_plane_config import _copy_observation_approvals_to_draft
+    _copy_observation_approvals_to_draft(db,source=content,draft=draft,actor=actor,reuse_existing=True)
+    refreshed=validate_config_content(draft.content)
+    return content if refreshed == content else refreshed
 
 
 def _resolve_draft(
@@ -995,7 +1020,8 @@ def _template_bindings(template: ToolContractTemplate):
 
 
 def _template_mapping_specs(template: ToolContractTemplate):
-    return (*_template_bindings(template), *template.constraints)
+    return (*_template_bindings(template), *template.constraints,
+            *template.argument_roles)
 
 
 def _template_capabilities(template: ToolContractTemplate) -> tuple[str, ...]:
@@ -1014,6 +1040,7 @@ def _build_contract(
     mappings: dict[str, tuple[str, ...]],
     fixed_resources: dict[str, str],
     schema_paths: set[tuple[str, ...]],
+    schema_bounds: tuple[SchemaBound, ...] = (),
 ) -> ToolSecurityContract:
     template_effects = _template_effects(template)
     resource_keys = {binding.key for binding in _template_bindings(template)}
@@ -1078,6 +1105,7 @@ def _build_contract(
         )
 
     argument_constraints: list[ArgumentConstraint] = []
+    effect_selector_paths: list[tuple[str, ...]] = []
     for constraint in template.constraints:
         path = mappings.get(constraint.key)
         if path is None:
@@ -1086,6 +1114,8 @@ def _build_contract(
             continue
         if path not in schema_paths:
             raise SecurityPackOnboardingError("contract_path_not_in_schema")
+        if constraint.effect_selector:
+            effect_selector_paths.append(path)
         argument_constraints.append(
             ArgumentConstraint(
                 constraint_id=f"tool-{tool.id}.{constraint.key}",
@@ -1097,6 +1127,36 @@ def _build_contract(
         )
 
     unbound = tuple(sorted(schema_paths - bound_paths))
+    signed_roles: list[ArgumentRole] = []
+    if template.argument_roles:
+        role_by_path: dict[tuple[str, ...], str] = {}
+        for effect in effects:
+            for binding in effect.resource_bindings:
+                previous = role_by_path.get(binding.path)
+                if previous is not None and previous != binding.role:
+                    raise SecurityPackOnboardingError("ambiguous_resource_argument_role")
+                role_by_path[binding.path] = binding.role
+        for path in effect_selector_paths:
+            if path in role_by_path:
+                raise SecurityPackOnboardingError("selector_is_resource")
+            role_by_path[path] = "SELECTOR"
+        for role in template.argument_roles:
+            path = mappings.get(role.key)
+            if path is None:
+                raise SecurityPackOnboardingError(
+                    "required_template_argument_role_missing"
+                )
+            if path not in schema_paths or path in role_by_path:
+                raise SecurityPackOnboardingError("argument_role_path_invalid")
+            role_by_path[path] = role.role
+        if set(role_by_path) != schema_paths:
+            # This cannot be silently inferred as DATA: the pack author
+            # must explicitly review every remaining schema input.
+            raise SecurityPackOnboardingError("argument_roles_incomplete")
+        signed_roles = [
+            ArgumentRole(path=path, role=role)
+            for path, role in sorted(role_by_path.items())
+        ]
     return ToolSecurityContract(
         server_ref=server_ref_for_server(
             {"transport": server.transport, "endpoint": server.endpoint}
@@ -1104,8 +1164,11 @@ def _build_contract(
         tool_name=tool.name,
         effects=tuple(effects),
         argument_constraints=tuple(argument_constraints),
+        schema_bounds=schema_bounds,
         result_control=ResultControl(**template.result_control.model_dump()),
         unbound_arguments=unbound,
+        effect_selector_paths=tuple(effect_selector_paths),
+        argument_roles=tuple(signed_roles),
     )
 
 
@@ -1139,11 +1202,14 @@ def _merge_scopes(
             match_mode=ScopeMatchMode(value.match_mode),
             broad_scope_acknowledged=value.broad_scope_acknowledged,
         )
-        canonical, _ = registry.resource_types.canonicalize(
-            resource_type,
-            candidate.canonical_value,
-            AuthorityContext().model_dump(mode="json"),
-        )
+        try:
+            canonical, _ = registry.resource_types.canonicalize(
+                resource_type,
+                candidate.canonical_value,
+                AuthorityContext().model_dump(mode="json"),
+            )
+        except SecurityModelError as exc:
+            raise SecurityPackOnboardingError(exc.code) from exc
         candidate = candidate.model_copy(update={"canonical_value": canonical})
         scopes = [scope for scope in scopes if scope.scope_id != candidate.scope_id]
         scopes.append(candidate)
@@ -1162,10 +1228,63 @@ def _contract_resource_types(contract: ToolSecurityContract) -> tuple[str, ...]:
     )
 
 
-def _schema_paths(schema: dict[str, Any] | None) -> tuple[tuple[str, ...], ...]:
+def _suggestion_schema_paths(
+    schema: dict[str, Any] | None,
+) -> tuple[tuple[str, ...], ...]:
+    """Bounded, read-only leaf hints for UI mapping; NOT a security admission.
+
+    Do not use these paths to authorize a call. Numeric/array limits absent
+    from third-party schemas are declared explicitly at contract creation.
+    Actual onboarding and runtime use the strict _schema_paths validator.
+    """
     try:
+        return _schema_paths(schema)
+    except SecurityPackOnboardingError:
+        pass
+    try:
+        projected = security_schema_projection(schema or {})
+    except SecurityModelError:
+        return ()
+    pending = [(projected, ())]
+    visited = 0
+    paths: list[tuple[str, ...]] = []
+    while pending:
+        node, path = pending.pop()
+        visited += 1
+        if visited > 256 or len(path) > 8:
+            return ()
+        if not isinstance(node, dict):
+            continue
+        if any(key in node for key in ("$ref", "oneOf", "anyOf", "allOf", "if", "then", "else")):
+            continue
+        if node.get("type") == "object":
+            properties = node.get("properties") or {}
+            if not isinstance(properties, dict):
+                continue
+            for name, child in properties.items():
+                if isinstance(name, str) and isinstance(child, dict):
+                    pending.append((child, (*path, name)))
+        elif node.get("type") == "array":
+            items = node.get("items")
+            if isinstance(items, dict):
+                pending.append((items, (*path, "*")))
+        elif node.get("type") in {"number", "integer", "string", "boolean"} and path:
+            paths.append(path)
+    return tuple(sorted(set(paths)))
+
+
+def _schema_paths(
+    schema: dict[str, Any] | None, *,
+    schema_bounds: tuple[SchemaBound, ...] = (),
+    selector_values: dict[tuple[str, ...], Any] | None = None,
+    signed_argument_roles: bool = False,
+) -> tuple[tuple[str, ...], ...]:
+    try:
+        projected = security_schema_projection(schema or {})
+        projected = apply_schema_bounds(projected, schema_bounds)
+        projected = constrain_declared_selector_values(projected, selector_values or {})
         return SupportedSchemaProfileV1.validate(
-            security_schema_projection(schema or {})
+            projected, signed_argument_roles=signed_argument_roles,
         )
     except Exception as exc:
         code = getattr(exc, "code", "schema_construct_unsupported")

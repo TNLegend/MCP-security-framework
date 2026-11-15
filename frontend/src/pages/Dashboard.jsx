@@ -32,7 +32,11 @@ function Dashboard({
   );
   const blockedTools = tools.filter((tool) => tool.analysis_status === "BLOCKED");
   const activeDenies = emergencyDenies.filter((deny) => new Date(deny.expires_at) > new Date());
-  const recentAllows = runtimeLogs.filter((log) => log.decision === "ALLOW").length;
+  // A pre-execution audit intent and its completion are two events, but
+  // one logical tool call. Keep intents in logs; exclude them from KPIs.
+  const recentAllows = runtimeLogs.filter(
+    (log) => log.decision === "ALLOW" && log.execution_status !== "authorized_pending_execution",
+  ).length;
   const recentBlocks = runtimeLogs.filter((log) => log.decision === "BLOCK").length;
 
   return (

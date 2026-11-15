@@ -1,8 +1,14 @@
-from typing import Any
+import re
+from http.client import HTTPException
+from functools import wraps
+from threading import RLock
+from time import monotonic
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from common.mcp_endpoint import MCPEndpointValidationError, validate_mcp_endpoint
+from common.pinned_http import build_pinned_opener
 from proxy.mcp_transport import (
     LegacyHTTPSSETransport,
     StreamableHTTPResponseDecoder,
@@ -17,6 +23,10 @@ from proxy.protocol_profiles import (
     ProtocolProfileRegistry,
 )
 from proxy.protocol_negotiation import MCP_CLIENT_USER_AGENT
+from proxy.inline_resource_projection import (
+    InlineResourceProjectionError,
+    project_inline_text_resources,
+)
 from proxy.protocol_revisions import ProtocolEra, TransportKind
 from common.canonical_json import canonical_json_bytes
 
@@ -42,12 +52,22 @@ class _NoRedirectHandler(HTTPRedirectHandler):
         return None
 
 
+def _serialized_client_state(operation):
+    """MCP sessions are stateful: serialize init, request IDs and transport."""
+    @wraps(operation)
+    def guarded(self, *args, **kwargs):
+        with self._state_lock:
+            return operation(self, *args, **kwargs)
+    return guarded
+
+
 class MCPHttpClient:
     def __init__(
         self,
         endpoint: str,
         protocol_version: str = SUPPORTED_PROTOCOL_VERSION,
-        timeout_seconds: float = 10.0,
+        # Allow bounded time for remote MCP SSE replies without weakening validation.
+        timeout_seconds: float = 20.0,
         protocol_profile_id: str | None = None,
         allow_legacy_counter_offer: bool = False,
         bearer_token: str | None = None,
@@ -70,6 +90,7 @@ class MCPHttpClient:
         self.negotiated_protocol_version: str | None = None
         self.session_id: str | None = None
         self.initialized = False
+        self._state_lock = RLock()
         self.timeout_seconds = timeout_seconds
         self.allow_legacy_counter_offer = allow_legacy_counter_offer
         self._request_id = 0
@@ -77,7 +98,45 @@ class MCPHttpClient:
         self._upstream_headers = {"User-Agent": MCP_CLIENT_USER_AGENT}
         if bearer_token:
             self._upstream_headers["Authorization"] = f"Bearer {bearer_token}"
-        self._opener = build_opener(_NoRedirectHandler)
+        self._opener = build_pinned_opener()
+        self._parameter_header_hints: dict[str, str] = {}
+
+    @_serialized_client_state
+    def set_parameter_header_hints(self, hints: dict[str, str]) -> None:
+        """Bind provider-declared routing headers only after the caller has authorized this tool.
+
+        A header is always a bounded duplicate of an approved string argument, never
+        a new independent authority or a user-controlled arbitrary HTTP header.
+        """
+        if self.protocol_profile.protocol_era != ProtocolEra.MODERN or not isinstance(hints, dict) or len(hints) > 16:
+            raise MCPProtocolError("modern_parameter_header_hints_invalid")
+        normalized: dict[str, str] = {}
+        for parameter, header_suffix in hints.items():
+            if (
+                not isinstance(parameter, str)
+                or not isinstance(header_suffix, str)
+                or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", parameter) is None
+                or header_suffix != parameter
+            ):
+                raise MCPProtocolError("modern_parameter_header_hint_unsupported")
+            normalized[parameter] = header_suffix
+        self._parameter_header_hints = normalized
+
+    def _parameter_headers_for_call(self, arguments: dict[str, Any]) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        for parameter, suffix in self._parameter_header_hints.items():
+            if parameter not in arguments:
+                continue
+            value = arguments[parameter]
+            if (
+                not isinstance(value, str)
+                or len(value.encode("utf-8")) > 512
+                or not value
+                or any(ord(character) < 33 or ord(character) > 126 for character in value)
+            ):
+                raise MCPProtocolError("modern_parameter_header_value_invalid")
+            headers[f"Mcp-Param-{suffix}"] = value
+        return headers
 
     def initialize(self) -> dict[str, Any]:
         if self.protocol_profile.protocol_era != ProtocolEra.LEGACY:
@@ -131,6 +190,7 @@ class MCPHttpClient:
         )
         self.initialized = True
 
+    @_serialized_client_state
     def ensure_initialized(self) -> None:
         if self.initialized:
             return
@@ -143,16 +203,20 @@ class MCPHttpClient:
         self.initialize()
         self.send_initialized_notification()
 
+    @_serialized_client_state
     def close(self) -> None:
         if self._legacy_http_sse_transport is not None:
             self._legacy_http_sse_transport.close()
 
-    def list_tools(self) -> dict[str, Any]:
+    @_serialized_client_state
+    def list_tools(self, cursor: str | None = None) -> dict[str, Any]:
         self.ensure_initialized()
+        if cursor is not None and (not isinstance(cursor, str) or not cursor or len(cursor) > 2048):
+            raise MCPProtocolError("mcp_discovery_cursor_invalid")
         payload, profile_headers = self.protocol_profile.serialize_request(
             request_id=self._next_request_id(),
             method="tools/list",
-            params={},
+            params={"cursor": cursor} if cursor else {},
         )
         response = self._post_json(
             payload,
@@ -168,21 +232,38 @@ class MCPHttpClient:
             raise MCPProtocolError(str(exc)) from exc
         return result
 
-    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    @_serialized_client_state
+    def call_tool(
+        self, name: str, arguments: dict[str, Any],
+        *, before_dispatch: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         self.ensure_initialized()
         payload, profile_headers = self.protocol_profile.serialize_tool_call(
             request_id=self._next_request_id(),
             name=name,
             arguments=arguments,
         )
+        # Run under the serialized client state lock, AFTER initialization and
+        # any waits for other requests, immediately before the tools/call POST.
+        # The callback commits its DB admission; it must fail closed on errors.
+        additional_headers = {
+            **profile_headers, **self._parameter_headers_for_call(arguments),
+        }
+        if before_dispatch is not None:
+            before_dispatch()
         response = self._post_json(
             payload,
             include_protocol_header=True,
-            extra_headers=profile_headers,
+            extra_headers=additional_headers,
         )
         result = response.get("result")
         if not isinstance(result, dict):
             raise MCPProtocolError("tools/call response is missing a result object.")
+        if self.protocol_profile.protocol_era == ProtocolEra.MODERN:
+            try:
+                result = project_inline_text_resources(result)
+            except InlineResourceProjectionError as exc:
+                raise MCPProtocolError(str(exc)) from exc
         try:
             self.protocol_profile.validate_tool_response(result)
         except ProtocolProfileError as exc:
@@ -217,7 +298,7 @@ class MCPHttpClient:
                 raise MCPProtocolError(str(exc)) from exc
             error = message.get("error")
             if error:
-                raise MCPProtocolError(f"MCP JSON-RPC error: {error}")
+                raise MCPProtocolError("upstream_mcp_jsonrpc_error")
             return message
 
         request = Request(
@@ -227,6 +308,7 @@ class MCPHttpClient:
             method="POST",
         )
 
+        request_deadline = monotonic() + self.timeout_seconds
         try:
             with self._opener.open(request, timeout=self.timeout_seconds) as response:
                 status_code = response.getcode()
@@ -239,9 +321,19 @@ class MCPHttpClient:
                             f"Expected 202 Accepted for notification, got {status_code}."
                         )
                     return {}
-                decoder = StreamableHTTPResponseDecoder(expected_request_id=payload.get("id"))
+                decoder = StreamableHTTPResponseDecoder(
+                    expected_request_id=payload.get("id"),
+                    deadline_monotonic=request_deadline,
+                )
                 message = decoder.decode(response)
         except HTTPError as exc:
+            # Session expired: mark this client stale for the NEXT independent
+            # call. Never replay the request that just failed; its effects
+            # could be unknown even if the session was rejected.
+            if exc.code == 404 and self.session_id:
+                self.session_id = None
+                self.initialized = False
+                self.negotiated_protocol_version = None
             exc.read(MAX_ERROR_BODY_BYTES + 1)
             raise MCPHttpError(f"MCP HTTP error {exc.code}") from exc
         except URLError as exc:
@@ -252,10 +344,14 @@ class MCPHttpClient:
             raise MCPHttpError("MCP HTTP request failed.") from exc
         except TransportProtocolError as exc:
             raise MCPProtocolError(str(exc)) from exc
+        except HTTPException as exc:
+            # Invalid chunk framing and incomplete HTTP bodies may occur
+            # after a mutating tools/call reached the upstream server.
+            raise MCPProtocolError("upstream_mcp_framing_error") from exc
 
         error = message.get("error")
         if error:
-            raise MCPProtocolError(f"MCP JSON-RPC error: {error}")
+            raise MCPProtocolError("upstream_mcp_jsonrpc_error")
 
         return message
 

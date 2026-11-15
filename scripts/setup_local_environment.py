@@ -46,7 +46,6 @@ from app.core.runtime_paths import (  # noqa: E402
 from scripts.check_dependencies import assert_system_prerequisites, find_postgres_tool  # noqa: E402
 
 
-SEMANTIC_MODEL_REPOSITORY = "MoritzLaurer/multilingual-MiniLMv2-L6-mnli-xnli"
 EMBEDDING_MODEL_REPOSITORY = "intfloat/multilingual-e5-small"
 PLACEHOLDER_VALUES = {"", "change_me", "<configure>", "<required>"}
 REQUIRED_BUILD_SECURITY_TABLES = {
@@ -530,7 +529,8 @@ def run_post_dependency_setup(
             [python, REPO_ROOT / "scripts" / "download_tool_analyzer_models.py"],
             env=env,
         )
-        completed.append("analyzer_models")
+        _run([python, REPO_ROOT / "scripts" / "install_m4_models.py"], env=env)
+        completed.append("analyzer_models_m6_e5_and_frozen_m4")
 
     if not options.skip_service_identities:
         _run(
@@ -1020,11 +1020,24 @@ def _trivy_available() -> bool:
 
 
 def _analyzer_models_available() -> bool:
-    for repository in (SEMANTIC_MODEL_REPOSITORY, EMBEDDING_MODEL_REPOSITORY):
-        model_dir = MODEL_CACHE_DIR / ("models--" + repository.replace("/", "--"))
-        snapshots = model_dir / "snapshots"
-        if not snapshots.is_dir() or not any(path.is_dir() for path in snapshots.iterdir()):
-            return False
+    """The only M4 is the signed local bundle; E5 belongs to M6."""
+    model_dir = MODEL_CACHE_DIR / (
+        "models--" + EMBEDDING_MODEL_REPOSITORY.replace("/", "--")
+    )
+    e5_snapshots = model_dir / "snapshots"
+    if not e5_snapshots.is_dir() or not any(
+        p.is_dir() for p in e5_snapshots.iterdir()
+    ):
+        return False
+    m4_bundle = Path(os.environ.get(
+        "M4_SEMANTICS_MODEL_ROOT",
+        str(REPO_ROOT / ".runtime/models/m4_semantics"),
+    ))
+    try:
+        from scripts.install_m4_models import validate_bundle
+        validate_bundle(m4_bundle)
+    except (RuntimeError, ValueError, OSError, json.JSONDecodeError):
+        return False
     return True
 
 

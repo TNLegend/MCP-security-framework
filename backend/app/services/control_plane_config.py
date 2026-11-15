@@ -4,12 +4,13 @@ from datetime import datetime, timezone
 import threading
 from typing import Any
 
-from sqlalchemy import event, func, select, text, update
+from sqlalchemy import event, func, select, text, update, or_, and_
 from sqlalchemy.orm import Session
 
 from app.models.build_security import BuildAssessment, BuildScanRun
 from app.models.control_plane import ControlPlaneConfigRevision, ControlPlaneState, ControlPlaneUser
 from app.models.mcp_server import MCPServer
+from app.models.mcp_tool import MCPTool
 from app.models.tool_analysis import ToolObservationReviewApproval, ToolProtocolObservation
 from app.models.trusted_agent_session import TrustedAgentSession
 from app.schemas.control_plane import ControlPlaneConfigContent, empty_latest_configuration
@@ -25,7 +26,7 @@ from app.services.revision_signing import (
     revision_signature_payload,
     sign_revision_payload,
 )
-from app.services.tool_observation_approval import evidence_bundle_for_observation
+from app.services.tda_application.observation_approval import evidence_bundle_for_observation
 from common.canonical_json import sha256_canonical_json
 from common.mcp_endpoint import server_ref_for_server
 from proxy.resource_adapters_v2 import AdapterRegistry
@@ -145,6 +146,44 @@ def create_revision(
     return revision
 
 
+def _lock_configuration_catalogs(db: Session, *contents: ControlPlaneConfigContent) -> None:
+    """Catalog before CONFIG/Runtime; late/reentrant calls never wait backwards.
+
+    Callers with an existing configuration transaction must roll it back and
+    retry on contention. No partially published revision may be committed.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        return
+    from app.services.discovery_generation import (
+        _lock_generation_authority,discovery_scope_key,
+        higher_authority_lock_held,DiscoveryGenerationError,
+    )
+    references = {c.server_ref for content in contents for c in content.tool_security_contracts or ()}
+    references.update(a.server_ref for content in contents for a in content.tool_observation_approvals or ())
+    with db.no_autoflush:
+        scopes = sorted({discovery_scope_key(transport=transport,endpoint=endpoint)
+            for transport,endpoint in db.execute(select(MCPServer.transport,MCPServer.endpoint))
+            if server_ref_for_server({'transport':transport,'endpoint':endpoint}) in references})
+        wait = not higher_authority_lock_held(db)
+        try:
+            for scope in scopes:
+                _lock_generation_authority(db,scope_key=scope,wait=wait)
+        except DiscoveryGenerationError as exc:
+            raise ControlPlaneConfigError(exc.code) from exc
+
+
+def _lock_revision_catalogs(db: Session, revision_id: str) -> None:
+    # Read only hints before CONFIG; repeat under CONFIG to cover a head
+    # published while waiting for a catalog. Late additions use try-locks.
+    with db.no_autoflush:
+        rows = db.scalars(select(ControlPlaneConfigRevision).where(or_(
+            ControlPlaneConfigRevision.id==revision_id,
+            ControlPlaneConfigRevision.id==select(ControlPlaneState.active_revision_id).where(ControlPlaneState.id==1).scalar_subquery()
+        )).execution_options(populate_existing=True)).all()
+        contents = [validate_config_content(row.content) for row in rows]
+    _lock_configuration_catalogs(db,*contents)
+
+
 def create_draft_from_revision(
     db: Session,
     *,
@@ -152,8 +191,10 @@ def create_draft_from_revision(
     actor: ControlPlaneUser,
     change_summary: str,
 ) -> ControlPlaneConfigRevision:
+    _lock_revision_catalogs(db,published_revision_id)
     _acquire_config_revision_lock(db)
-    parent = db.get(ControlPlaneConfigRevision, published_revision_id)
+    _lock_revision_catalogs(db,published_revision_id)
+    parent = db.get(ControlPlaneConfigRevision, published_revision_id, populate_existing=True)
     if parent is None:
         raise ControlPlaneConfigError("revision_not_found")
     if parent.status != "PUBLISHED":
@@ -187,13 +228,18 @@ def _copy_observation_approvals_to_draft(
     source: ControlPlaneConfigContent,
     draft: ControlPlaneConfigRevision,
     actor: ControlPlaneUser,
+    reuse_existing: bool = False,
 ) -> None:
     if not source.tool_observation_approvals:
         return
 
+    _lock_configuration_catalogs(db,source)
+    from app.services.tda_application.authority import fence_session,assert_current
+    assert_current(db,fence_session(db))
+
     copied = []
     for source_approval in source.tool_observation_approvals:
-        observation = db.get(ToolProtocolObservation, source_approval.tool_observation_id)
+        observation = db.get(ToolProtocolObservation, source_approval.tool_observation_id, populate_existing=True)
         if observation is None:
             raise ControlPlaneConfigError("approval_observation_missing")
         if (
@@ -213,7 +259,7 @@ def _copy_observation_approvals_to_draft(
         current_hash = sha256_canonical_json(current_bundle)
 
         source_review = db.scalar(
-            select(ToolObservationReviewApproval).where(
+            select(ToolObservationReviewApproval).execution_options(populate_existing=True).where(
                 ToolObservationReviewApproval.observation_id == observation.id,
                 ToolObservationReviewApproval.tool_fingerprint
                 == source_approval.tool_fingerprint,
@@ -235,16 +281,72 @@ def _copy_observation_approvals_to_draft(
             and current_hash == source_approval.evidence_bundle_hash
         )
 
-        if source_snapshot_current:
+        from app.models.tool_analysis import ToolAnalysis,ToolHumanReview
+        from app.models.control_plane import EmergencyDeny
+        from app.services.tda_application.queries import latest_protocol_observation
+        from app.services.tda.configuration import ANALYZER_REVISION
+        from app.services.tda.m5_context.identity import compute_analysis_context_hash
+        from app.services.tda_application.pipeline import require_current_pipeline
+        analysis=db.get(ToolAnalysis,observation.analysis_id,populate_existing=True)
+        latest=latest_protocol_observation(db,tool_id=observation.tool_id,
+            upstream_protocol_profile_id=observation.upstream_protocol_profile_id)
+        hold=db.scalar(select(ToolHumanReview).execution_options(populate_existing=True).where(ToolHumanReview.tool_id==observation.tool_id,
+            ToolHumanReview.fingerprint==observation.tool_fingerprint).order_by(ToolHumanReview.id.desc()).limit(1))
+        # Subject/session denies remain live checks for the actual caller.
+        # This tool-only operation may not invent a caller or widen a deny.
+        deny=db.scalar(select(EmergencyDeny.id).where(EmergencyDeny.expires_at>datetime.utcnow(),or_(
+            EmergencyDeny.target_type=='global',
+            and_(EmergencyDeny.target_type=='server_ref',EmergencyDeny.target_value==observation.server_ref),
+            and_(EmergencyDeny.target_type=='server_tool',EmergencyDeny.target_value==observation.server_ref,
+                 EmergencyDeny.target_secondary_value==observation.tool_name))).limit(1))
+        contract=next((c for c in source.tool_security_contracts if c.server_ref==observation.server_ref
+                       and c.tool_name==observation.tool_name),None)
+        exact=(source_snapshot_current and latest is not None and latest.id==observation.id
+               and source_review.admin_id==source_approval.admin_id
+               and analysis is not None and analysis.analyzer_revision==ANALYZER_REVISION
+               and analysis.tool_id==observation.tool_id and analysis.fingerprint==observation.tool_fingerprint
+               and observation.analysis_state in {'APPROVED','ADMIN_ALLOWED'}
+               and analysis.analysis_status in {'APPROVED','ADMIN_ALLOWED'}
+               and analysis.review_status in {'APPROVED','ADMIN_ALLOWED'}
+               and not (hold and hold.action in {'block','keep_review_required'})
+               and deny is None and contract is not None and contract.contract_hash==source_approval.contract_hash)
+        exact=exact and analysis.analysis_context_hash==compute_analysis_context_hash({'contract_hash':source_approval.contract_hash})
+        if exact:
+            try:require_current_pipeline(analysis)
+            except ValueError:exact=False
+        from app.models.approval_lineage import ToolApprovalLineage
+        lineage = db.get(ToolApprovalLineage,source_review.id) if source_review is not None else None
+        # Do not invent an origin for legacy rows without verified lineage.
+        exact = exact and lineage is not None
+        if exact:
+            root_review = db.get(ToolObservationReviewApproval,lineage.root_approval_id,populate_existing=True)
+            exact = (root_review is not None and root_review.active and root_review.admin_id == lineage.original_admin_id
+                     and root_review.approved_at == lineage.original_approved_at
+                     and root_review.revision_id == lineage.original_revision_id
+                     and root_review.observation_id == observation.id
+                     and root_review.evidence_bundle_hash == source_approval.evidence_bundle_hash
+                     and root_review.admin_id == source_review.admin_id
+                     and root_review.approved_at == source_review.approved_at)
+        if exact:
             evidence_bundle = source_bundle
             evidence_hash = source_approval.evidence_bundle_hash
             admin_id = source_approval.admin_id
             approved_at = datetime.fromisoformat(source_approval.approved_at.rstrip("Z"))
         else:
-            evidence_bundle = current_bundle
-            evidence_hash = current_hash
-            admin_id = actor.id
-            approved_at = datetime.utcnow()
+            record_control_plane_audit(db,actor=actor,action='APPROVAL_INHERITANCE_REJECTED',
+                target_type='tool_protocol_observation',target_id=str(observation.id),revision_id=draft.id,
+                before_json={'source_revision_id':source_approval.revision_id,
+                             'original_admin_id':source_approval.admin_id,
+                             'evidence_bundle_hash':source_approval.evidence_bundle_hash},
+                after_json={'state':'NEEDS_EXPLICIT_APPROVAL','current_evidence_bundle_hash':current_hash},
+                reason='No exact, active, current inheritance; no approval rebound or reassigned')
+            continue
+
+        if reuse_existing and source_approval.revision_id == draft.id:
+            # Revalidation is not a new administrative decision or a second
+            # approval row. All exact/current/root checks above still apply.
+            copied.append(source_approval)
+            continue
 
         copied_approval = source_approval.model_copy(
             update={
@@ -255,8 +357,7 @@ def _copy_observation_approvals_to_draft(
             }
         )
         copied.append(copied_approval)
-        db.add(
-            ToolObservationReviewApproval(
+        copied_record = ToolObservationReviewApproval(
                 observation_id=copied_approval.tool_observation_id,
                 tool_fingerprint=copied_approval.tool_fingerprint,
                 contract_hash=copied_approval.contract_hash,
@@ -267,7 +368,18 @@ def _copy_observation_approvals_to_draft(
                 active=True,
                 approved_at=approved_at,
             )
-        )
+        db.add(copied_record)
+        db.flush()
+        db.add(ToolApprovalLineage(approval_id=copied_record.id,source_approval_id=source_review.id,
+            root_approval_id=lineage.root_approval_id,original_admin_id=lineage.original_admin_id,
+            original_approved_at=lineage.original_approved_at,original_revision_id=lineage.original_revision_id,
+            recorded_by=actor.id))
+        record_control_plane_audit(db,actor=actor,action='APPROVAL_EXACTLY_INHERITED',
+            target_type='tool_protocol_observation',target_id=str(observation.id),revision_id=draft.id,
+            before_json={'source_approval_id':source_review.id,'original_admin_id':admin_id,
+                         'original_approved_at':lineage.original_approved_at.isoformat(timespec='microseconds')+'Z','original_revision_id':lineage.original_revision_id,'root_approval_id':lineage.root_approval_id},
+            after_json={'draft_created_by':actor.id,'new_approval_id':copied_record.id,'evidence_bundle_hash':evidence_hash},
+            reason='Exact evidence reference inherited; original ADMIN decision preserved')
 
     next_content = source.model_copy(
         update={"tool_observation_approvals": tuple(copied)}
@@ -351,12 +463,27 @@ def patch_draft_revision(
     content: ControlPlaneConfigContent,
     actor: ControlPlaneUser,
     change_summary: str,
+    expected_content_hash: str | None = None,
 ) -> ControlPlaneConfigRevision:
-    revision = db.get(ControlPlaneConfigRevision, draft_id)
+    # Share the publication/rollback transaction lock so PATCH cannot
+    # race publication. Reload after acquiring the lock; a cached ORM
+    # revision must never determine whether an update is still allowed.
+    lock_control_plane_state_for_update(db)
+    revision = db.scalar(
+        select(ControlPlaneConfigRevision)
+        .where(ControlPlaneConfigRevision.id == draft_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     if revision is None:
         raise ControlPlaneConfigError("revision_not_found")
     if revision.status != "DRAFT":
         raise ControlPlaneConfigError("revision_immutable")
+    if (
+        expected_content_hash is not None
+        and expected_content_hash != revision.content_hash
+    ):
+        raise ControlPlaneConfigError("draft_content_changed_conflict")
     before = _revision_summary(revision)
     validate_config_content(content_model_to_json(content))
     content_json = content_model_to_json(content)
@@ -415,15 +542,29 @@ def publish_revision(
     actor: ControlPlaneUser,
     change_summary: str,
 ) -> ControlPlaneConfigRevision:
+    _lock_revision_catalogs(db,draft_id)
     state = lock_control_plane_state_for_update(db)
+    _lock_revision_catalogs(db,draft_id)
+    from app.services.tda_application.authority import fence_session,assert_current
+    assert_current(db,fence_session(db))
     draft = db.get(ControlPlaneConfigRevision, draft_id)
     if draft is None:
         raise ControlPlaneConfigError("revision_not_found")
     if draft.status != "DRAFT":
         raise ControlPlaneConfigError("only_draft_can_publish")
+    # Revision numbers are allocated at draft creation, not publication. A stale
+    # draft must never activate behind an already-published successor: runtime
+    # anti-rollback verification would reject that otherwise signed snapshot.
+    previous = _active_revision_from_locked_state(db, state)
+    if previous is not None:
+        if draft.revision_number <= previous.revision_number:
+            raise ControlPlaneConfigError("stale_draft_publication_conflict")
+        if draft.parent_revision_id is not None and draft.parent_revision_id != previous.id:
+            raise ControlPlaneConfigError("draft_active_parent_changed")
+    elif draft.parent_revision_id is not None:
+        raise ControlPlaneConfigError("draft_active_parent_changed")
     validate_revision(db, revision_id=draft.id, actor=actor, change_summary=change_summary)
     now = datetime.utcnow()
-    previous = _active_revision_from_locked_state(db, state)
     previous_content = (
         validate_config_content(previous.content) if previous is not None else None
     )
@@ -458,6 +599,11 @@ def publish_revision(
         next_content=draft_content,
         now=now,
     )
+    _quarantine_tools_with_changed_contracts(
+        db,
+        previous_content=previous_content,
+        next_content=draft_content,
+    )
     db.flush()
     _assert_single_published_revision(db, active_revision_id=draft.id)
     record_control_plane_audit(
@@ -474,6 +620,49 @@ def publish_revision(
     return draft
 
 
+def _quarantine_tools_with_changed_contracts(
+    db: Session,
+    *,
+    previous_content: ControlPlaneConfigContent | None,
+    next_content: ControlPlaneConfigContent,
+) -> None:
+    """Invalidate an old tool approval when its published contract changes or disappears."""
+    if previous_content is None:
+        return
+    old_contracts = {
+        (contract.server_ref, contract.tool_name): contract.contract_hash
+        for contract in previous_content.tool_security_contracts or ()
+    }
+    new_contracts = {
+        (contract.server_ref, contract.tool_name): contract.contract_hash
+        for contract in next_content.tool_security_contracts or ()
+    }
+    changed = {
+        key for key, old_hash in old_contracts.items()
+        if new_contracts.get(key) != old_hash
+    }
+    if not changed:
+        return
+
+    from app.services.server_security_metadata import refresh_server_security_status
+    from app.services.tda_application.analysis_service import mark_tool_contract_pending_publication
+
+    affected_server_ids: set[int] = set()
+    for tool, server in db.execute(
+        select(MCPTool, MCPServer).join(MCPServer, MCPTool.server_id == MCPServer.id)
+    ):
+        server_ref = server_ref_for_server(
+            {"transport": server.transport, "endpoint": server.endpoint}
+        )
+        if (server_ref, tool.name) not in changed:
+            continue
+        mark_tool_contract_pending_publication(tool)
+        affected_server_ids.add(server.id)
+    db.flush()
+    for server_id in affected_server_ids:
+        refresh_server_security_status(db, server_id)
+
+
 def rollback_to_revision(
     db: Session,
     *,
@@ -481,18 +670,23 @@ def rollback_to_revision(
     actor: ControlPlaneUser,
     change_summary: str,
 ) -> ControlPlaneConfigRevision:
+    _lock_revision_catalogs(db,revision_id)
     state = lock_control_plane_state_for_update(db)
-    target = db.get(ControlPlaneConfigRevision, revision_id)
+    _lock_revision_catalogs(db,revision_id)
+    target = db.get(ControlPlaneConfigRevision, revision_id, populate_existing=True)
     if target is None:
         raise ControlPlaneConfigError("revision_not_found")
-    current = _active_revision_from_locked_state(db, state)
+    # A rollback is a new activation derived from the CURRENT active head;
+    # the historical target supplies only the content being restored. Its
+    # identity is preserved in CONFIG_ROLLED_BACK audit evidence below.
+    current_head = _active_revision_from_locked_state(db, state)
     content = validate_config_content(target.content)
     draft = create_revision(
         db,
         content=content,
         status="DRAFT",
         actor=actor,
-        parent_revision_id=target.id,
+        parent_revision_id=current_head.id if current_head is not None else None,
         change_summary=f"Rollback draft: {change_summary}",
     )
     _copy_observation_approvals_to_draft(
@@ -501,12 +695,14 @@ def rollback_to_revision(
         draft=draft,
         actor=actor,
     )
-    published = publish_revision(
-        db,
-        draft_id=draft.id,
-        actor=actor,
-        change_summary=change_summary,
-    )
+    # Validate before advancing authority; failed rollback cannot revive an
+    # obsolete approval or change the active generation.
+    validate_revision(db,revision_id=draft.id,actor=actor,change_summary=change_summary)
+    from app.services.tda_application.authority import control_plane_activation
+    with control_plane_activation(db,admin_id=actor.id,
+            manifest_approval_ref='explicit-config-rollback:'+target.id):
+        published = publish_revision(db,draft_id=draft.id,actor=actor,change_summary=change_summary)
+
     record_control_plane_audit(
         db,
         actor=actor,
@@ -658,13 +854,9 @@ def _evidence_snapshot_approvable(evidence_bundle: dict[str, Any]) -> bool:
     analysis = evidence_bundle.get("analysis")
     if not isinstance(analysis, dict):
         return False
-    if analysis.get("analysis_status") in {
-        "ANALYSIS_FAILED",
-        "BLOCKED",
-        "PENDING_ANALYSIS",
-        "QUARANTINED",
-        "STALE",
-    }:
+    if analysis.get("analysis_status") not in {"APPROVED", "ADMIN_ALLOWED", "REVIEW_REQUIRED"}:
+        return False
+    if analysis.get("review_status") not in {"APPROVED", "ADMIN_ALLOWED", "REVIEW_REQUIRED"}:
         return False
     if analysis.get("deterministic_critical_finding") == "true":
         return False
@@ -769,7 +961,7 @@ def _validate_v2_database_artifacts(
     for approval in content.tool_observation_approvals or ():
         if approval.revision_id != revision.id:
             raise ControlPlaneConfigError("approval_revision_mismatch")
-        observation = db.get(ToolProtocolObservation, approval.tool_observation_id)
+        observation = db.get(ToolProtocolObservation, approval.tool_observation_id, populate_existing=True)
         if observation is None:
             raise ControlPlaneConfigError("approval_observation_missing")
         if (
@@ -779,6 +971,12 @@ def _validate_v2_database_artifacts(
             or observation.tool_fingerprint != approval.tool_fingerprint
         ):
             raise ControlPlaneConfigError("approval_observation_mismatch")
+        from app.models.tool_analysis import ToolAnalysis
+        from app.services.tda_application.pipeline import require_current_pipeline
+        current_analysis=db.get(ToolAnalysis,observation.analysis_id,populate_existing=True) if observation.analysis_id else None
+        if current_analysis is None:raise ControlPlaneConfigError('approval_analysis_missing')
+        try:require_current_pipeline(current_analysis)
+        except ValueError as exc:raise ControlPlaneConfigError('approval_pipeline_not_current') from exc
         contract = contracts.get((approval.server_ref, observation.tool_name))
         if contract is None or contract.contract_hash != approval.contract_hash:
             raise ControlPlaneConfigError("approval_contract_hash_mismatch")
@@ -820,7 +1018,7 @@ def _validate_v2_database_artifacts(
             raise ControlPlaneConfigError("approval_adapter_resolution_mismatch")
         approved_contract_keys.add((contract.server_ref, contract.tool_name))
         review = db.scalar(
-            select(ToolObservationReviewApproval).where(
+            select(ToolObservationReviewApproval).execution_options(populate_existing=True).where(
                 ToolObservationReviewApproval.observation_id == observation.id,
                 ToolObservationReviewApproval.tool_fingerprint
                 == approval.tool_fingerprint,

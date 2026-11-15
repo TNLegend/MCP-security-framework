@@ -7,6 +7,7 @@ const ERROR_STATUSES = new Set([
   "tool_error",
   "protocol_error",
   "http_error",
+  "upstream_outcome_unknown",
   "policy_error",
   "inventory_error",
 ]);
@@ -249,7 +250,7 @@ function RuntimeLogDetailPanel({ log }) {
       <div className="metadata-grid runtime-metadata-grid">
         <MetadataSection title="Runtime context" items={[["agent_id", log.agent_id], ["session_id", log.session_id], ["server_id", log.server_id], ["tool_name", log.tool_name], ["arguments_summary", log.arguments_summary, "structured"], ["created_at", formatDate(log.created_at)]]} />
         <MetadataSection title="Policy decision" items={[["decision", log.decision, "decision"], ["rule_id", log.rule_id], ["decision_reason", log.decision_reason], ["severity", log.severity, "severity"], ["control_plane_revision_number", log.control_plane_revision_number], ["control_plane_content_hash", shorten(log.control_plane_content_hash)]]} />
-        <MetadataSection title="Transport and execution" items={[["client_protocol_profile_id", log.client_protocol_profile_id], ["upstream_protocol_profile_id", log.upstream_protocol_profile_id], ["executed", formatBoolean(log.executed)], ["execution_status", log.execution_status, "execution"], ["result_summary", log.result_summary], ["error_summary", log.error_summary]]} />
+        <MetadataSection title="Transport and execution" items={[["client_protocol_profile_id", log.client_protocol_profile_id], ["upstream_protocol_profile_id", log.upstream_protocol_profile_id], ["executed", log.execution_status === "upstream_outcome_unknown" ? "Unknown — upstream effect possible" : formatBoolean(log.executed)], ["execution_status", log.execution_status, "execution"], ["result_summary", log.result_summary], ["error_summary", log.error_summary]]} />
       </div>
     </div>
   );

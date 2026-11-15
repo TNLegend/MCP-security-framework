@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from urllib.parse import quote_plus
 
@@ -15,6 +16,9 @@ class Settings(BaseSettings):
     app_name: str = "MCP Security Framework Backend"
     app_version: str = "0.1.0"
     environment: str = "local"
+    # Lab fixture is optional in generic/production installations; opt-in
+    # deployments explicitly require its health for readiness.
+    readiness_require_mcp_lab: bool = False
     api_prefix: str = "/api/v1"
     backend_host: str = "127.0.0.1"
     backend_port: int = 8000
@@ -100,6 +104,7 @@ class Settings(BaseSettings):
     runtime_log_cleanup_batch_size: int = Field(default=5_000, ge=100, le=100_000)
     runtime_log_auto_cleanup_interval_rows: int = Field(default=1_000, ge=1, le=100_000)
     operations_metrics_window_minutes: int = Field(default=15, ge=1, le=1440)
+    runtime_intent_grace_seconds: int = Field(default=120, ge=30, le=3600)
 
     build_scan_allowed_roots_json: str = "[]"
     build_scan_git_allowed_hosts_json: str = '["github.com","gitlab.com","bitbucket.org"]'
@@ -217,4 +222,21 @@ class Settings(BaseSettings):
         extra = "ignore"
 
 
-settings = Settings()
+def _settings():
+    if not os.environ.get("MCP_FRAMEWORK_QA_ROOT"):
+        return Settings()
+    # Validate explicit connection inputs before creating an engine, and never
+    # read the operational .env in a QA subprocess.
+    required = ("POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_DB",
+                "POSTGRES_USER", "POSTGRES_PASSWORD")
+    if any(not os.environ.get(key) for key in required):
+        raise ValueError("qa_explicit_database_configuration_required")
+    value = Settings(_env_file=None)
+    if (value.postgres_host != "127.0.0.1" or value.postgres_port == 55432
+            or not value.postgres_user.startswith("tda_step6_")
+            or value.postgres_db == "mcp_security"):
+        raise ValueError("qa_operational_database_refused")
+    return value
+
+
+settings = _settings()

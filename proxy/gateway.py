@@ -1,6 +1,9 @@
 from __future__ import annotations
+from common.tool_projection import render_tool_definition
 
+import asyncio
 from dataclasses import dataclass
+from functools import partial
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import queue
@@ -13,6 +16,7 @@ backend_path = Path(__file__).resolve().parents[1] / "backend"
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
+from anyio import CapacityLimiter, to_thread
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -26,14 +30,9 @@ from proxy.mcp_origin import MCPOriginError, MCPOriginValidator
 from proxy.mcp_proxy import MCPProxy, protocol_verdict_expired
 from proxy.protocol_profiles import (
     LEGACY_PROFILE_ID,
-    LEGACY_PROTOCOL_VERSION,
     LEGACY_PROTOCOL_VERSIONS,
-    MODERN_META_CLIENT_CAPABILITIES,
-    MODERN_META_CLIENT_INFO,
     MODERN_META_PROTOCOL_VERSION,
     MODERN_DISCOVER_CACHE_SCOPE,
-    MODERN_PROFILE_ID,
-    MODERN_PROTOCOL_VERSION,
     MODERN_PROTOCOL_VERSIONS,
     MODERN_TOOLS_LIST_CACHE_SCOPE,
     ProtocolProfileError,
@@ -43,6 +42,7 @@ from proxy.protocol_profiles import (
 )
 from proxy.protocol_revisions import ProtocolEra, TransportKind
 from proxy.protocol_sessions import LegacyClientSessionStore
+from proxy.observation_admission import live_review_admissible
 from proxy.strict_json import MAX_JSON_BYTES, StrictJSONError, parse_strict_json
 
 
@@ -222,6 +222,11 @@ class MCPGateway:
         )
         self.profiles = ProtocolProfileRegistry()
         self.era_resolver = EraResolver()
+        # Bound synchronous control-plane/policy/upstream work off the
+        # ASGI event loop. One gateway instance owns one concurrency limit.
+        self._dispatch_limiter = CapacityLimiter(8)
+        # Bound admitted work (active + waiting), not just worker threads.
+        self._dispatch_admission = asyncio.Semaphore(16)
         self.origin_validator = (
             MCPOriginValidator(allowed_origins)
             if allowed_origins is not None
@@ -245,32 +250,48 @@ class MCPGateway:
                     return _jsonrpc_error(None, -32600, "unsupported_content_type", 415)
                 payload = parse_strict_json(await _read_bounded_json_body(request))
                 _validate_jsonrpc_envelope(payload)
-                sse_connection_id = request.query_params.get("sse_connection_id")
-                if sse_connection_id:
-                    profile_id = self._resolve_legacy_http_sse_profile_id(
-                        server_id,
-                        sse_connection_id,
-                        payload,
-                        headers,
+                try:
+                    await asyncio.wait_for(self._dispatch_admission.acquire(), timeout=0.05)
+                except asyncio.TimeoutError:
+                    return _jsonrpc_error(
+                        payload.get("id"), -32000, "gateway_overloaded", 503
                     )
-                else:
-                    profile_id = self._resolve_profile_id(server_id, payload, headers)
-                profile = self.profiles.get(profile_id)
-                profile.validate_inbound_request(payload, headers=headers)
-                if sse_connection_id:
-                    return self._dispatch_legacy_http_sse_post(
-                        server_id=server_id,
-                        connection_id=sse_connection_id,
-                        payload=payload,
-                        headers=headers,
-                        profile_id=profile_id,
+                try:
+                    sse_connection_id = request.query_params.get("sse_connection_id")
+                    if sse_connection_id:
+                        profile_id = await to_thread.run_sync(
+                            partial(
+                                self._resolve_legacy_http_sse_profile_id,
+                                server_id, sse_connection_id, payload, headers,
+                            ),
+                            limiter=self._dispatch_limiter,
+                        )
+                    else:
+                        profile_id = await to_thread.run_sync(
+                            partial(self._resolve_profile_id, server_id, payload, headers),
+                            limiter=self._dispatch_limiter,
+                        )
+                    profile = self.profiles.get(profile_id)
+                    profile.validate_inbound_request(payload, headers=headers)
+                    if sse_connection_id:
+                        return await to_thread.run_sync(
+                            partial(
+                                self._dispatch_legacy_http_sse_post,
+                                server_id=server_id, connection_id=sse_connection_id,
+                                payload=payload, headers=headers, profile_id=profile_id,
+                            ),
+                            limiter=self._dispatch_limiter,
+                        )
+                    return await to_thread.run_sync(
+                        partial(
+                            self._dispatch,
+                            server_id=server_id, payload=payload, headers=headers,
+                            profile_id=profile_id,
+                        ),
+                        limiter=self._dispatch_limiter,
                     )
-                return self._dispatch(
-                    server_id=server_id,
-                    payload=payload,
-                    headers=headers,
-                    profile_id=profile_id,
-                )
+                finally:
+                    self._dispatch_admission.release()
             except MCPOriginError as exc:
                 return _jsonrpc_error(None, -32000, str(exc), 403)
             except (StrictJSONError, ProtocolProfileError, ValueError) as exc:
@@ -596,9 +617,7 @@ class MCPGateway:
             fingerprint = tool.get("current_fingerprint")
             if not isinstance(fingerprint, str):
                 continue
-            if tool.get("analysis_status") in {
-                "ANALYSIS_FAILED", "BLOCKED", "PENDING_ANALYSIS", "QUARANTINED", "STALE",
-            }:
+            if not live_review_admissible(tool):
                 continue
             try:
                 contract = snapshot.get_tool_security_contract(
@@ -609,12 +628,14 @@ class MCPGateway:
                 required_capabilities = {effect.capability for effect in contract.effects}
                 if not required_capabilities <= granted_capabilities:
                     continue
-                snapshot.get_tool_observation_approval(
+                approval = snapshot.get_tool_observation_approval(
                     server_ref=server.get("server_ref")
                     or f"{server.get('transport') or 'streamable_http'}:{server.get('endpoint')}",
                     upstream_protocol_profile_id=str(upstream_profile),
                     tool_fingerprint=fingerprint,
                 )
+                if approval.contract_hash != contract.contract_hash:
+                    continue
             except PublishedConfigurationError:
                 continue
             result.append(tool)
@@ -628,21 +649,7 @@ class MCPGateway:
         authenticated_agent_id: str,
     ) -> Response:
         tools = [
-            {
-                "name": tool["name"],
-                "description": tool.get("description") or "",
-                "inputSchema": tool.get("input_schema") or {},
-                **(
-                    {"outputSchema": tool["output_schema"]}
-                    if isinstance(tool.get("output_schema"), dict)
-                    else {}
-                ),
-                **(
-                    {"annotations": tool["annotations"]}
-                    if isinstance(tool.get("annotations"), dict)
-                    else {}
-                ),
-            }
+            render_tool_definition(tool)
             for tool in self._approved_tools(
                 server_id,
                 profile_id,
@@ -678,18 +685,29 @@ class MCPGateway:
                 "client_protocol_profile_id": profile_id,
             }
         )
-        if not proxy_result.get("executed"):
-            if proxy_result.get("status") == "error":
-                return _jsonrpc_error(
-                    payload.get("id"),
-                    -32004,
-                    "upstream_execution_failed",
-                    502,
-                    data={
-                        "execution_status": proxy_result.get("execution_status"),
-                        "rule_id": proxy_result.get("rule_id"),
-                    },
-                )
+        # Decide JSON-RPC success from the full proxy status, never only
+        # from executed: remote effects can precede result or audit failures.
+        proxy_status = proxy_result.get("status")
+        effect_possible = bool(proxy_result.get("mcp_called"))
+        if proxy_status == "error":
+            error_message = (
+                "audit_completion_failed"
+                if proxy_result.get("execution_status") == "audit_completion_failed"
+                else "upstream_execution_failed"
+            )
+            return _jsonrpc_error(
+                payload.get("id"),
+                -32004,
+                error_message,
+                502,
+                data={
+                    "execution_status": proxy_result.get("execution_status"),
+                    "rule_id": proxy_result.get("rule_id"),
+                    "effect_possible": effect_possible,
+                    "retry_unsafe": effect_possible,
+                },
+            )
+        if proxy_status == "blocked":
             return _jsonrpc_error(
                 payload.get("id"),
                 -32003,
@@ -698,7 +716,20 @@ class MCPGateway:
                 data={
                     "rule_id": proxy_result.get("rule_id"),
                     "skip_reason": proxy_result.get("skip_reason"),
+                    "effect_possible": effect_possible,
                 },
+            )
+        if (
+            proxy_status != "allowed"
+            or not proxy_result.get("executed")
+            or not isinstance(proxy_result.get("tool_result"), dict)
+        ):
+            return _jsonrpc_error(
+                payload.get("id"),
+                -32004,
+                "proxy_result_state_invalid",
+                502,
+                data={"effect_possible": effect_possible},
             )
         result = dict(proxy_result.get("tool_result") or {})
         if self.profiles.get(profile_id).protocol_era == ProtocolEra.MODERN:

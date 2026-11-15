@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import threading
@@ -268,6 +269,39 @@ class LocalRuntimeManager:
             detail="identity_provider_startup_timeout",
         )
 
+    def ensure_frontend(self, *, auto_start: bool = True) -> LocalRuntimeComponentStatus:
+        current = self.frontend_status()
+        if current.status == "healthy" or not auto_start:
+            return current
+        npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
+        if not npm:
+            return LocalRuntimeComponentStatus(
+                component="frontend", status="unavailable",
+                detail="npm_missing_for_frontend",
+            )
+        command = [
+            npm, "run", "dev", "--", "--host", settings.frontend_host,
+            "--port", str(settings.frontend_port), "--strictPort",
+        ]
+        self._start_child("frontend", command, cwd=PROJECT_ROOT / "frontend")
+        if self._wait_until(lambda: self.frontend_status().status == "healthy"):
+            return LocalRuntimeComponentStatus(
+                component="frontend", status="healthy",
+                endpoint=f"http://{settings.frontend_host}:{settings.frontend_port}",
+                managed_by_framework=True,
+            )
+        return LocalRuntimeComponentStatus(
+            component="frontend", status="unavailable",
+            endpoint=f"http://{settings.frontend_host}:{settings.frontend_port}",
+            managed_by_framework=True, detail="frontend_startup_timeout",
+        )
+
+    def frontend_status(self) -> LocalRuntimeComponentStatus:
+        return _http_status(
+            "frontend", f"http://{settings.frontend_host}:{settings.frontend_port}", self._check_url,
+            managed_by_framework=self._is_owned_component("frontend"),
+        )
+
     def start_backend(self) -> LocalRuntimeComponentStatus:
         current = self.backend_status()
         if current.status == "healthy":
@@ -383,6 +417,7 @@ class LocalRuntimeManager:
                 "gateway",
                 "identity_provider",
                 "mcp_lab",
+                "frontend",
             }:
                 continue
             return_code = child.process.poll()
@@ -395,7 +430,7 @@ class LocalRuntimeManager:
 
     def recover_required_child(self, failure: dict[str, Any]) -> bool:
         component = str(failure.get("component") or "")
-        if component not in {"backend", "opa", "gateway", "identity_provider", "mcp_lab"}:
+        if component not in {"backend", "opa", "gateway", "identity_provider", "mcp_lab", "frontend"}:
             return False
         attempts = settings.local_runtime_restart_attempts
         used = self.restart_counts.get(component, 0)
@@ -415,6 +450,8 @@ class LocalRuntimeManager:
                 status = self.ensure_gateway(auto_start=True)
             elif component == "identity_provider":
                 status = self.ensure_identity_provider(auto_start=True)
+            elif component == "frontend":
+                status = self.ensure_frontend(auto_start=True)
             else:
                 status = self.ensure_mcp_lab(auto_start=True)
         except Exception:
@@ -458,6 +495,7 @@ class LocalRuntimeManager:
         command: list[str],
         *,
         terminate_on_shutdown: bool = True,
+        cwd: Path = PROJECT_ROOT,
     ) -> ManagedChildProcess:
         if not command or any(not isinstance(part, str) or not part for part in command):
             raise ValueError("local_runtime_command_invalid")
@@ -466,7 +504,7 @@ class LocalRuntimeManager:
         env = {**os.environ, **runtime_environment()}
         process = self.process_starter(
             command,
-            cwd=str(PROJECT_ROOT),
+            cwd=str(cwd),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

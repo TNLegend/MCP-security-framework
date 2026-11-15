@@ -5,9 +5,14 @@ import json
 from pathlib import Path
 import re
 
+from filelock import FileLock
+
+from common.security_topology import local_security_authority_supported
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-UPSTREAM_SECRET_DIR = PROJECT_ROOT / ".runtime" / "secrets" / "upstream"
+from common.project_paths import runtime_data_root
+UPSTREAM_SECRET_DIR = runtime_data_root(PROJECT_ROOT) / "secrets" / "upstream"
 
 AUTH_MODE_NONE = "NONE"
 AUTH_MODE_BEARER = "BEARER"
@@ -21,6 +26,11 @@ MAX_UPSTREAM_TOKEN_BUNDLE_BYTES = 24_576
 
 class UpstreamAuthError(ValueError):
     """Safe failure for invalid or unavailable framework-held upstream auth."""
+
+
+def _require_local_credential_authority() -> None:
+    if not local_security_authority_supported():
+        raise UpstreamAuthError("upstream_credential_topology_unsupported")
 
 
 def validate_upstream_auth_config(
@@ -60,6 +70,7 @@ def resolve_upstream_bearer_token(
 
 
 def read_upstream_secret(reference: str, *, token_only: bool = False) -> str:
+    _require_local_credential_authority()
     resolved = _resolved_secret_path(reference)
     try:
         raw = resolved.read_bytes()
@@ -76,7 +87,28 @@ def read_upstream_secret(reference: str, *, token_only: bool = False) -> str:
     return value
 
 
+def oauth_credential_lock(reference: str) -> FileLock:
+    """Stable inter-process lock for token refresh/revocation by credential.
+
+    The lock file is intentionally never deleted: deleting lock files would
+    permit two independent lock inodes and break mutual exclusion.
+    """
+    _require_local_credential_authority()
+    if not _valid_secret_ref(reference):
+        raise UpstreamAuthError("upstream_credential_ref_invalid")
+    lock_root = UPSTREAM_SECRET_DIR / ".locks"
+    root = UPSTREAM_SECRET_DIR.resolve()
+    lock_root.mkdir(parents=True, exist_ok=True)
+    if lock_root.is_symlink() or not lock_root.resolve().is_relative_to(root):
+        raise UpstreamAuthError("upstream_credential_ref_invalid")
+    lock_path = lock_root / f"{sha256(reference.encode('utf-8')).hexdigest()}.lock"
+    if lock_path.is_symlink():
+        raise UpstreamAuthError("upstream_credential_ref_invalid")
+    return FileLock(str(lock_path), timeout=20)
+
+
 def read_upstream_token_bundle(reference: str) -> dict:
+    _require_local_credential_authority()
     resolved = _resolved_secret_path(reference)
     try:
         raw = resolved.read_bytes()
@@ -86,7 +118,7 @@ def read_upstream_token_bundle(reference: str) -> dict:
         raise UpstreamAuthError("upstream_credential_invalid")
     try:
         value = json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         raise UpstreamAuthError("upstream_credential_invalid")
     if not isinstance(value, dict):
         raise UpstreamAuthError("upstream_credential_invalid")
@@ -94,6 +126,7 @@ def read_upstream_token_bundle(reference: str) -> dict:
 
 
 def write_upstream_token_bundle(reference: str, bundle: dict) -> None:
+    _require_local_credential_authority()
     if not isinstance(bundle, dict):
         raise UpstreamAuthError("upstream_credential_invalid")
     root = UPSTREAM_SECRET_DIR.resolve()
@@ -112,6 +145,7 @@ def write_upstream_token_bundle(reference: str, bundle: dict) -> None:
 
 
 def write_upstream_secret(reference: str, value: str) -> None:
+    _require_local_credential_authority()
     if (
         not _valid_secret_ref(reference)
         or not isinstance(value, str)
@@ -136,6 +170,7 @@ def write_upstream_secret(reference: str, value: str) -> None:
 
 
 def delete_upstream_secret(reference: str) -> None:
+    _require_local_credential_authority()
     if not _valid_secret_ref(reference):
         raise UpstreamAuthError("upstream_credential_ref_invalid")
     candidate = UPSTREAM_SECRET_DIR.joinpath(*reference.split("/"))

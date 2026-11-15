@@ -65,6 +65,9 @@ PHASE2_INVENTORY_COLUMNS = {
         "ADD COLUMN IF NOT EXISTS analyzer_revision VARCHAR(100)",
     ],
     "runtime_calls": [
+        "ADD COLUMN IF NOT EXISTS operation_id VARCHAR(36)",
+        "ADD COLUMN IF NOT EXISTS event_phase VARCHAR(12)",
+        "ADD COLUMN IF NOT EXISTS tool_fingerprint VARCHAR(64)",
         "ADD COLUMN IF NOT EXISTS decision VARCHAR(50)",
         "ADD COLUMN IF NOT EXISTS rule_id VARCHAR(255)",
         "ADD COLUMN IF NOT EXISTS decision_reason TEXT",
@@ -125,6 +128,9 @@ IDENTITY_REPLAY_INDEXES = [
 ]
 
 RUNTIME_CALL_INDEXES = [
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_runtime_call_operation_phase "
+    "ON runtime_calls (operation_id, event_phase)",
+    "CREATE INDEX IF NOT EXISTS ix_runtime_calls_operation_id ON runtime_calls (operation_id)",
     "CREATE INDEX IF NOT EXISTS ix_runtime_calls_created_at ON runtime_calls (created_at DESC)",
     "CREATE INDEX IF NOT EXISTS ix_runtime_calls_decision_id ON runtime_calls (decision, id DESC)",
     "CREATE INDEX IF NOT EXISTS ix_runtime_calls_server_id_id ON runtime_calls (server_id, id DESC)",

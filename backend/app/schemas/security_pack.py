@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
+from proxy.schema_bounds import SchemaBound
 from proxy.security_packs import (
     SecurityPackInstallation,
     SecurityPackManifest,
@@ -57,6 +58,7 @@ class CreateToolContractDraftRequest(BaseModel):
     template_id: str = Field(min_length=1, max_length=128)
     argument_mappings: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     fixed_resources: dict[str, str] = Field(default_factory=dict)
+    schema_bounds: tuple[SchemaBound, ...] = Field(default_factory=tuple, max_length=64)
     scopes: tuple[ContractScopeInput, ...] = ()
     draft_revision_id: str | None = Field(default=None, min_length=1, max_length=64)
     approve_observations: StrictBool = False

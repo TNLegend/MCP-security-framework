@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.models.control_plane import EmergencyDeny
+from app.services.dispatch_admission import lock_emergency_dispatch_authority
 from app.schemas.control_plane import EmergencyDenyCreateRequest, EmergencyDenyPublic
 from app.services.control_plane_audit import record_control_plane_audit
 from app.services.control_plane_auth import (
@@ -36,6 +37,7 @@ def create_emergency_deny(
     current: AuthenticatedControlPlaneUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    lock_emergency_dispatch_authority(db)
     deny = EmergencyDeny(
         **payload.model_dump(),
         created_by=current.user.id,
@@ -68,6 +70,7 @@ def revoke_emergency_deny(
     current: AuthenticatedControlPlaneUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    lock_emergency_dispatch_authority(db)
     deny = db.get(EmergencyDeny, deny_id)
     if deny is None:
         raise HTTPException(status_code=404, detail="Emergency deny not found")

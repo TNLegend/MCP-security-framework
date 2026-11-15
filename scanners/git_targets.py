@@ -208,7 +208,7 @@ def _parse_tree_preflight(
         try:
             metadata, raw_path = record.split(b"\t", 1)
             mode, object_type, _object_id, size_text = metadata.split(b" ", 3)
-            relative = raw_path.decode("utf-8", errors="strict")
+            raw_path.decode("utf-8", errors="strict")
         except (ValueError, UnicodeDecodeError) as exc:
             raise BuildTargetValidationError("git_tree_output_invalid") from exc
 

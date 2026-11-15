@@ -1,88 +1,130 @@
-# Python
+# Local Python / Node build products
 __pycache__/
 *.py[cod]
-*.pyo
 *.pyd
-backend/.venv/
+*.egg-info/
 .venv/
 venv/
-env/
-*.egg-info/
+backend/.venv/
+node_modules/
+frontend/node_modules/
+dist/
+build/
+.vite/
+.next/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+coverage/
+.coverage*
+htmlcov/
 
-# Node / Frontend
-frontend/node_modules/
-node_modules/
-dist/
-build/
-.next/
-.vite/
-
-# Environment / secrets
+# Never publish credentials, environment values or runtime identity material
 .env
-.env.local
-.env.production
 .env.*
 !.env.example
-.env.*.local
 *.key
 *.pem
 *.crt
 *.p12
 *.pfx
-*_private.jwk
-*_private.jwks.json
+*.jwk
+*.jwks.json
+*_private.*
 secrets/
-
-# IDE / OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-
-# Logs / temp
 .runtime/
-*.log
-logs/
-tmp/
-temp/
+.local/
 .cache/
-.cache/mcp-security-framework/
 hf-cache/
 models--*/
 
-# Project private documents
-# Git should mainly contain code + README + config.
-docs/
+# No model weights, checkpoints, local data or run outputs on GitHub
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
+*.joblib
+*.pkl
+*.h5
+*.npy
+*.npz
+*.parquet
+*.arrow
+*.jsonl
+*.sarif
+*.base64
+*.signature
+*.log
+*.log.*
+logs/
+tmp/
+temp/
+runs/
+checkpoints/
+outputs/
+artifacts/
 reports/
+release/
+backend/datasets/
 
-# Generated figures / documents / exports
+# Documentation: only the repository root README.md is published
+*.md
+!/README.md
+docs/
+**/docs/
+
+# Keep QA, one-off investigation, experiments and test harnesses LOCAL
+backend/tests/
+backend/qa_oracles/
+frontend/**/*.test.*
+frontend/**/*.spec.*
+frontend/vite.config.test.mjs
+mcp-lab/http_server/test_data/
+pytest.ini
+scripts/qa_*.py
+scripts/qualify_*.py
+scripts/replay_*.py
+scripts/analyzer_autonomous_*.py
+scripts/analyzer_proposition_*.py
+scripts/analyzer_selection_workflow.py
+scripts/analyze_analyzer_*.py
+scripts/evaluate_*.py
+scripts/benchmark_*.py
+scripts/finalize_lots*.py
+scripts/write_lots*.py
+scripts/verify_lot64_*.py
+scripts/check_analyzer_adjudication_freeze.py
+scripts/check_f11_staging_readiness.py
+scripts/smoke_analyzer_assessment.py
+policies/opa/*_test.rego
+
+# Generated documents, screenshots and exports
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.xlsx
+*.xls
+*.csv
+*.zip
+*.rar
+*.7z
 *.png
 *.jpg
 *.jpeg
 *.webp
-*.svg
-*.pdf
-*.pptx
-*.docx
-*.xlsx
-*.csv
-*.zip
-*.rar
+*.gif
+*.bmp
 
-# Security scan outputs
-scanners/**/outputs/
-scanners/**/results/
-*.sarif
-*.jsonl
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
 
-# Keep important project files tracked
-!README.md
-!.gitignore
-!.env.example
-!scripts/
-!scripts/*.py
-!scripts/*.bat
-!scripts/*.sh
+# Source code and mandatory declarative runtime configuration (.py, .js,
+# .jsx, .rego, .yaml, .json, .toml, .sql, requirements, lockfiles) remain
+# allowed unless explicitly excluded above. No blanket JSON exclusion.

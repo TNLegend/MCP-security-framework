@@ -1,7 +1,9 @@
 const API_BASE_URL =
   import.meta.env?.VITE_API_BASE_URL || "http://127.0.0.1:8000/api/v1";
 const REQUEST_TIMEOUT_MS = 20_000;
-const DISCOVERY_TIMEOUT_MS = 180_000;
+// Large third-party inventories run analyzer inference per observed tool/profile.
+// Keep a finite deadline, but allow the same bounded window as a build scan.
+const DISCOVERY_TIMEOUT_MS = 600_000;
 const BUILD_SCAN_TIMEOUT_MS = 600_000;
 const ERROR_MESSAGES = Object.freeze({
   upstream_oauth_dynamic_registration_unsupported:
@@ -47,67 +49,83 @@ async function request(path, options = {}) {
     headers["Content-Type"] = "application/json";
   }
 
-  let response;
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
       ...requestOptions,
       method,
       headers,
       credentials: "include",
       signal: controller.signal,
     });
+    if (!response.ok) {
+      let payload = null;
+      let text = "";
+      try {
+        text = await response.text();
+        payload = text ? JSON.parse(text) : null;
+      } catch (err) {
+        if (controller.signal.aborted || err?.name === "AbortError") throw err;
+        payload = null;
+      }
+      if (controller.signal.aborted) throw new ApiError("Request timed out.", { code: "request_timeout", status: 0 });
+      throw apiErrorFromResponse(response.status, payload, text);
+    }
+    if (response.status === 204) return null;
+    const text = await response.text();
+    if (controller.signal.aborted) throw new ApiError("Request timed out.", { code: "request_timeout", status: 0 });
+    return text ? JSON.parse(text) : null;
   } catch (err) {
-    if (err?.name === "AbortError") {
+    if (controller.signal.aborted || err?.name === "AbortError") {
       throw new ApiError("Request timed out. Please retry.", {
         code: "request_timeout",
         status: 0,
       });
     }
+    if (err instanceof ApiError || err instanceof SyntaxError) throw err;
     throw new ApiError("Network request failed.", {
       code: "network_error",
       status: 0,
     });
   } finally {
+    // The deadline includes reading/parsing the entire response body.
     globalThis.clearTimeout(timeout);
   }
-
-  if (!response.ok) {
-    let payload = null;
-    let text = "";
-    try {
-      text = await response.text();
-      payload = text ? JSON.parse(text) : null;
-    } catch {
-      payload = null;
-    }
-    throw apiErrorFromResponse(response.status, payload, text);
-  }
-
-  if (response.status === 204) {
-    return null;
-  }
-  const text = await response.text();
-  return text ? JSON.parse(text) : null;
 }
 
 async function requestBlob(path) {
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  let response;
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
       credentials: "include",
       signal: controller.signal,
     });
+    if (!response.ok) {
+      let payload = null;
+      let text = "";
+      try {
+        text = await response.text();
+        payload = text ? JSON.parse(text) : null;
+      } catch (err) {
+        if (controller.signal.aborted || err?.name === "AbortError") throw err;
+        payload = null;
+      }
+      if (controller.signal.aborted) throw new ApiError("Request timed out.", { code: "request_timeout", status: 0 });
+      throw apiErrorFromResponse(response.status, payload, text);
+    }
+    const blob = await response.blob();
+    if (controller.signal.aborted) throw new ApiError("Request timed out.", { code: "request_timeout", status: 0 });
+    return blob;
   } catch (err) {
-    if (err?.name === "AbortError") {
+    if (controller.signal.aborted || err?.name === "AbortError") {
       throw new ApiError("Request timed out. Please retry.", {
         code: "request_timeout",
         status: 0,
       });
     }
+    if (err instanceof ApiError) throw err;
     throw new ApiError("Network request failed.", {
       code: "network_error",
       status: 0,
@@ -115,18 +133,6 @@ async function requestBlob(path) {
   } finally {
     globalThis.clearTimeout(timeout);
   }
-  if (!response.ok) {
-    let payload = null;
-    let text = "";
-    try {
-      text = await response.text();
-      payload = text ? JSON.parse(text) : null;
-    } catch {
-      payload = null;
-    }
-    throw apiErrorFromResponse(response.status, payload, text);
-  }
-  return response.blob();
 }
 
 export function apiErrorFromResponse(status, payload, text = "") {
@@ -425,6 +431,13 @@ export async function requestControlledAIAssistance(toolId, payload) {
   });
 }
 
+/** Advisory M4 only: ADMIN-authenticated, on-demand and read-only. */
+export async function fetchM4Semantics(toolId) {
+  return request(`/control-plane/tool-analysis/tools/${toolId}/m4-semantics`, {
+    timeoutMs: 180_000,
+  });
+}
+
 export async function fetchToolAnalysisBundle(toolId) {
   const bundle = await settleNamedRequests({
     status: () => request(`/tool-analysis/tools/${toolId}/status`),
@@ -675,10 +688,14 @@ export async function createLatestConfigRevision(changeSummary) {
   });
 }
 
-export async function patchConfigRevision(draftId, content, changeSummary) {
+export async function patchConfigRevision(draftId, content, changeSummary, expectedContentHash) {
   return request(`/control-plane/config/revisions/${draftId}`, {
     method: "PATCH",
-    body: JSON.stringify({ content, change_summary: changeSummary }),
+    body: JSON.stringify({
+      content,
+      change_summary: changeSummary,
+      expected_content_hash: expectedContentHash,
+    }),
   });
 }
 

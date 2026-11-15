@@ -31,6 +31,14 @@ def load_project_environment(
     project_root: Path = PROJECT_ROOT,
     override: bool = False,
 ) -> bool:
+    if os.environ.get("MCP_FRAMEWORK_QA_ROOT"):
+        # Never load the source .env in a QA process, including Proxy entrypoints.
+        if env_path is None:
+            normalize_project_environment_paths(project_root=project_root)
+            return False
+        qa_session=Path(os.environ["MCP_FRAMEWORK_QA_ROOT"]).resolve().parent
+        if not Path(env_path).resolve().is_relative_to(qa_session):
+            raise ValueError("qa_env_file_outside_session_refused")
     selected_path = env_path or project_root / ".env"
     loaded = load_dotenv(dotenv_path=selected_path, override=override)
     normalize_project_environment_paths(project_root=project_root)

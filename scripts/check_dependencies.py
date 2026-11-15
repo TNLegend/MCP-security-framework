@@ -17,6 +17,7 @@ from app.core.runtime_paths import (  # noqa: E402
     GITLEAKS_EXE,
     GITLEAKS_VERSION,
     OPA_EXE,
+    RUNTIME_TOOLS_DIR,
     TRIVY_EXE,
     TRIVY_VERSION,
     SEMGREP_EXE,
@@ -42,6 +43,13 @@ def command_path(command: str) -> str | None:
 
 
 def find_postgres_tool(command: str) -> str | None:
+    # A project-local PostgreSQL distribution is valid. Its binaries remain
+    # local to the machine and must not be committed to source control.
+    managed = RUNTIME_TOOLS_DIR / "postgresql" / "pgsql" / "bin" / (
+        command + (".exe" if os.name == "nt" else "")
+    )
+    if managed.is_file():
+        return str(managed)
     located = shutil.which(command)
     if located:
         return located

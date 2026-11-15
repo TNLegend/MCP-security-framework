@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { approveTool, blockTool, fetchToolAnalysisBundle } from "../api/client";
 import ControlledAIAssistant from "../components/ControlledAIAssistant";
+import M4SemanticsPanel from "../components/m4semanticspanel";
 import { Pagination, usePagination } from "../components/Pagination";
 import ToolContractOnboarding from "../components/ToolContractOnboarding";
 import {
@@ -105,9 +106,11 @@ function ToolAnalysis({
     };
   }, [selectedToolId, selectedToolFingerprint, selectedToolLastAnalyzedAt]);
 
+  // M4 is the primary informative semantic view for ADMIN.
+  // Historical decision evidence remains in the audit/overview, not a second M4 tab.
   useEffect(() => {
-    setActiveTab("overview");
-  }, [selectedToolId]);
+    setActiveTab(isAdmin ? "m4-neural" : "overview");
+  }, [selectedToolId, isAdmin]);
 
   function openReview(action) {
     const disabledReason =
@@ -179,6 +182,12 @@ function ToolAnalysis({
         <h2>Tool Analysis</h2>
         <p>{analyses.length} analysis record(s)</p>
       </div>
+      <p className="hint-text" role="note">
+        Analyzer findings are advisory, not proof that a tool is safe or unsafe.
+        An approved analysis does not grant execution rights. Runtime access
+        still requires a valid signed configuration, explicit approval, and
+        applicable security contracts.
+      </p>
 
       {message && <div className="success-banner">{message}</div>}
       {error && <div className="error-banner">{error}</div>}
@@ -367,9 +376,9 @@ function ToolAnalysis({
 }
 
 const ANALYSIS_TABS = [
+  ["m4-neural", "M4 analysis (SHADOW)"],
   ["overview", "Overview"],
   ["findings", "Findings"],
-  ["semantic", "Semantic"],
   ["ai", "AI Assist"],
   ["history", "History"],
   ["contract", "Contract"],
@@ -383,7 +392,7 @@ function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onCompl
   return (
     <div className="analysis-workspace">
       <div aria-label="Analysis evidence" className="tab-list" role="tablist">
-        {ANALYSIS_TABS.map(([id, label]) => (
+        {ANALYSIS_TABS.filter(([id]) => id !== "m4-neural" || isAdmin).map(([id, label]) => (
           <button
             aria-selected={activeTab === id}
             className={activeTab === id ? "active-tab" : ""}
@@ -399,7 +408,9 @@ function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onCompl
       <div className="tab-content" role="tabpanel">
         {activeTab === "overview" && <AnalysisOverview bundle={bundle} latestAnalysis={latestAnalysis} tool={tool} />}
         {activeTab === "findings" && <FindingsView error={bundle?.errors?.findings} findings={findings} />}
-        {activeTab === "semantic" && <SemanticScores error={bundle?.errors?.analyses} scores={latestAnalysis?.semantic_scores} />}
+        {activeTab === "m4-neural" && isAdmin && (
+          <M4SemanticsPanel key={String(tool?.id) + ":" + String(tool?.current_fingerprint || "")} latestAnalysis={latestAnalysis} tool={tool} />
+        )}
         {activeTab === "ai" && (
           <ControlledAIAssistant bundle={bundle} isAdmin={isAdmin} tool={tool} />
         )}
@@ -418,17 +429,31 @@ function AnalysisOverview({ bundle, latestAnalysis, tool }) {
     <>
       <SectionError error={bundle?.errors?.status} title="Analysis status" />
       <div className="analysis-stat-grid">
-        <AnalysisStat label="Analysis" value={latestAnalysis?.analysis_status || tool.analysis_status} badge />
+        <AnalysisStat label="Current tool state" value={tool.analysis_status} badge />
+        <AnalysisStat label="Latest analysis record" value={latestAnalysis?.analysis_status || tool.analysis_status} badge />
         <AnalysisStat label="Review" value={latestAnalysis?.review_status || tool.review_status} badge />
         <AnalysisStat label="Risk level" value={latestAnalysis?.risk_level || tool.risk_level} badge />
         <AnalysisStat label="Risk score" value={latestAnalysis?.risk_score ?? tool.risk_score ?? "-"} />
         <AnalysisStat label="Consistency" value={latestAnalysis?.consistency_status || tool.consistency_status} badge />
         <AnalysisStat label="Drift" value={latestAnalysis?.drift_status || tool.drift_status} badge />
       </div>
+      {latestAnalysis?.analysis_status && latestAnalysis.analysis_status !== tool.analysis_status && (
+        <p className="hint-text" role="status">
+          This analysis record has a different status from the current tool state.
+          Historical approval evidence does not authorize runtime execution.
+        </p>
+      )}
+      {latestAnalysis?.evidence_provenance?.state === "REUSED" && (
+        <p className="hint-text" role="status">
+          Existing analysis evidence reused; no new semantic inference.
+          Original analysis status: {latestAnalysis.evidence_provenance.raw_analysis_status}.
+          Administrative acceptance preserves the original findings.
+        </p>
+      )}
       <dl className="compact-dl analysis-overview-list">
         <InfoRow label="Analyzer revision" value={latestAnalysis?.analyzer_revision || tool.analyzer_revision} />
         <InfoRow label="Completed" value={formatDate(latestAnalysis?.completed_at)} />
-        <InfoRow label="Semantic decision" value={formatSemanticDecision(latestAnalysis?.semantic_scores)} />
+        <InfoRow label="Historical analyzer signal" value={formatSemanticDecision(latestAnalysis?.semantic_scores)} />
         <InfoRow label="Deterministic critical finding" value={tool.deterministic_critical_finding ? "Yes" : "No"} />
       </dl>
     </>
@@ -471,71 +496,6 @@ function FindingsView({ error, findings }) {
         total={findingPagination.total}
       />
     </div>
-  );
-}
-
-function SemanticScores({ error, scores }) {
-  const rows = semanticScoreRows(scores);
-  const scorePagination = usePagination(rows, String(rows.length));
-  if (error) return <SectionError error={error} title="Semantic scores" />;
-  const factGroups = semanticFactGroups(scores?.facts);
-  return (
-    <>
-      <div className="semantic-decision">
-        <AnalysisStat label="Model flagged" value={scores?.model_flagged ? "Yes" : "No"} />
-        <AnalysisStat label="Corroborated" value={scores?.corroborated ? "Yes" : "No"} />
-        <AnalysisStat label="Actionable flag" value={scores?.flagged ? "Yes" : "No"} />
-        <AnalysisStat label="Model abstained" value={scores?.abstained ? "Yes" : "No"} />
-        <AnalysisStat label="Sensitive" value={scores?.facts?.is_sensitive ? "Yes" : "No"} />
-        <AnalysisStat label="Reversibility" value={humanize(scores?.facts?.reversibility || "unknown")} />
-      </div>
-      <div className="semantic-facts">
-        <div className="semantic-facts-heading">
-          <h4>Observed facts</h4>
-          <span>{scores?.facts?.unknown_reasons?.length ? "Incomplete semantics" : "Semantics evidenced"}</span>
-        </div>
-        {factGroups.length === 0 ? (
-          <div className="empty-state">No structured semantic facts available.</div>
-        ) : (
-          <dl className="semantic-fact-list">
-            {factGroups.map(([label, facts]) => (
-              <div key={label}>
-                <dt>{label}</dt>
-                <dd>
-                  {facts.map((fact) => (
-                    <span
-                      className="semantic-fact"
-                      key={`${label}-${fact.value}`}
-                      title={factEvidenceTitle(fact)}
-                    >
-                      {humanize(fact.value)} · {formatConfidence(fact.confidence)}
-                    </span>
-                  ))}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        )}
-        {scores?.facts?.unknown_reasons?.length > 0 && (
-          <p className="hint-text">
-            Missing evidence: {scores.facts.unknown_reasons.map(humanize).join(", ")}.
-          </p>
-        )}
-      </div>
-      {rows.length === 0 ? <div className="empty-state">No semantic category scores available.</div> : (
-        <div className="table-shell"><table><thead><tr><th>Category</th><th>Score</th></tr></thead><tbody>
-          {scorePagination.pageItems.map(([category, score]) => <tr key={category}><td>{humanize(category)}</td><td>{formatScore(score)}</td></tr>)}
-        </tbody></table>
-        <Pagination
-          label="Semantic categories"
-          onPageChange={scorePagination.setPage}
-          page={scorePagination.page}
-          pageCount={scorePagination.pageCount}
-          total={scorePagination.total}
-        />
-        </div>
-      )}
-    </>
   );
 }
 
@@ -600,38 +560,12 @@ function Metadata({ error, title, value }) {
   );
 }
 
-function semanticScoreRows(scores) {
-  const source = scores?.scores || scores?.category_scores || {};
-  return Object.entries(source)
-    .filter(([, value]) => typeof value === "number")
-    .sort((left, right) => right[1] - left[1]);
-}
-
-function semanticFactGroups(facts) {
-  if (!facts) return [];
-  return [
-    ["Actions", facts.actions],
-    ["Resources", facts.resources],
-    ["Data", facts.data_categories],
-    ["Side effects", facts.side_effects],
-    ["Destinations", facts.external_destinations],
-    ["Privileges", facts.privileges],
-    ["Scope", facts.scopes],
-  ].filter(([, values]) => Array.isArray(values) && values.length > 0);
-}
-
-function factEvidenceTitle(fact) {
-  return (fact?.evidence || [])
-    .map((item) => `${item.source}: ${item.excerpt}`)
-    .join("\n");
-}
-
 function formatSemanticDecision(scores) {
   if (!scores) return "Unavailable";
-  if (scores.flagged) return "Corroborated semantic risk";
-  if (scores.abstained) return "Model abstained; deterministic facts retained";
-  if (scores.model_flagged) return "Model signal not corroborated";
-  return "No semantic risk signal";
+  if (scores.flagged) return "Previous analyzer: flagged";
+  if (scores.abstained) return "Previous analyzer: abstained";
+  if (scores.model_flagged) return "Previous analyzer: uncorroborated signal";
+  return "Previous analyzer: no flag";
 }
 
 function formatScore(value) {

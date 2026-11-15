@@ -1,4 +1,7 @@
 from app.models.audit_event import AuditEvent
+from app.models.discovery_generation import MCPDiscoveryGeneration, MCPDiscoveryHead
+from app.models.discovery_analysis_stage import MCPDiscoveryAnalysisStage
+from app.models.analyzer_authority import AnalyzerAuthority
 from app.models.build_security import (
     BuildAssessment,
     BuildFinding,
@@ -32,6 +35,9 @@ from app.models.tool_analysis import (
 from app.models.trusted_agent_session import TrustedAgentSession
 
 __all__ = [
+    "MCPDiscoveryAnalysisStage",
+    "MCPDiscoveryGeneration",
+    "MCPDiscoveryHead",
     "MCPServer",
     "MCPTool",
     "PolicyRule",
@@ -50,7 +56,18 @@ __all__ = [
     "ControlPlaneConfigRevision",
     "ControlPlaneState",
     "ControlPlaneAuditEvent",
+    "ToolAnalysis",
+    "ToolAnalysisFinding",
+    "ToolApprovedBaseline",
+    "ToolHumanReview",
+    "ToolObservedVersion",
     "ToolProtocolObservation",
     "ToolObservationReviewApproval",
     "EmergencyDeny",
 ]
+
+from app.models.analyzer_migration import AnalyzerMigration, AnalyzerMigrationDecision, AnalyzerMigrationActivation
+
+from app.models.approval_lineage import ToolApprovalLineage
+
+from app.models.analysis_authority_binding import AnalysisAuthorityBinding

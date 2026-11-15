@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
@@ -9,7 +9,14 @@ from app.db.database import Base
 
 class RuntimeCall(Base):
     __tablename__ = "runtime_calls"
+    # Old (unpaired) events retain NULL in both columns. Paired new events
+    # have at most one durable record for each operation transition.
+    __table_args__ = (
+        UniqueConstraint("operation_id", "event_phase", name="uq_runtime_call_operation_phase"),
+    )
 
+    operation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    event_phase: Mapped[str | None] = mapped_column(String(12), nullable=True)
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
     session_id: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -18,6 +25,8 @@ class RuntimeCall(Base):
         nullable=True,
     )
     tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Immutable fingerprint the Proxy actually authorized before dispatch.
+    tool_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     arguments_summary: Mapped[dict[str, Any] | str | None] = mapped_column(
         JSON,
         nullable=True,

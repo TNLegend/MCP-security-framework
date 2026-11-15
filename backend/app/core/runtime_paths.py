@@ -6,7 +6,15 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
-RUNTIME_DIR = PROJECT_ROOT / ".runtime"
+# Explicit QA profile: runtime keys, caches and state never use the source tree.
+_qa_root = os.environ.get("MCP_FRAMEWORK_QA_ROOT")
+if _qa_root:
+    _qa_path = Path(_qa_root)
+    if not _qa_path.is_absolute() or PROJECT_ROOT in _qa_path.resolve().parents:
+        raise ValueError("qa_runtime_must_be_absolute_and_outside_source")
+    RUNTIME_DIR = _qa_path.resolve()
+else:
+    RUNTIME_DIR = PROJECT_ROOT / ".runtime"
 RUNTIME_MODELS_DIR = RUNTIME_DIR / "models"
 RUNTIME_CACHE_DIR = RUNTIME_DIR / "cache"
 RUNTIME_TOOLS_DIR = RUNTIME_DIR / "tools"
@@ -49,9 +57,9 @@ TRIVY_DOCKER_CONFIG_DIR = TRIVY_DIR / "docker-config"
 
 
 def runtime_directories(
-    project_root: Path = PROJECT_ROOT,
+    project_root: Path | None = None,
 ) -> tuple[Path, ...]:
-    runtime_dir = project_root / ".runtime"
+    runtime_dir = RUNTIME_DIR if project_root is None else project_root / ".runtime"
     runtime_models_dir = runtime_dir / "models"
     runtime_cache_dir = runtime_dir / "cache"
     runtime_tools_dir = runtime_dir / "tools"
@@ -81,7 +89,7 @@ def runtime_directories(
     )
 
 
-def ensure_runtime_directories(project_root: Path = PROJECT_ROOT) -> None:
+def ensure_runtime_directories(project_root: Path | None = None) -> None:
     for path in runtime_directories(project_root):
         path.mkdir(parents=True, exist_ok=True)
 

@@ -7,11 +7,13 @@ import re
 import unicodedata
 from typing import Any, Iterable, Literal
 from urllib.parse import urlsplit, urlunsplit
+from common.mcp_endpoint import format_http_authority
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from common.canonical_json import sha256_canonical_json
 from proxy.security_packs import SecurityPackManifest, SecurityPackRegistry
+from proxy.schema_bounds import SchemaBound, SchemaBoundsError, apply_schema_bounds
 
 
 SUPPORTED_SCHEMA_PROFILE_ID = "supported-json-schema-v1"
@@ -200,9 +202,33 @@ class ArgumentConstraint(BaseModel):
         return self
 
 
+class ArgumentRole(BaseModel):
+    """Reviewed, signed semantic meaning of one schema leaf argument.
+
+    A DATA claim is a human-reviewed assertion, NOT proof that an untrusted
+    remote MCP ignores that field when deciding its effects.
+    """
+    path: tuple[str, ...]
+    role: Literal[
+        "RESOURCE", "SOURCE", "DESTINATION", "DATA", "SELECTOR", "PROGRAM"
+    ]
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @field_validator("path")
+    @classmethod
+    def validate_role_path(cls, path: tuple[str, ...]) -> tuple[str, ...]:
+        validate_binding_tokens(path)
+        return path
+
+
 class ResultControl(BaseModel):
     classification: Literal["UNSPECIFIED", "INTERNAL", "SENSITIVE", "SECRET"] = "UNSPECIFIED"
     track_for_exfiltration: StrictBool = False
+    # Signed positive declaration; False must NOT suppress catalog signals.
+    produces_data: StrictBool | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -236,10 +262,39 @@ class ToolSecurityContract(BaseModel):
     tool_name: str = Field(min_length=1, max_length=255)
     effects: tuple[ToolEffect, ...] = Field(min_length=1)
     argument_constraints: tuple[ArgumentConstraint, ...] = ()
+    # Optional, explicitly reviewed limits for upstream schemas that omit
+    # numeric/array bounds. Never inferred automatically from provider text.
+    # Preserve exact signed-configuration serialization for legacy revisions:
+    # absent/empty overlays must NOT alter their canonical content hash.
+    schema_bounds: tuple[SchemaBound, ...] = Field(
+        default_factory=tuple, exclude_if=lambda bounds: not bounds
+    )
     result_control: ResultControl = ResultControl()
     unbound_arguments: tuple[tuple[str, ...], ...] = ()
+    # Declarative, explicitly reviewer-approved operation selectors. Absent
+    # from legacy signatures so old signed contract hashes are unchanged.
+    effect_selector_paths: tuple[tuple[str, ...], ...] = Field(
+        default_factory=tuple, exclude_if=lambda paths: not paths
+    )
+    # Opt-in v2 signed manifest. Empty is absent from historical signed
+    # payloads. New use requires exhaustive semantic roles for EVERY leaf;
+    # legacy unbound paths are never automatically converted to DATA.
+    argument_roles: tuple[ArgumentRole, ...] = Field(
+        default_factory=tuple, exclude_if=lambda roles: not roles
+    )
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @field_validator("effect_selector_paths")
+    @classmethod
+    def validate_effect_selector_paths(cls, paths: tuple[tuple[str, ...], ...]):
+        for path in paths:
+            validate_binding_tokens(path)
+            if "*" in path or any(token.isdigit() for token in path):
+                raise ValueError("effect_selector_path_must_be_scalar")
+        if len(set(paths)) != len(paths):
+            raise ValueError("duplicate_effect_selector_path")
+        return paths
 
     @field_validator("unbound_arguments")
     @classmethod
@@ -262,6 +317,14 @@ class ToolSecurityContract(BaseModel):
         if len(constraint_ids) != len(set(constraint_ids)):
             raise ValueError("argument constraint ids must be unique.")
         resource_types_by_path: dict[tuple[str, ...], str] = {}
+        constrained_selectors = {
+            constraint.path for constraint in self.argument_constraints
+            if constraint.operator == "EQ" and constraint.required
+        }
+        if not set(self.effect_selector_paths).issubset(constrained_selectors):
+            raise ValueError("effect_selector_requires_exact_required_constraint")
+        if not set(self.effect_selector_paths).issubset(set(self.unbound_arguments)):
+            raise ValueError("effect_selector_must_be_nonresource_argument")
         for effect in self.effects:
             effect_paths = [binding.path for binding in effect.resource_bindings]
             if len(effect_paths) != len(set(effect_paths)):
@@ -273,12 +336,43 @@ class ToolSecurityContract(BaseModel):
                         "resource binding path cannot use different resource types across effects."
                     )
                 resource_types_by_path[binding.path] = binding.resource_type
+        if self.argument_roles:
+            role_paths = [entry.path for entry in self.argument_roles]
+            if len(set(role_paths)) != len(role_paths):
+                raise ValueError("duplicate_argument_role_path")
+            bound_roles: dict[tuple[str, ...], str] = {}
+            for effect in self.effects:
+                for binding in effect.resource_bindings:
+                    existing = bound_roles.get(binding.path)
+                    if existing is not None and existing != binding.role:
+                        raise ValueError("ambiguous_resource_argument_role")
+                    bound_roles[binding.path] = binding.role
+            declared = {entry.path: entry.role for entry in self.argument_roles}
+            if set(declared) != set(bound_roles) | set(self.unbound_arguments):
+                raise ValueError("argument_roles_incomplete")
+            for path, binding_role in bound_roles.items():
+                if declared[path] != binding_role:
+                    raise ValueError("argument_role_resource_mismatch")
+            for path in self.unbound_arguments:
+                if declared[path] in {"RESOURCE", "SOURCE", "DESTINATION"}:
+                    raise ValueError("argument_role_unbound_resource")
+            selectors = {
+                path for path, role in declared.items() if role == "SELECTOR"
+            }
+            if selectors != set(self.effect_selector_paths):
+                raise ValueError("selector_role_requires_exact_constraint")
         return self
 
     def contract_hash_payload(self) -> dict[str, Any]:
         payload = self.model_dump(mode="json")
         if not payload.get("argument_constraints"):
             payload.pop("argument_constraints", None)
+        if not payload.get("schema_bounds"):
+            payload.pop("schema_bounds", None)
+        if not payload.get("effect_selector_paths"):
+            payload.pop("effect_selector_paths", None)
+        if not payload.get("argument_roles"):
+            payload.pop("argument_roles", None)
         result_control = payload.get("result_control")
         if result_control == {
             "classification": "UNSPECIFIED",
@@ -404,6 +498,7 @@ class CapabilityDefinition:
     requires_resource: bool
     allowed_resource_types: tuple[str, ...]
     external_effect: bool = False
+    produces_data: bool | None = None
     lifecycle: str = "ACTIVE"
 
 
@@ -430,6 +525,7 @@ class CapabilityCatalog:
                     requires_resource=value.requires_resource,
                     allowed_resource_types=value.allowed_resource_types,
                     external_effect=value.external_effect,
+                    produces_data=value.produces_data,
                     lifecycle=value.lifecycle,
                 )
                 for pack in registry.packs()
@@ -496,6 +592,8 @@ class CapabilityCatalog:
                 "requires_resource": definition.requires_resource,
                 "allowed_resource_types": list(definition.allowed_resource_types),
                 "lifecycle": definition.lifecycle,
+                **({"produces_data": definition.produces_data}
+                   if definition.produces_data is not None else {}),
             }
             for definition in sorted(self._definitions.values(), key=lambda item: item.id)
         ]
@@ -600,10 +698,51 @@ def security_schema_projection(schema: Any) -> dict[str, Any]:
     """
     if not isinstance(schema, dict):
         raise SecurityModelError("schema_not_object")
+    # Preflight the full JSON tree iteratively *before* any recursive copy or
+    # projection. This bounds recursion even for schemas loaded internally
+    # (not only for schemas passing the HTTP JSON parser).
+    stack: list[tuple[Any, int]] = [(schema, 0)]
+    visited = 0
+    while stack:
+        node, depth = stack.pop()
+        visited += 1
+        if depth > 32:
+            raise SecurityModelError("schema_projection_depth_exceeded")
+        if visited > 16_384:
+            raise SecurityModelError("schema_projection_nodes_exceeded")
+        if isinstance(node, dict):
+            stack.extend((value, depth + 1) for value in node.values())
+        elif isinstance(node, list):
+            stack.extend((value, depth + 1) for value in node)
     return _project_security_schema_node(schema)
 
 
-def _project_security_schema_node(node: dict[str, Any]) -> dict[str, Any]:
+def _project_security_schema_node(
+    node: dict[str, Any], *, property_name: str | None = None
+) -> dict[str, Any]:
+    # A provider may advertise string OR unbounded array. A permissive
+    # interpretation is unsafe: admit only the scalar alternative until a
+    # fully bounded array contract is explicitly supported.
+    variants = node.get("anyOf")
+    if (
+        isinstance(variants, list)
+        and len(variants) == 2
+        and set(node) <= {"anyOf", "title", "description", "default", "examples"}
+        and any(isinstance(v, dict) and v.get("type") == "string" for v in variants)
+        and any(
+            isinstance(v, dict)
+            and v.get("type") == "array"
+            and "maxItems" not in v
+            for v in variants
+        )
+    ):
+        scalar = next(v for v in variants if isinstance(v, dict) and v.get("type") == "string")
+        narrowed = {**scalar}
+        for metadata_key in ("title", "description"):
+            if metadata_key in node and metadata_key not in narrowed:
+                narrowed[metadata_key] = node[metadata_key]
+        return _project_security_schema_node(narrowed, property_name=property_name)
+
     projected: dict[str, Any] = {}
     node_type = node.get("type")
     object_node = node_type == "object" or (
@@ -618,7 +757,7 @@ def _project_security_schema_node(node: dict[str, Any]) -> dict[str, Any]:
         if key in {"properties", "$defs", "definitions"} and isinstance(value, dict):
             projected[key] = {
                 name: (
-                    _project_security_schema_node(child)
+                    _project_security_schema_node(child, property_name=name)
                     if isinstance(child, dict)
                     else _clone_json_value(child)
                 )
@@ -639,6 +778,21 @@ def _project_security_schema_node(node: dict[str, Any]) -> dict[str, Any]:
             projected[key] = _clone_json_value(value)
     if object_node:
         projected["additionalProperties"] = False
+    # Schema projection must never infer business meaning from prose,
+    # names, or a positive minimum. Explicit numeric bounds remain exactly
+    # as declared; unsupported/unbounded types fail in the strict validator.
+    if isinstance(node_type, list):
+        # The strict validator already understands exactly one nullable
+        # primitive alternative. Keep both alternatives (never narrow or
+        # widen the upstream type), but reject nullable structured values
+        # until their resource-binding semantics can be compiled safely.
+        non_null = [value for value in node_type if value != "null"]
+        if (
+            len(node_type) != 2
+            or len(non_null) != 1
+            or non_null[0] not in {"string", "boolean", "integer", "number"}
+        ):
+            raise SecurityModelError("schema_projection_union_type_unsupported")
     return projected
 
 
@@ -654,7 +808,9 @@ class SupportedSchemaProfileV1:
     profile_id = SUPPORTED_SCHEMA_PROFILE_ID
 
     @classmethod
-    def validate(cls, schema: Any) -> tuple[tuple[str, ...], ...]:
+    def validate(
+        cls, schema: Any, *, signed_argument_roles: bool = False,
+    ) -> tuple[tuple[str, ...], ...]:
         if not isinstance(schema, dict):
             raise SecurityModelError("schema_not_object")
         definitions = schema.get("$defs", {})
@@ -674,6 +830,7 @@ class SupportedSchemaProfileV1:
             definitions=definitions,
             resolving_refs=(),
             root=True,
+            signed_argument_roles=signed_argument_roles,
         )
         return tuple(sorted(set(paths)))
 
@@ -688,6 +845,7 @@ class SupportedSchemaProfileV1:
         definitions: dict[str, dict[str, Any]],
         resolving_refs: tuple[str, ...],
         root: bool = False,
+        signed_argument_roles: bool = False,
     ) -> list[tuple[str, ...]]:
         if depth > MAX_SCHEMA_DEPTH:
             raise SecurityModelError("schema_depth_exceeded")
@@ -696,6 +854,11 @@ class SupportedSchemaProfileV1:
             raise SecurityModelError("schema_property_count_exceeded")
         if "x-mcp-header" in node:
             raise SecurityModelError("schema_x_mcp_header_unsupported")
+        # Python/jsonschema evaluates provider-supplied regex through a
+        # backtracking engine. Until a linear-time implementation exists,
+        # do not admit arbitrary patterns in executable security schemas.
+        if "pattern" in node:
+            raise SecurityModelError("schema_untrusted_regex_pattern_unsupported")
         forbidden = {
             "$dynamicRef",
             "patternProperties",
@@ -730,6 +893,7 @@ class SupportedSchemaProfileV1:
                 definitions=definitions,
                 resolving_refs=(*resolving_refs, reference),
                 root=root,
+                signed_argument_roles=signed_argument_roles,
             )
         union_key = "oneOf" if "oneOf" in node else "anyOf" if "anyOf" in node else None
         if union_key:
@@ -750,6 +914,7 @@ class SupportedSchemaProfileV1:
                         definitions=definitions,
                         resolving_refs=resolving_refs,
                         root=root,
+                        signed_argument_roles=signed_argument_roles,
                     )
                 )
             normalized = [set(paths) for paths in variant_paths]
@@ -766,7 +931,33 @@ class SupportedSchemaProfileV1:
             raise SecurityModelError("schema_root_must_be_object")
         if node_type not in {"object", "array", "string", "boolean", "integer", "number"}:
             raise SecurityModelError("schema_type_unsupported")
-        _reject_unsupported_action_selector(path, node)
+        # Enforce a complete, positive grammar at every node. The runtime
+        # jsonschema validator must never execute a keyword this security
+        # profile did not inspect and consciously authorize.
+        common_keys = {
+            "type", "title", "description", "default", "examples",
+            "enum", "const", "readOnly", "writeOnly", "deprecated",
+        }
+        type_keys = {
+            "object": {"properties", "required", "additionalProperties",
+                       "minProperties", "maxProperties"},
+            "array": {"items", "minItems", "maxItems", "uniqueItems"},
+            "string": {"minLength", "maxLength"},
+            "number": {"minimum", "maximum"},
+            "integer": {"minimum", "maximum"},
+            "boolean": set(),
+        }
+        allowed_keys = common_keys | type_keys[node_type]
+        if root:
+            allowed_keys |= {"$defs", "$schema", "$comment"}
+        unexpected = set(node) - allowed_keys
+        if unexpected:
+            raise SecurityModelError("schema_keyword_not_in_security_profile")
+        # Legacy contracts retain the old heuristic guard. A complete,
+        # signed, explicit role manifest replaces lexical name inference.
+        # Schema syntax, exact selector EQ and role coverage still apply.
+        if not signed_argument_roles:
+            _reject_unsupported_action_selector(path, node)
 
         if node_type == "object":
             if node.get("additionalProperties") is not False:
@@ -791,6 +982,7 @@ class SupportedSchemaProfileV1:
                         counter,
                         definitions=definitions,
                         resolving_refs=resolving_refs,
+                        signed_argument_roles=signed_argument_roles,
                     )
                 )
             return result
@@ -813,6 +1005,7 @@ class SupportedSchemaProfileV1:
                 counter,
                 definitions=definitions,
                 resolving_refs=resolving_refs,
+                signed_argument_roles=signed_argument_roles,
             )
 
         cls._validate_scalar_constraints(node, node_type)
@@ -859,6 +1052,108 @@ def _reject_unsupported_action_selector(
     raise SecurityModelError("conditional_selector_schema_unsupported")
 
 
+def constrain_effect_selectors(
+    schema: dict[str, Any], contract: ToolSecurityContract
+) -> dict[str, Any]:
+    """Narrow the executable schema using explicitly signed selector EQ values.
+
+    Never alter the MCP observation or its fingerprint. This is permitted
+    only for declared selectors, constrained by a required exact-value
+    argument constraint. Every other schema construct keeps its existing
+    fail-closed behavior.
+    """
+    if not contract.effect_selector_paths:
+        return schema
+    exact = {
+        item.path: item.value
+        for item in contract.argument_constraints
+        if item.operator == "EQ" and item.required
+    }
+    if not set(contract.effect_selector_paths) <= set(exact):
+        raise SecurityModelError("effect_selector_constraint_missing")
+    return constrain_declared_selector_values(
+        schema, {path: exact[path] for path in contract.effect_selector_paths}
+    )
+
+
+def constrain_declared_selector_values(
+    schema: dict[str, Any], declared: dict[tuple[str, ...], Any]
+) -> dict[str, Any]:
+    """Strictly narrow a projected schema by reviewed literal selector values."""
+    if not declared:
+        return schema
+    from copy import deepcopy
+    clone = deepcopy(schema)
+    for path,value in declared.items():
+        validate_binding_tokens(path)
+        node = clone
+        for token in path:
+            children = node.get("properties") if isinstance(node, dict) else None
+            node = children.get(token) if isinstance(children, dict) else None
+            if not isinstance(node, dict):
+                raise SecurityModelError("effect_selector_path_not_in_schema")
+        kind = node.get("type")
+        if kind not in {"string", "boolean", "integer", "number"}:
+            raise SecurityModelError("effect_selector_scalar_required")
+        exact_type = (
+            (kind == "string" and isinstance(value, str))
+            or (kind == "boolean" and type(value) is bool)
+            or (kind == "integer" and type(value) is int)
+            or (kind == "number" and _constraint_number(value))
+        )
+        if not exact_type:
+            raise SecurityModelError("effect_selector_type_mismatch")
+        if kind == "string" and (
+            len(value) < node.get("minLength", 0)
+            or len(value) > node.get("maxLength", MAX_STRING_LENGTH)
+        ):
+            raise SecurityModelError("effect_selector_value_outside_upstream_schema")
+        if kind in {"integer", "number"} and (
+            ("minimum" in node and value < node["minimum"])
+            or ("maximum" in node and value > node["maximum"])
+        ):
+            raise SecurityModelError("effect_selector_value_outside_upstream_schema")
+        if ("enum" in node and value not in node["enum"]) or (
+            "const" in node and node["const"] != value
+        ):
+            raise SecurityModelError("effect_selector_value_outside_upstream_schema")
+        # Exactly one signed scalar outcome is possible from the downstream
+        # guarded call; never allow an arbitrary alternative effect selector.
+        node["enum"] = [value]
+    return clone
+
+
+def compile_executable_contract_schema(
+    contract: ToolSecurityContract,
+    upstream_schema: dict[str, Any],
+    *,
+    capability_catalog: CapabilityCatalog | None = None,
+    resource_type_registry: ResourceTypeRegistry | None = None,
+    adapter_resolver=None,
+) -> tuple[dict[str, Any], tuple[AdapterResolution, ...]]:
+    """One fail-closed compiler for signed publication and Runtime requests.
+
+    Never mutate the discovered upstream schema/fingerprint. Apply only
+    restrictive projection, explicitly reviewed bounds and exact selectors;
+    then check every signed effect, role and resource binding using precisely
+    the same schema profile for both enforcement sites.
+    """
+    projected = security_schema_projection(upstream_schema)
+    try:
+        bounded = apply_schema_bounds(projected, contract.schema_bounds)
+    except SchemaBoundsError as exc:
+        raise SecurityModelError(exc.code) from exc
+    executable = constrain_effect_selectors(bounded, contract)
+    resolutions = validate_contract_for_schema(
+        contract,
+        executable,
+        capability_catalog=capability_catalog,
+        resource_type_registry=resource_type_registry,
+        adapter_resolver=adapter_resolver,
+    )
+    return executable, resolutions
+
+
 def validate_contract_for_schema(
     contract: ToolSecurityContract,
     schema: dict[str, Any],
@@ -867,7 +1162,14 @@ def validate_contract_for_schema(
     resource_type_registry: ResourceTypeRegistry | None = None,
     adapter_resolver=None,
 ) -> tuple[AdapterResolution, ...]:
-    schema_paths = set(SupportedSchemaProfileV1.validate(schema))
+    try:
+        schema = apply_schema_bounds(schema, contract.schema_bounds)
+    except SchemaBoundsError as exc:
+        raise SecurityModelError(exc.code) from exc
+    schema = constrain_effect_selectors(schema, contract)
+    schema_paths = set(SupportedSchemaProfileV1.validate(
+        schema, signed_argument_roles=bool(contract.argument_roles),
+    ))
     bound_paths = {
         binding.path
         for effect in contract.effects
@@ -875,6 +1177,17 @@ def validate_contract_for_schema(
     }
     unbound_paths = set(contract.unbound_arguments)
     constraint_paths = {constraint.path for constraint in contract.argument_constraints}
+    # Defense in depth for model_copy/model_construct and imported signed
+    # artifacts: selector claims must still be exact, required, and accounted
+    # for even if model validation was bypassed before reaching compilation.
+    selectors = set(contract.effect_selector_paths)
+    if selectors:
+        exact_paths = {
+            item.path for item in contract.argument_constraints
+            if item.operator == "EQ" and item.required
+        }
+        if not selectors <= exact_paths or not selectors <= unbound_paths:
+            raise SecurityModelError("effect_selector_constraint_missing")
     if bound_paths.intersection(unbound_paths):
         raise SecurityModelError("argument_bound_and_unbound")
     unknown = (bound_paths | unbound_paths) - schema_paths
@@ -884,6 +1197,49 @@ def validate_contract_for_schema(
         raise SecurityModelError("constraint_path_not_in_schema")
     if schema_paths != bound_paths | unbound_paths:
         raise SecurityModelError("unaccounted_schema_argument")
+    if contract.argument_roles:
+        entries = contract.argument_roles
+        # Guard deserialization shortcuts and model_copy/model_construct.
+        # An attacker-supplied malformed "reviewed" role must never turn
+        # lexical checks off and then raise an uncontrolled exception.
+        if not isinstance(entries, tuple) or any(
+            not isinstance(entry, ArgumentRole) for entry in entries
+        ):
+            raise SecurityModelError("argument_roles_invalid")
+        semantic_roles = {entry.path: entry.role for entry in entries}
+        if len(semantic_roles) != len(entries):
+            raise SecurityModelError("duplicate_argument_role_path")
+        if set(semantic_roles) != schema_paths:
+            raise SecurityModelError("argument_roles_incomplete")
+        if {
+            path for path, role in semantic_roles.items() if role == "SELECTOR"
+        } != selectors:
+            raise SecurityModelError("selector_role_requires_exact_constraint")
+        if any(role == "PROGRAM" for role in semantic_roles.values()):
+            # No generic proxy can safely interpret arbitrary code payloads.
+            # Only a dedicated, versioned and audited interpreter adapter
+            # could make this role executable in a future contract revision.
+            raise SecurityModelError("program_argument_unsupported")
+        resource_roles: dict[tuple[str, ...], str] = {}
+        for effect in contract.effects:
+            for binding in effect.resource_bindings:
+                previous = resource_roles.get(binding.path)
+                if previous is not None and previous != binding.role:
+                    raise SecurityModelError("ambiguous_resource_argument_role")
+                resource_roles[binding.path] = binding.role
+        if any(semantic_roles.get(path) != role
+               for path, role in resource_roles.items()):
+            raise SecurityModelError("argument_role_resource_mismatch")
+        if any(semantic_roles.get(path) not in {"DATA", "SELECTOR"}
+               for path in unbound_paths):
+            raise SecurityModelError("argument_role_unbound_resource")
+        # Validate selector constraints again here, even if model_copy or
+        # model_construct bypassed the Pydantic contract model validators.
+        if selectors and not selectors <= {
+            item.path for item in contract.argument_constraints
+            if item.operator == "EQ" and item.required
+        }:
+            raise SecurityModelError("effect_selector_constraint_missing")
 
     catalog = capability_catalog or CapabilityCatalog()
     type_registry = resource_type_registry or ResourceTypeRegistry()
@@ -992,8 +1348,20 @@ def _canonical_filesystem_path(
     config: dict[str, Any],
 ) -> tuple[str, tuple[str, ...]]:
     mode = config.get("filesystem_path_mode", "RELATIVE_ROOTED")
-    if mode not in {"RELATIVE_ROOTED", "ABSOLUTE"}:
+    if type(mode) is not str or mode not in {"RELATIVE_ROOTED", "ABSOLUTE"}:
         raise SecurityModelError("filesystem_path_mode_unsupported")
+    # Canonicalization here is LEXICAL, never proof that the upstream MCP
+    # resolves symlinks/junctions within a local root. PORTABLE is the
+    # conservative historical default: reject names with Windows aliases,
+    # whether or not the local proxy happens to run on Windows.
+    dialect = config.get("filesystem_path_dialect", "PORTABLE")
+    if type(dialect) is not str or dialect not in {"PORTABLE", "POSIX", "WINDOWS"}:
+        raise SecurityModelError("filesystem_path_dialect_unsupported")
+    if dialect == "WINDOWS" and mode == "ABSOLUTE":
+        # A slash-rooted Windows path depends on the process's current drive;
+        # a drive/UNC volume identity is not represented by this v1 grammar.
+        # Do not invent an absolute authority for an ambiguous path.
+        raise SecurityModelError("filesystem_path_dialect_mode_unsupported")
     if "\\" in value or "//" in value or "*" in value or "?" in value or ":" in value:
         raise SecurityModelError("filesystem_path_ambiguous")
     if mode == "RELATIVE_ROOTED" and value.startswith("/"):
@@ -1012,9 +1380,29 @@ def _canonical_filesystem_path(
             raise SecurityModelError("filesystem_path_dot_segment")
         if part == "..":
             raise SecurityModelError("filesystem_path_traversal")
+        # Windows strips trailing dots/spaces and reserves device names even
+        # with an extension. Reject these aliases in the default portable
+        # dialect too. POSIX is explicitly requested when these are intended
+        # to be distinct ordinary files. Alternate data streams/drive/UNC
+        # remain rejected by the existing separator and colon preflight.
+        if dialect != "POSIX":
+            name = part.split(".", 1)[0].upper()
+            if part.endswith((".", " ")) or name in {
+                "CON", "PRN", "AUX", "NUL",
+                *(f"COM{index}" for index in range(1, 10)),
+                *(f"LPT{index}" for index in range(1, 10)),
+            }:
+                raise SecurityModelError("filesystem_path_windows_alias")
         if not PATH_TOKEN_PATTERN.fullmatch(part):
             raise SecurityModelError("filesystem_path_segment_unsupported")
-        parts.append(part)
+        # Portable authorizations must have a unique lexical identity on
+        # both case-sensitive POSIX and case-insensitive Windows volumes.
+        # Reject ambiguous mixed/uppercase forms rather than silently
+        # folding signed legacy scope values (which could broaden POSIX
+        # access). Explicit POSIX or WINDOWS review is required for those.
+        if dialect == "PORTABLE" and part != part.lower():
+            raise SecurityModelError("filesystem_path_portable_case_ambiguous")
+        parts.append(part.lower() if dialect == "WINDOWS" else part)
     if not parts:
         raise SecurityModelError("filesystem_path_empty")
     if mode == "ABSOLUTE":
@@ -1078,8 +1466,7 @@ def _canonical_url(value: str) -> tuple[str, tuple[str, ...]]:
         raise SecurityModelError("resource_url_authority_invalid")
     if any(character.isspace() or ord(character) < 32 for character in value):
         raise SecurityModelError("resource_url_invalid_character")
-    default_port = 80 if scheme == "http" else 443
-    authority = host if port in {None, default_port} else f"{host}:{port}"
+    authority = format_http_authority(host, port, scheme)
     path = parsed.path or "/"
     canonical = urlunsplit((scheme, authority, path, parsed.query, ""))
     return canonical, (f"{scheme}://{authority}",)

@@ -133,6 +133,8 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
           <h3>Runtime storage</h3>
           <dl className="compact-dl">
             <Row label="Rows" value={storage?.total_rows} />
+            <Row label="Unresolved MCP operations" value={storage?.unresolved_intents} />
+            <Row label="Intent grace" value={storage?.intent_grace_seconds != null ? storage.intent_grace_seconds + " seconds" : "-"} />
             <Row label="Retention" value={storage ? storage.retention_days + " days" : "-"} />
             <Row label="Max rows" value={storage?.max_rows} />
             <Row label="Cleanup batch" value={storage?.cleanup_batch_size} />
@@ -147,6 +149,10 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
             <Row label="Oldest" value={formatDate(storage?.oldest_at)} />
             <Row label="Newest" value={formatDate(storage?.newest_at)} />
           </dl>
+          <p className="hint-text">
+            Unresolved operations have a durable intent but no completion event.
+            The upstream effect is unknown; never automatically retry them.
+          </p>
         </section>
 
         <section className="detail-panel">

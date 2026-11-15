@@ -1,2 +1,0 @@
-This is a local MCP lab contract file.
-It is safe test data for the read_file tool.

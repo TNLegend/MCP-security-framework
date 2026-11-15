@@ -27,7 +27,11 @@ from proxy.tool_security_v2 import (
     ReferencePrecision,
     ResourceTypeRegistry,
     validate_contract_for_schema,
+    compile_executable_contract_schema,
+    security_schema_projection,
+    constrain_effect_selectors,
 )
+from proxy.schema_bounds import SchemaBoundsError, apply_schema_bounds
 
 
 MAX_SCHEMA_BYTES = 262_144
@@ -103,6 +107,12 @@ def prepare_tool_request_v2(
         return _invalid_v2(("arguments_too_large",), contract)
     if not isinstance(input_schema, dict):
         return _invalid_v2(("input_schema_not_object",), contract)
+    # Use the same restrictive security projection at contract creation and
+    # execution. The upstream original remains unchanged for fingerprinting.
+    try:
+        input_schema = security_schema_projection(input_schema)
+    except (SecurityModelError, SchemaBoundsError):
+        return _invalid_v2(("input_schema_projection_invalid",), contract)
 
     capability_catalog = CapabilityCatalog(
         version=capability_catalog_version,
@@ -118,7 +128,7 @@ def prepare_tool_request_v2(
         security_packs=security_packs,
     )
     try:
-        derived_resolutions = validate_contract_for_schema(
+        input_schema, derived_resolutions = compile_executable_contract_schema(
             contract,
             input_schema,
             capability_catalog=capability_catalog,

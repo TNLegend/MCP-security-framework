@@ -36,12 +36,14 @@ function SecurityConfiguration({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const revisionPagination = usePagination(revisions, String(revisions.length));
+  // An explicitly selected revision must never silently fall back to the
+  // active one while refresh is fetching a newly created draft. Otherwise
+  // controls can target a different (published) revision than the user chose.
   const selectedRevision = useMemo(
     () =>
-      revisions.find((revision) => revision.id === selectedRevisionId) ||
-      activeRevision ||
-      revisions[0] ||
-      null,
+      selectedRevisionId
+        ? revisions.find((revision) => revision.id === selectedRevisionId) || null
+        : activeRevision || revisions[0] || null,
     [activeRevision, revisions, selectedRevisionId],
   );
 
@@ -91,7 +93,9 @@ function SecurityConfiguration({
       } else if (action === "draft") {
         updatedRevision = await createDraftRevision(selectedRevision.id, summary);
       } else if (action === "save") {
-        updatedRevision = await patchConfigRevision(selectedRevision.id, parsedContent, summary);
+        updatedRevision = await patchConfigRevision(
+          selectedRevision.id, parsedContent, summary, selectedRevision.content_hash
+        );
       } else if (action === "validate") {
         await validateConfigRevision(selectedRevision.id, summary);
       } else if (action === "publish") {

@@ -7,16 +7,20 @@ import json
 from pathlib import Path
 import re
 import secrets
+from uuid import UUID
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from common.mcp_endpoint import MCPEndpointValidationError, parse_mcp_endpoint, validate_mcp_endpoint
+from common.mcp_endpoint import MCPEndpointValidationError, validate_mcp_endpoint, format_http_authority
+from common.pinned_http import build_pinned_opener
+from common.security_topology import local_security_authority_supported
 from common.upstream_auth import (
     UpstreamAuthError,
     read_upstream_secret,
     read_upstream_token_bundle,
+    oauth_credential_lock,
     write_upstream_token_bundle,
 )
 
@@ -34,12 +38,17 @@ class UpstreamOAuthError(UpstreamAuthError):
     """Safe failure for a framework-owned upstream OAuth connection."""
 
 
+def _require_local_oauth_topology() -> None:
+    if not local_security_authority_supported():
+        raise UpstreamOAuthError("upstream_oauth_topology_unsupported")
+
+
 class _NoRedirectHandler(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N802
         return None
 
 
-OAUTH_OPENER = build_opener(_NoRedirectHandler)
+OAUTH_OPENER = build_pinned_opener()
 
 
 def normalize_requested_scopes(value: str | None) -> list[str]:
@@ -63,7 +72,11 @@ def create_oauth_attempt(
     client_secret_ref: str | None,
     resource: str,
     scopes: list[str],
+    authorization_server: str | None = None,
+    authorization_response_iss_parameter_supported: bool = False,
+    credential_generation: str | None = None,
 ) -> tuple[str, str, datetime]:
+    _require_local_oauth_topology()
     state = secrets.token_urlsafe(32)
     code_verifier = secrets.token_urlsafe(64)
     expires_at = _utcnow() + timedelta(seconds=OAUTH_ATTEMPT_TTL_SECONDS)
@@ -73,6 +86,9 @@ def create_oauth_attempt(
         "redirect_uri": redirect_uri,
         "authorization_endpoint": authorization_endpoint,
         "token_endpoint": token_endpoint,
+        "authorization_server": authorization_server,
+        "authorization_response_iss_parameter_supported": authorization_response_iss_parameter_supported,
+        "credential_generation": credential_generation,
         "client_id": client_id,
         "client_secret_ref": client_secret_ref,
         "resource": resource,
@@ -96,7 +112,18 @@ def create_oauth_attempt(
     return state, f"{authorization_endpoint}?{urlencode(query)}", expires_at
 
 
+def validate_authorization_response_issuer(*, attempt: dict[str, Any], iss: str | None) -> None:
+    expected = attempt.get("authorization_server")
+    if not isinstance(expected, str) or not expected:
+        raise UpstreamOAuthError("upstream_oauth_attempt_issuer_unbound")
+    if iss is not None and iss != expected:
+        raise UpstreamOAuthError("upstream_oauth_authorization_response_issuer_mismatch")
+    if attempt.get("authorization_response_iss_parameter_supported") is True and iss is None:
+        raise UpstreamOAuthError("upstream_oauth_authorization_response_issuer_missing")
+
+
 def consume_oauth_attempt(*, attempt_directory: Path, state: str) -> dict[str, Any]:
+    _require_local_oauth_topology()
     if not isinstance(state, str) or not _STATE_RE.fullmatch(state):
         raise UpstreamOAuthError("upstream_oauth_state_invalid")
     path = _attempt_path(attempt_directory, state)
@@ -149,8 +176,16 @@ def discover_oauth_configuration(
     authorization_servers = metadata.get("authorization_servers")
     if not isinstance(authorization_servers, list) or not authorization_servers:
         raise UpstreamOAuthError("upstream_oauth_authorization_server_missing")
+    advertised_resource = metadata.get("resource")
+    if advertised_resource != resource:
+        raise UpstreamOAuthError("upstream_oauth_resource_metadata_mismatch")
     authorization_server = _validated_authorization_server(authorization_servers[0])
     authorization_metadata = _discover_authorization_server_metadata(authorization_server)
+    if authorization_metadata.get("issuer") != authorization_server:
+        raise UpstreamOAuthError("upstream_oauth_issuer_metadata_mismatch")
+    iss_supported = authorization_metadata.get("authorization_response_iss_parameter_supported", False)
+    if not isinstance(iss_supported, bool):
+        raise UpstreamOAuthError("upstream_oauth_issuer_metadata_invalid")
     authorization_endpoint = _validated_oauth_endpoint(
         authorization_metadata.get("authorization_endpoint"),
         "upstream_oauth_authorization_endpoint_invalid",
@@ -173,6 +208,7 @@ def discover_oauth_configuration(
         raise UpstreamOAuthError("upstream_oauth_scope_not_supported")
     configuration = {
         "authorization_server": authorization_server,
+        "authorization_response_iss_parameter_supported": iss_supported,
         "authorization_endpoint": authorization_endpoint,
         "token_endpoint": token_endpoint,
         "resource": resource,
@@ -246,6 +282,7 @@ def exchange_authorization_code(
     attempt: dict[str, Any],
     credential_ref: str,
 ) -> dict[str, Any]:
+    _require_local_oauth_topology()
     if not isinstance(code, str) or not code or len(code) > MAX_OAUTH_TOKEN_BYTES:
         raise UpstreamOAuthError("upstream_oauth_code_invalid")
     response = _request_token(
@@ -260,9 +297,52 @@ def exchange_authorization_code(
             "resource": str(attempt["resource"]),
         },
     )
-    bundle = _token_bundle(response, resource=str(attempt["resource"]), scopes=attempt.get("scopes") or [])
+    bundle = _token_bundle(
+        response, resource=str(attempt["resource"]),
+        scopes=attempt.get("scopes") or [],
+        configuration_binding=oauth_configuration_binding(attempt),
+    )
     write_upstream_token_bundle(credential_ref, bundle)
     return bundle
+
+
+def oauth_configuration_binding(config: dict[str, Any]) -> str:
+    """Hash the complete OAuth authority and one explicit connection generation.
+
+    This value is not an authentication secret; it prevents an otherwise
+    valid token stored at a reused credential reference from inheriting a
+    different client's or authorization server's authority.
+    """
+    if not isinstance(config, dict):
+        raise UpstreamOAuthError("upstream_oauth_reauthorization_required")
+    keys = (
+        "authorization_server", "authorization_endpoint",
+        "token_endpoint", "client_id", "resource",
+        "credential_generation",
+    )
+    try:
+        fields = {key: _oauth_config_string(config, key) for key in keys}
+        UUID(fields["credential_generation"])
+        scopes = config.get("scopes")
+        if not isinstance(scopes, list) or any(
+            not isinstance(item, str) or not _SCOPE_RE.fullmatch(item)
+            for item in scopes
+        ) or len(scopes) > 50:
+            raise ValueError("invalid scopes")
+        fields["scopes"] = sorted(set(scopes))
+        secret_ref = config.get("client_secret_ref")
+        if secret_ref is not None and (
+            not isinstance(secret_ref, str) or not secret_ref
+        ):
+            raise ValueError("invalid client secret reference")
+        fields["client_secret_ref"] = secret_ref
+    except (UpstreamOAuthError, ValueError, TypeError) as exc:
+        raise UpstreamOAuthError("upstream_oauth_reauthorization_required") from exc
+    payload = json.dumps(
+        {"version": 2, **fields}, sort_keys=True,
+        separators=(",", ":"), ensure_ascii=True,
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
 
 
 def resolve_oauth_access_token(
@@ -270,36 +350,52 @@ def resolve_oauth_access_token(
     credential_ref: str,
     oauth_config: dict[str, Any] | None,
 ) -> str:
-    if not isinstance(oauth_config, dict):
-        raise UpstreamOAuthError("upstream_oauth_configuration_invalid")
-    bundle = read_upstream_token_bundle(credential_ref)
-    expires_at = _bundle_expiry(bundle)
-    if expires_at > _utcnow() + timedelta(seconds=OAUTH_CLOCK_SKEW_SECONDS):
-        return _token_value(bundle, "access_token")
-    refresh_token = bundle.get("refresh_token")
-    if not isinstance(refresh_token, str) or not refresh_token:
-        raise UpstreamOAuthError("upstream_oauth_reauthorization_required")
-    response = _request_token(
-        token_endpoint=_validated_oauth_endpoint(
-            oauth_config.get("token_endpoint"),
-            "upstream_oauth_token_endpoint_invalid",
-        ),
-        client_id=_oauth_config_string(oauth_config, "client_id"),
-        client_secret_ref=oauth_config.get("client_secret_ref"),
-        payload={
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "resource": _oauth_config_string(oauth_config, "resource"),
-        },
-    )
-    refreshed = _token_bundle(
-        response,
-        resource=_oauth_config_string(oauth_config, "resource"),
-        scopes=oauth_config.get("scopes") or [],
-        previous_refresh_token=refresh_token,
-    )
-    write_upstream_token_bundle(credential_ref, refreshed)
-    return _token_value(refreshed, "access_token")
+    # The file-backed credential cannot enforce revocation across hosts with
+    # separate volumes. Refuse rather than claim the cache is a HA authority.
+    _require_local_oauth_topology()
+    # Shared with disconnect: refresh cannot resurrect a deleted credential.
+    # Lock also serializes concurrent refresh-token rotation across workers.
+    with oauth_credential_lock(credential_ref):
+        if not isinstance(oauth_config, dict):
+            raise UpstreamOAuthError("upstream_oauth_configuration_invalid")
+        bundle = read_upstream_token_bundle(credential_ref)
+        if bundle.get("resource") != _oauth_config_string(oauth_config, "resource"):
+            raise UpstreamOAuthError("upstream_oauth_resource_binding_mismatch")
+        # Historical v1 bundles proved only the resource. They cannot be
+        # safely upgraded to authority over a new issuer/client/generation.
+        if bundle.get("version") != 2 or not isinstance(bundle.get("configuration_binding"), str):
+            raise UpstreamOAuthError("upstream_oauth_reauthorization_required")
+        expected_binding = oauth_configuration_binding(oauth_config)
+        if not secrets.compare_digest(bundle["configuration_binding"], expected_binding):
+            raise UpstreamOAuthError("upstream_oauth_configuration_binding_mismatch")
+        expires_at = _bundle_expiry(bundle)
+        if expires_at > _utcnow() + timedelta(seconds=OAUTH_CLOCK_SKEW_SECONDS):
+            return _token_value(bundle, "access_token")
+        refresh_token = bundle.get("refresh_token")
+        if not isinstance(refresh_token, str) or not refresh_token:
+            raise UpstreamOAuthError("upstream_oauth_reauthorization_required")
+        response = _request_token(
+            token_endpoint=_validated_oauth_endpoint(
+                oauth_config.get("token_endpoint"),
+                "upstream_oauth_token_endpoint_invalid",
+            ),
+            client_id=_oauth_config_string(oauth_config, "client_id"),
+            client_secret_ref=oauth_config.get("client_secret_ref"),
+            payload={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "resource": _oauth_config_string(oauth_config, "resource"),
+            },
+        )
+        refreshed = _token_bundle(
+            response,
+            resource=_oauth_config_string(oauth_config, "resource"),
+            scopes=oauth_config.get("scopes") or [],
+            previous_refresh_token=refresh_token,
+            configuration_binding=expected_binding,
+        )
+        write_upstream_token_bundle(credential_ref, refreshed)
+        return _token_value(refreshed, "access_token")
 
 
 def canonical_resource_uri(endpoint: str) -> str:
@@ -309,8 +405,7 @@ def canonical_resource_uri(endpoint: str) -> str:
         raise UpstreamOAuthError(str(exc)) from exc
     scheme = parsed.parsed.scheme.lower()
     hostname = parsed.hostname
-    default_port = 443 if scheme == "https" else 80
-    authority = hostname if parsed.port == default_port else f"{hostname}:{parsed.port}"
+    authority = format_http_authority(hostname, parsed.port, scheme)
     return urlunsplit((scheme, authority, parsed.parsed.path or "/", parsed.parsed.query, ""))
 
 
@@ -440,7 +535,25 @@ def _request_token(
     try:
         with OAUTH_OPENER.open(request, timeout=15) as response:
             raw = response.read(MAX_OAUTH_RESPONSE_BYTES + 1)
-    except (HTTPError, URLError, TimeoutError, OSError) as exc:
+    except HTTPError as exc:
+        # An issuer's explicit invalid_grant means this refresh authority
+        # can no longer recover. After an issuer-side rotating refresh and
+        # local process crash, retrying the stale token is not a repair.
+        # Read only a small bounded error document; never echo its contents,
+        # including any remote description that could contain secrets.
+        if exc.code == 400:
+            try:
+                error_bytes = exc.read(4097)
+                error_payload = (
+                    json.loads(error_bytes.decode("utf-8"))
+                    if len(error_bytes) <= 4096 else None
+                )
+            except (OSError, ValueError, UnicodeDecodeError):
+                error_payload = None
+            if isinstance(error_payload, dict) and error_payload.get("error") == "invalid_grant":
+                raise UpstreamOAuthError("upstream_oauth_reauthorization_required") from exc
+        raise UpstreamOAuthError("upstream_oauth_token_exchange_failed") from exc
+    except (URLError, TimeoutError, OSError) as exc:
         raise UpstreamOAuthError("upstream_oauth_token_exchange_failed") from exc
     if len(raw) > MAX_OAUTH_RESPONSE_BYTES:
         raise UpstreamOAuthError("upstream_oauth_token_response_too_large")
@@ -459,7 +572,12 @@ def _token_bundle(
     resource: str,
     scopes: list[str],
     previous_refresh_token: str | None = None,
+    configuration_binding: str,
 ) -> dict[str, Any]:
+    if not isinstance(configuration_binding, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", configuration_binding
+    ):
+        raise UpstreamOAuthError("upstream_oauth_reauthorization_required")
     access_token = _token_value(response, "access_token")
     expires_in = response.get("expires_in")
     if isinstance(expires_in, bool) or not isinstance(expires_in, (int, float)) or not 1 <= expires_in <= 604800:
@@ -468,7 +586,8 @@ def _token_bundle(
     if refresh_token is not None:
         refresh_token = _validate_token_value(refresh_token, "refresh_token")
     return {
-        "version": 1,
+        "version": 2,
+        "configuration_binding": configuration_binding,
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_at": (_utcnow() + timedelta(seconds=expires_in)).isoformat(),

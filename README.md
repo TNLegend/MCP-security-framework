@@ -1,5 +1,50 @@
 # MCP Security Framework
 
+## Portable installation — single launch
+
+**Windows:** clone the source repository and double-click `start_framework.bat`
+(or run it from a terminal). The launcher checks Python 3.11–3.13, Git,
+Node.js/npm, and PostgreSQL 15+. On Windows with `winget`, missing system
+prerequisites are installed using their official packages. Windows permission
+prompts or a terminal restart may still be needed for system installers.
+Then the Python virtual environment, pinned `backend/requirements.txt`,
+frontend lockfile dependencies, OPA, security scanners, service identities,
+database schema, and model caches are prepared. The launcher starts the
+local backend, MCP lab, OPA, gateway, identity provider and the React frontend.
+
+**Private fine-tuned M4 checkpoints** are hosted separately from GitHub:
+
+- `tnlegend/mcp-security-m4-gliner-pass10` (GLiNER PASS10)
+- `tnlegend/mcp-security-m4-deberta-v2` (DeBERTa V2)
+
+The installer downloads their **pinned Hugging Face commits**, checks every
+file's frozen SHA-256 and size, and installs them to
+`.runtime/models/m4_semantics/GLINER/` and
+`.runtime/models/m4_semantics/DEBERTA_V2/` with
+`M4_BUNDLE_SHA256_MANIFEST.json` at the bundle root. For a new installation,
+provide a Hugging Face **read-only** access token when prompted, or via
+`HF_TOKEN` in the process environment. Never commit or paste tokens into
+Git or the project `.env`. Already verified local models are reused offline.
+M6's separate E5 dependency is installed by the analyzer cache downloader.
+
+**On Linux/macOS:** `./start_framework.sh` uses Python and the same source
+bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
+binaries) must first be installed with the operating system's package manager.
+
+**Security release boundary:** downloading an approved checkpoint does not
+approve a new executable pipeline. V19.3's owner signature covered its exact
+earlier source inventory. Changes to launch/bootstrap or other signed source
+require a new owner-approved source identity before enabling the signed
+M4 pipeline. The installer does not silently activate production or waive
+historical Gate3B verification limitations. By default M4 remains advisory
+and signed activation stays fail-closed until its release identity is updated.
+
+**Source publication:** GitHub contains source and mandatory declarative
+configuration plus this README. Models, trained weights, logs, QA datasets,
+test results, qualification reports, release manifests, secrets and other
+generated artifacts remain only in the local workspace or their dedicated
+private model repositories, not in the GitHub tree.
+
 Framework local de securite et de gouvernance pour agents IA utilisant MCP.
 
 ## Objective
@@ -90,11 +135,15 @@ connection configured through the framework.
 
 Outbound MCP endpoints are parsed structurally and limited to HTTP/HTTPS. URL
 userinfo, fragments, metadata/link-local/special destinations, and automatic
-redirect following are rejected. DNS answers are checked before each governed
-connection; the standard Python HTTP stack performs its own subsequent DNS
-resolution, so complete DNS-rebinding resistance still requires deployment
-egress controls or a future address-pinning transport. Private, loopback, LAN,
-enterprise, AWS-hosted, and public MCP endpoints remain supported. Local lab
+redirect following are rejected. The built-in MCP HTTP/SSE, Discovery and upstream OAuth paths now use a
+shared DNS-pinned HTTP(S) transport (common/pinned_http.py): all resolved
+addresses are validated, and each socket connects directly to a validated
+numeric address while retaining hostname-based TLS SNI/certificate checks.
+Redirects and environment proxies are rejected. These transport protections
+apply to the built-in paths; independently integrated/custom transports and
+untrusted remote MCP implementations require separate security validation
+and deployment egress controls. Private, loopback, LAN, enterprise,
+AWS-hosted, and public MCP endpoints remain supported subject to policy. Local lab
 trust is assigned only to the exact parsed hosts `localhost`, `127.0.0.1`, and
 `::1` over HTTP, never by a hostname prefix.
 
@@ -264,7 +313,7 @@ audit event containing the affected pack, revision, version state, and manifest
 hash where applicable. Lot 4 packages are data-only manifests interpreted by the
 built-in declarative adapter. A pack cannot ship or execute Python, JavaScript, or
 another executable payload. Semantics that need a specialized parser or
-canonicalizer belong to the reviewed, signed trusted-adapter SDK planned for Lot 5,
+canonicalizer belong to the reviewed, signed Trusted Adapter SDK implemented in Lot 5,
 not to the declarative package import path.
 
 The Lot 5 Trusted Adapter SDK now provides a stable, fail-closed extension point
@@ -358,6 +407,406 @@ MCP_DISCOVERY       -> Ed25519 signed service requests
 Knowing an internal URL does not grant access. Internal service requests sign the service id, key id, HTTP method, exact path, timestamp, JTI, and canonical request body hash with Ed25519. The backend verifies the public key, timestamp window, anti-replay JTI, body integrity, and per-service permission. A public key cannot impersonate a service because only the corresponding private key can produce the signature.
 
 The proxy no longer uses human inventory routes. It reads inventory through signed internal endpoints and writes runtime logs with its `MCP_PROXY` service identity. Tool discovery import is signed by a separate `MCP_DISCOVERY` identity; no shared discovery bearer token is accepted. Human legacy mutations such as `/servers`, `/tools`, and `/policies` are ADMIN-only.
+
+### Discovery generation identity and duplicate-tool protections (F11)
+
+Both the legacy MCP `tools/list` pagination loop and the modern
+`tools/list` discovery loop now maintain a profile-local set of tool
+names for the complete in-memory generation. A duplicate within or across
+pages is rejected before the discovery payload is returned. Discovered
+names also use one common strict validator for paging and signed import:
+1–255 printable NFC characters, no leading/trailing whitespace or
+invisible formatting controls. The inventory database stores at most
+255 characters for a tool name, so overlong names fail before mutation.
+Each page is validated before updating cursor/name sets. The
+`MAX_DISCOVERY_TOOLS=2000` ceiling is enforced over **all protocol profile
+observations combined**, not reset for each profile; the 60-second
+discovery deadline is likewise shared across negotiation and all profiles.
+Both loops accept that same absolute monotonic deadline, and exceeding
+either global budget refuses the whole discovery with no partial import.
+Fixtures cover 75, 100, 500 and 1000 tools over real synthetic legacy and
+modern pagination loops, cross-profile overflow, and a first-profile
+deadline overrun. The deadline is cooperative at HTTP-call boundaries:
+it cannot preempt a single blocking network operation without the
+transport's own timeout and watchdog. Page-count and cursor-cycle limits
+remain independently enforced.
+
+A provider-specific optional `catalogRevision` **extension** is now
+validated consistently across every `tools/list` page and all advertised
+protocol profiles in one discovery. Mismatched, omitted-after-present or
+malformed revisions fail closed with no partial payload. Set
+`MCP_DISCOVERY_REQUIRE_CATALOG_REVISION=1` on the discovery backend/client
+to **require** this metadata on every page; any non-`0`/`1` setting is
+rejected. The default `0` retains protocol compatibility and does **not**
+attest a stable remote snapshot when the revision is absent. The revision
+is provider-asserted, not cryptographically authenticated: an upstream
+server that lies or mutates between requests cannot be made to expose an
+immutable snapshot by client-only logic. A signed provider version or
+snapshot/session contract is required for that higher assurance.
+
+The signed internal `/inventory/import-discovery` path and admin
+discovery paths additionally reject duplicate **(tool name, upstream
+protocol profile)** pairs *before upserting any inventory row or running
+any Analyzer work*. Identically named tools from distinct supported
+profiles remain valid independent observations. Synthetic fixtures exercise
+both real page loops, import preflight, cursor limits, and a generation of
+1,000 unique tools over 25 pages.
+
+A PostgreSQL generation-fencing authority is implemented in
+`backend/app/services/discovery_generation.py`, with durable
+`MCPDiscoveryHead` / `MCPDiscoveryGeneration` records. ADMIN discovery
+routes reserve and commit a generation **before** remote I/O; publication
+executes inventory import under the same transactional advisory lock and
+rejects a generation superseded by a newer reservation. The signed internal
+CLI calls `/inventory/reserve-discovery` **before network discovery**, then
+includes the signed reservation UUID in `/inventory/import-discovery`.
+If the CLI loses the import's HTTP response, it **does not replay the
+import**. Instead, it performs a separate signed, read-only
+`GET /inventory/discovery-generations/{generation_id}` and validates
+the returned UUID, committed state and `may_retry_import=false`.
+A `PUBLISHED` result confirms the transaction committed (without
+inventing the lost import summary); any other state, invalid status or
+unavailable read fails closed as uncertain. The status endpoint is restricted
+to the signed Discovery service identity, does not expose credential
+fingerprints or endpoint scopes, and never itself authorizes a retry.
+Unreserved historical imports now return HTTP 428; superseded, expired or
+wrong-endpoint generations return HTTP 409 with no inventory mutation. The
+reservation expires after 30 minutes to prevent a crashed worker publishing
+an arbitrarily delayed result. Both the admin and signed-service paths
+require PostgreSQL for this durable authority.
+
+F11 context binding extends each durable generation with a nullable
+`context_hash` (SHA-256 of canonical protocol/authentication metadata).
+Both signed Discovery reservations and ADMIN discoveries pin the requested
+authentication mode, credential reference and protocol version; registered
+ADMIN rediscovery also pins the current profile and OAuth config snapshot.
+At publication the signed import must match the reserved context, and the
+existing server row is locked before any inventory upsert. This prevents
+stale signed imports from restoring rotated credential references or pinned
+profiles. An **unpinned discovered profile** may legitimately change and
+must pass through Analyzer observation/review; it is not an automatic
+authorization. The CLI has been updated to reserve with the original
+protocol/authentication context before network discovery. The initial
+requested protocol hint is retained separately as
+`reserved_protocol_version`, because an authorized MCP negotiation can
+legitimately select a different recognized version. The observed
+`protocol_version` must match `negotiated_protocol_version` when reported,
+be among advertised supported versions, and exist in the framework's
+protocol registry; it does not silently replace the signed reservation's
+requested-version context. Existing registered servers retain their
+pinned protocol version unless explicitly reconfigured. For **BEARER**
+credentials, the backend also resolves the trusted local secret at both
+reservation and publication and incorporates a digest of that token
+material in the context hash (never storing the token itself). An in-place
+BEARER rotation under an unchanged `credential_ref` therefore causes the
+older generation to fail closed, and unavailable/invalid credentials do
+not authorize a discovery. The secret store must be consistent across
+participating workers; independent host-local copies do not provide
+the same guarantee. For **OAuth**, use the explicit connection-generation
+binding of the v2 OAuth configuration rather than the refreshable access
+token; multi-host credential/version authority remains work for F13.
+For both signed import and ADMIN import, a second trusted credential
+context check runs **after Inventory/Analyzer writes, before publication in
+the same PostgreSQL transaction**. A BEARER rotation during a long import
+therefore rolls back all staged Inventory writes rather than marking a
+stale generation PUBLISHED. This check is not a distributed lock on a
+remote secret service; the last check-to-commit window still exists.
+There is no distributed transaction with a third-party MCP's filesystem
+or credential service.
+
+The active schema requires the reviewed migration
+`scripts/migrations/20261025_f11_discovery_jobs.sql`, including the
+additive `context_hash` column; **do not apply it to the production
+database automatically**. Old in-flight generations without context
+binding must be allowed to expire or explicitly cancelled during migration.
+
+QA tests cover serialization, superseding, rollback, failure states and
+profile-scoped import. Additional F11 crash fixtures use real independent
+Windows processes terminating immediately **before** and **after** an
+Inventory+generation PostgreSQL commit: the status is respectively
+`RUNNING` with zero persisted Inventory rows and `PUBLISHED` with one
+persisted Inventory row, never permission to retry. The fenced
+Discovery-to-Inventory database import is also exercised with **75, 100,
+500 and 1000 distinct tools**, exact persisted counts, and a deliberate
+Analyzer failure at item 40 causing full transaction rollback. The large
+batch uses a mocked Analyzer for throughput isolation; a separate small
+six-tool batch exercises the real Analyzer and protocol-observation tables.
+An additional ephemeral loopback **HTTP JSON-RPC MCP** fixture serves
+75/100/500/1000 tools over real transport paging and verifies refusal of
+revision drift. A separate end-to-end fixture uses 20 actual HTTP pages
+(1000 tools, strict revision mode), then creates a fenced PostgreSQL QA
+reservation, imports all 1000 rows and confirms the generation is PUBLISHED.
+The 1000-tool import still mocks the semantic Analyzer for isolation.
+
+These QA fixtures do **not** prove semantic quality for 1000 descriptions
+or immutable snapshots from a mutating remote provider. Full real-provider
+end-to-end deployment verification is still required. Legacy SQLite-only route tests must
+mock this PostgreSQL-only authority while PostgreSQL QA integration tests
+exercise it for real; never weaken the runtime PostgreSQL requirement
+merely to make an in-memory SQLite unit test pass. A non-mutative old/new
+response-order reproducer is retained at
+`.runtime/coverage-20261024/lot33_f11_stale_generation_probe_20261025.py`,
+which demonstrates why publication fencing is necessary, not the current
+behavior of a migrated and enabled deployment.
+
+An opt-in recovery/retention reconciler is now provided at
+`scripts/reconcile_discovery_generations.py`. It defaults to a **read-only**
+preview of expired RUNNING reservations. An apply run requires both
+`--expected-db <exact PostgreSQL database name>` and `--confirm-apply`
+alongside `--apply`, with bounded batches. The reconciler marks expired
+RUNNING generations FAILED and prunes older terminal generations while
+preserving each scope's latest reservation, latest published evidence,
+and monotonically increasing head. It does not request credentials,
+contact remote MCP servers, or replay possibly side-effecting calls.
+The operation is intended for a reviewed periodic maintenance schedule:
+**it is not automatically scheduled or running in this repository**.
+
+An automatic remote rediscovery/resumption service still requires a
+durable, authenticated and version-pinned job payload (endpoint, profile,
+credential generation, state and retry policy), plus explicit safe retry
+semantics. It is NOT implemented or proven by mere expiry reconciliation.
+Credential-generation drift in the external discovery CLI, cache
+invalidation, and full 75–1000-tool E2E load across multiple processes/
+hosts remain F11 work. Expiry is fail-closed, not auto-resumption.
+An upstream changing tool definitions during pagination is not proven to
+offer an immutable snapshot without provider support.
+
+### Filesystem lexical dialects and physical confinement limits (F08)
+
+The `filesystem_path` security reference canonicalizer now accepts an
+explicit trusted `filesystem_path_dialect`: `PORTABLE` (conservative default),
+`POSIX`, or `WINDOWS`. The `WINDOWS` dialect canonicalizes ASCII case for
+subtree and SELF matching, and both `PORTABLE` and `WINDOWS` reject Win32
+device names (`CON`, `NUL`, `AUX`, `PRN`, `COM1..9`, `LPT1..9`, including
+extension aliases) and trailing dots. `PORTABLE` additionally rejects uppercase/mixed-case
+segments: it must not silently reinterpret one signed POSIX path as a
+case-folded Windows path. For historical mixed-case scopes an administrator
+must deliberately select and review the explicit dialect. Explicit POSIX
+dialect preserves its ordinary case-sensitive names. UNC paths, drive letters, backslashes, device
+paths, alternate data streams and parent traversal remain denied by this
+version of the grammar. In Windows dialect, slash-rooted `ABSOLUTE` paths
+are also rejected because their identity depends on a current drive; new
+absolute Windows filesystem authorities need a separately designed,
+versioned volume-root reference type and explicit review.
+
+**Important scope of the guarantee:** these are lexical references for
+authorization, **not** OS handles or proof of an upstream MCP's filesystem
+confinement. A symlink, junction or reparse point can redirect a syntactically
+valid `scope/path` outside its permitted root; the target can change after
+validation. The proxy does not own the untrusted remote MCP's filesystem
+operation and therefore cannot atomically open its files with no-follow
+semantics. Do not advertise actual local/remote filesystem confinement from
+a successful lexical scope check. A stronger guarantee requires a trusted
+resource-serving adapter performing real operations on pinned, verified file
+handles with platform-specific no-follow and TOCTOU mitigations, or an
+independent process/container filesystem sandbox with verified mounts.
+Windows junction and symlink TOCTOU tests are isolated QA demonstrations
+of this distinction, not assertions of sandboxing.
+
+Deployment/review: changes to case semantics or dialect for an existing
+authorization require a new explicit scope/contract review. Do not silently
+rewrite historical signed scopes or assume all upstream servers use the
+proxy host's path semantics.
+
+### Declared data production and result tracking (A6/F10)
+
+The Security Pack capability catalogue supports an optional signed
+`produces_data` boolean, and reviewed tool `result_control` declarations
+can assert `produces_data` as well. These optional fields are omitted when
+absent, preserving historical manifest and contract hashes. They travel via
+the published capability catalogue into the Runtime Result Guard.
+
+A `true` assertion by **any** effect, or a signed sensitive/secret result
+classification, requires data-flow fingerprint tracking. Only a capability
+catalogue where **every effect is explicitly `produces_data=false`**
+allows tracking to be skipped. Missing metadata, unknown capabilities and
+malformed catalogues are treated as **UNKNOWN**, conservatively tracked,
+never automatically public. A tool's name or suffix cannot override signed
+capability semantics; a negative tool-level declaration cannot suppress
+another effect or an unknown catalogue entry.
+
+Migrating a legacy Security Pack or tool contract to carry these assertions
+requires deliberate review and a new signed revision. No default FALSE is
+backfilled into historical manifests.
+
+The Result Guard additionally performs **bounded URL-percent and Base64 /
+URL-safe-Base64 decoding** of outbound argument strings when comparing with
+previously observed session taint fingerprints. A decoding budget overflow,
+invalid UTF-8 percent encoding, or incompletely inspectable structure
+refuses conservatively rather than claiming there was no encoded copy.
+This does not make arbitrary encodings, chunked/fragmented transmission,
+compression, encryption or transformed secrets universally detectable.
+For **same-host cooperating Proxy workers**, an opt-in durable shared
+Result Guard ledger is supported. Set `MCP_RESULT_TAINT_SQLITE_PATH` to an
+**absolute filename in an existing, access-restricted trusted local directory
+on one shared volume**. All workers must use the exact same SQLite database
+(WAL mode, FULL synchronous writes, BEGIN IMMEDIATE transactions). The ledger
+stores SHA-256 session identifiers and result fingerprints, not raw tool
+outputs. Transactions merge concurrent writes and maintain a conservative,
+expiring global unknown-evidence watermark if a bounded ledger evicts
+sessions. TTL is based on wall-clock time to survive restarts. A failed
+lookup is interpreted as taint UNKNOWN and blocks external dispatch; failed
+persistence after an upstream call withholds the result, records a security
+error, and **preserves executed=True**.
+
+Set `MCP_RESULT_TAINT_SHARED_REQUIRED=1` on a deployment configured for
+shared taint. If no shared path is provided, external effects fail closed.
+Without these settings, the historical process-local Result Guard remains
+available for single-worker/testing configurations only: do **not** advertise
+cross-worker data-flow guarantees for that mode. Restrict filesystem ACLs
+to the Proxy service identity and back up/rotate the local ledger under a
+reviewed operational procedure. The SQLite variant does **not** provide
+multi-host distributed consistency on independent volumes, and storage
+errors/expiry or clock drift may cause conservative denials.
+
+Deployment topology is explicit with the environment variable
+MCP_SECURITY_DEPLOYMENT_TOPOLOGY=single_host (default; only supported local
+security-state topology). Setting multi_host or an unknown value fails closed
+for the local Result Guard and local OAuth/Bearer credential authorities,
+including OAuth authorization attempts, callback consumption, token exchange,
+reading, writing, refreshing and deleting credentials. This gate does NOT
+detect physical host count: deployment operators must declare
+their topology accurately. A separate reviewed distributed authority is
+required for a genuine multi-host deployment.
+
+The Proxy also repeats its outgoing taint check in the pre-dispatch callback,
+after upstream initialization/lock waits and immediately before durable
+admission. This prevents the demonstrated stale-check gap.
+
+These checks do not provide an atomic transaction between taint lookup and
+actual remote MCP `tools/call` sending; newly arriving taint after that
+check can race the send. A stronger guarantee requires a common, durable
+dispatch/taint authority and admission ordering. Nor can the checks prove
+that an untrusted upstream MCP honors declared flows or guarantee general
+non-exfiltration. Taint fingerprints are defensive signals, not an
+OS- or network-enforced data boundary.
+
+### Signed semantic argument roles (F05/A5 — opt-in)
+
+Security contracts can now carry an optional `argument_roles` manifest.
+Its reviewed, signed entries assign **every schema leaf** a semantic role:
+`RESOURCE` / `SOURCE` / `DESTINATION` (matching a resource binding),
+`SELECTOR` (an effect selector with a required exact EQ constraint), `DATA`
+(reviewed non-authority data), or `PROGRAM` (rejected until a dedicated
+versioned interpreter sandbox is available). Partial/duplicate/conflicting
+manifests are rejected; changing any role changes the contract hash.
+Publication and Runtime apply the same role-coverage checks. A reviewed
+selector value is pinned in the executable schema; renaming `action`,
+`operation` or `q` does not silently change its semantics.
+
+**Migration:** historic `unbound_arguments` remains exactly as signed and
+is **not** implicitly treated as `DATA`. Absent roles preserve historic
+contract hashes and the legacy conservative lexical selector guard. New
+reviewed roles must be explicitly mapped and approved in a new contract/
+Security Pack revision. A declarative template may supply additional
+`argument_roles` entries for `DATA` / `PROGRAM`; selector/resource roles
+are derived only from *explicit signed* selector constraints and resource
+bindings, not from parameter names. Every other schema argument must be
+accounted for or onboarding fails closed.
+
+Semantic role assertions are **reviewed contract claims**, not proof that
+an arbitrary or hostile upstream MCP actually obeys them. This improvement
+does not guarantee confinement of a remote MCP implementation, nor infer
+hidden effects from parameter strings.
+
+The shared `compile_executable_contract_schema()` entrypoint now constructs
+the **same executable schema** for signed publication and Runtime: restrictive
+projection, reviewed schema bounds, exact signed selector EQ narrowing and
+resource/argument role coverage. The original MCP schema is never mutated;
+its observation fingerprint remains independent of this execution-only view.
+Unsupported conditional branches, unsafe regex patterns, unbounded complex
+shapes and executable PROGRAM roles continue to fail closed. No formerly
+unsupported JSON Schema syntax was permissively enabled. A legacy contract
+without reviewed roles continues to use the earlier conservative guards.
+
+This is a supported-subset compiler, not a proof of provider-side execution
+confinement. Wider JSON Schema support requires dedicated inclusion and
+branch-coverage proofs before it can be enabled.
+
+### OAuth credential authority binding (F13)
+
+Framework-managed OAuth access/refresh tokens use a **version-2 bundle**
+bound to a deterministic SHA-256 digest of the OAuth issuer,
+authorization endpoint, token endpoint, client ID, resource, requested
+scopes, client-secret reference (if any), and a randomly generated
+credential generation. Each new OAuth authorization flow creates a fresh
+generation; the authorization-code exchange and subsequent refreshes
+preserve the same binding. The binding is recomputed and checked **before
+returning a cached token or sending a refresh-token request**.
+
+**Fail-closed migration:** previous version-1 token bundles were bound
+only to the resource and cannot prove the original issuer/client identity.
+They are **not automatically upgraded or re-signed**. An ADMIN must
+reconnect/re-authorize affected OAuth MCP connections explicitly through
+the existing control plane. During this transition, old bundles or
+configurations missing generation and authority metadata return
+`upstream_oauth_reauthorization_required`. A changed but complete
+configuration returns `upstream_oauth_configuration_binding_mismatch`.
+Do not copy old access/refresh tokens into a new version-2 bundle.
+
+The credential lock serializes refresh/disconnect on one shared
+filesystem. A deployment with multiple hosts and **unshared** upstream
+secret directories does not inherit that cross-host revocation guarantee;
+distributed credential storage and generation coordination remain a
+separate infrastructure requirement. Fixtures use only synthetic tokens
+and temporary directories, never deployed OAuth secrets.
+
+### Durable operation reconciliation (F09)
+
+Operators can inspect one logical Runtime operation with the authenticated
+read-only endpoint
+`GET /api/v1/control-plane/operations/runtime-operations/{operation_id}/reconciliation`.
+It correlates the durable intent, unique admission audit marker and outcome
+without revealing call arguments, inventing a result or replaying the call.
+It reports `INTENT_ADMISSION_MISSING`, `ADMITTED_OUTCOME_MISSING`,
+`RECORDED_UNCERTAIN_OUTCOME` or `OUTCOME_RECORDED`.
+
+**No state returned by this endpoint grants permission to retry.** Even when
+an admission record is absent, legacy instrumentation or a missing audit
+marker requires manual investigation. An admitted request may have reached
+the remote MCP even when its outcome is missing. Unknown effects are not
+silently marked successful or harmless. Crash state reconciliation and any
+future upstream-supported idempotency remain an explicit separate workflow.
+
+### Ordered Runtime dispatch admission (A3)
+
+After policy ALLOW and durable intent audit, the Proxy requests a **single-use
+durable dispatch admission** from the backend. Admission and ADMIN Emergency Deny
+creation/revocation acquire the **same PostgreSQL transaction advisory lock**,
+so a deny committed before admission cannot be bypassed by a previously
+authorized request waiting on upstream credentials, initialization or its
+session lock. The signed admission API requires **`runtime.dispatch.admit`**,
+distinct from the read-only **`emergency_deny.check`** permission. The official
+`scripts/provision_service_identities.py` now includes the new permission for
+the MCP_PROXY service identity only; MCP_DISCOVERY must not receive it.
+
+**Deployment migration:** an existing `.runtime/secrets/internal-service-public-keys.json`
+will not automatically acquire this permission merely by updating the Python
+code. An administrator must deliberately reprovision/upgrade that **public
+service-permission registry**, preserving and verifying the current keys, and
+restart/revalidate the backend and Proxy before enabling traffic. Do not
+silently grant this permission to another identity, copy any private key to
+logs, or bypass the denied admission when the registry is out of date. Until
+then, MCP calls **fail closed** at dispatch (HTTP 403). Avoid changing any
+live secret registry during unit tests.
+
+Admission is ordered with deny commits, **not** atomically coupled to the remote
+server's side effects. Once admitted or possibly sent, an interruption can
+leave the outcome unknown and must never trigger an automatic mutation retry.
+This guarantee covers the built-in serialized MCP HTTP client; injected
+nonstandard clients need their own trustworthy post-lock dispatch boundary.
+
+**F01/F02 observation binding:** newly written intents also persist the exact
+signed-approved `tool_fingerprint` selected by the Proxy. Dispatch checks the
+same profile-specific current observation and linked analysis, human-review
+holds, and equality of the original fingerprint. A rediscovery that changes
+the tool definition between ALLOW and dispatch is refused, not automatically
+approved under the old contract. The runtime audit schema includes a nullable
+`tool_fingerprint` for historical records; old/missing fingerprints **cannot**
+obtain a fresh dispatch admission. The database column is added by the normal
+`init_db` migration path. Test migrations were applied only on the isolated
+QA clone; production migration remains a controlled deployment step.
+
 
 Sensitive administrative actions are audited through `ControlPlaneAuditEvent`. Passwords, password hashes, session tokens, cookies, CSRF tokens, private keys, and secrets are excluded from audit payloads.
 
@@ -607,8 +1056,9 @@ cd frontend
 npm.cmd run dev
 ```
 
-The supervisor starts or reuses PostgreSQL, OPA, the local identity provider,
-Backend and Gateway. The frontend reads its host, port and API base URL from the
+The local development supervisor starts or reuses PostgreSQL, OPA, the local identity provider,
+the bundled MCP test lab, Backend and Gateway. External third-party MCP servers
+remain outside the supervisor's lifecycle. The frontend reads its host, port and API base URL from the
 repository-root `.env`.
 
 On a pristine Control Plane configuration database, setup also imports the
@@ -648,7 +1098,8 @@ Start backend:
 
 Easy local mode can use the framework launcher instead. It checks PostgreSQL,
 starts or reuses the project-local OPA process from `.runtime/tools/opa/opa.exe`,
-starts or reuses the configured local identity provider, Backend, and Gateway.
+starts or reuses the configured local identity provider, bundled local MCP Lab,
+Backend, and Gateway.
 An external JWKS provider is checked but never launched by the framework. It only uses
 fixed framework commands with `shell=False` and only terminates child processes
 it started. If PostgreSQL is unavailable and
@@ -677,7 +1128,8 @@ terminates them:
 .\backend\.venv\Scripts\python.exe -m uvicorn proxy.gateway_app:app --host 127.0.0.1 --port 9001
 ```
 
-Start the bundled MCP lab server in a separate terminal:
+For manual startup (without `scripts/start_framework.py`), start the bundled MCP
+lab server in a separate terminal:
 
 ```powershell
 .\backend\.venv\Scripts\python.exe -m uvicorn server:app `
@@ -686,10 +1138,11 @@ Start the bundled MCP lab server in a separate terminal:
   --port 9000
 ```
 
-The bundled MCP lab is an upstream test MCP server. It is intentionally not
-started by the framework supervisor because real upstream MCP servers may be
-local, LAN, enterprise-hosted, cloud-hosted, or third-party services with their
-own lifecycle. A simple liveness check with `curl.exe -i http://127.0.0.1:9000/mcp`
+The bundled MCP lab is a local upstream test server. In the standard development
+launcher (`scripts/start_framework.py`) it is started or reused automatically;
+the separate command above is only needed for manual startup. Real upstream MCP
+servers on LAN, enterprise networks, or third-party services keep their own
+lifecycle and are not started by the framework supervisor. A simple liveness check with `curl.exe -i http://127.0.0.1:9000/mcp`
 is expected to return HTTP 405; MCP discovery uses the POST protocol flow.
 
 Discover and import the MCP lab server from the CLI, or use the ADMIN MCP
@@ -762,14 +1215,17 @@ Check Python dependency consistency and bytecode compilation:
 .\backend\.venv\Scripts\python.exe -m compileall -q backend proxy agent common scripts mcp-lab
 ```
 
-Check runtime logs:
+Check runtime logs in the authenticated Control Center **Runtime Calls** page,
+or make an API request with an actual authenticated Control Plane session cookie.
+An unauthenticated `Invoke-RestMethod` request will return HTTP 401:
 
-```powershell
-# Requires an authenticated Control Plane ADMIN or VIEWER session.
-Invoke-RestMethod http://127.0.0.1:8000/api/v1/runtime/logs
+```text
+GET http://127.0.0.1:8000/api/v1/runtime/logs
 ```
 
-Expected proxy behavior:
+Expected behavior **when the agent identity is trusted, the exact tool observation
+is approved, its contract and authority scopes are published, and OPA authorizes
+the request**:
 
 ```text
 read_file("contracts/contract1.txt")
@@ -782,6 +1238,10 @@ read_file(".env")
 => executed: false
 => mcp_called: false
 ```
+
+In the initial or rolled-back configuration, those authorizations may be absent:
+even the benign read must fail closed until explicitly approved and published.
+These examples describe a configured demonstration, not a blanket allow rule.
 
 Runtime logs store safe summaries only, for example:
 
@@ -817,10 +1277,15 @@ $env:GROQ_MODEL="openai/gpt-oss-20b"
 .\backend\.venv\Scripts\python.exe agent\demo_llm_agent.py
 ```
 
-Expected LLM demo behavior:
+Expected LLM demo behavior **after an ADMIN publishes a compatible tool contract,
+observation approval, trusted agent identity binding, authorization grant, and
+resource scope**:
 
-- contract prompt proposes `read_file` with `contracts/contract1.txt`, policy returns `ALLOW`, MCP is called, runtime log is created;
-- `.env` prompt proposes `read_file` with `.env`, policy returns `BLOCK`, MCP is not called, runtime log is created.
+- contract prompt proposes `read_file` with `contracts/contract1.txt`; when the published authorization and OPA policy permit it, the MCP call executes and a runtime log is created;
+- `.env` prompt proposes `read_file` with `.env`; the sensitive-path guard blocks execution and creates a runtime log.
+
+The default published configuration does not authorize these calls automatically;
+an unapproved tool or unbound agent must fail closed.
 
 ## Runtime Security Behavior
 
@@ -848,8 +1313,10 @@ The runtime path enforces these rules:
   and interactive OAuth 2.1 Authorization Code with PKCE. OAuth clients may be
   pre-registered or dynamically registered when the provider advertises a valid
   registration endpoint. Client-credentials grants remain unsupported.
-- DNS answers are screened for special destinations before outbound requests,
-  but transport-level DNS pinning is not yet implemented.
+- Built-in MCP HTTP/SSE, Discovery and OAuth requests use DNS-pinned
+  connections and hostname-validated TLS. Deployment egress isolation and
+  separate review of custom/nonstandard transports remain necessary;
+  this does not attest a remote MCP's behavior.
 - Runtime policy depends on OPA availability and fails closed when OPA is unavailable.
 - Scanner and DevSecOps analysis are not a complete production pipeline yet.
 - No AWS integration yet.
@@ -858,9 +1325,10 @@ The runtime path enforces these rules:
 
 ## Next Phases
 
-The Runtime Security core is now the validated baseline. The next planned work is:
+The Runtime Security core and Phase 6 Build Security form the validated baseline.
+Phase 6 has a dated certification record in `build_security_plan.md`.
+The remaining planned work is:
 
-- Phase 6 - Build Security / DevSecOps with Semgrep, Trivy, and GitLeaks;
 - Phase 7 - Deploy Security / AWS-IAM with Checkov, Prowler, and boto3;
 - controlled adversarial validation across Build, Deploy, and Runtime evidence;
 - audit/report generation and governance mappings;

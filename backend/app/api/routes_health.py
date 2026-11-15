@@ -32,7 +32,10 @@ def readiness_check(db: Session = Depends(get_db)):
     ready = (
         runtime.ready
         and identity.status == "healthy"
-        and mcp_lab.status == "healthy"
+        and (
+            not settings.readiness_require_mcp_lab
+            or mcp_lab.status == "healthy"
+        )
     )
     component_statuses = {
         "backend": runtime.backend.status,
@@ -47,6 +50,10 @@ def readiness_check(db: Session = Depends(get_db)):
         content={
             "status": "ready" if ready else "not_ready",
             "components": component_statuses,
+            "required_components": [
+                "backend", "database", "opa", "gateway", "identity_provider",
+                *(["mcp_lab"] if settings.readiness_require_mcp_lab else []),
+            ],
         },
     )
 
@@ -95,5 +102,12 @@ def local_runtime_status(
     ).as_dict(include_ownership=False)
     payload["mcp_lab"] = manager.mcp_lab_status().as_dict()
     payload["mcp_lab"].pop("managed_by_framework", None)
-    payload["ready"] = payload["ready"] and payload["mcp_lab"]["status"] == "healthy"
+    payload["ready"] = payload["ready"] and (
+        not settings.readiness_require_mcp_lab
+        or payload["mcp_lab"]["status"] == "healthy"
+    )
+    payload["required_components"] = [
+        "backend", "database", "opa", "gateway", "identity_provider",
+        *(["mcp_lab"] if settings.readiness_require_mcp_lab else []),
+    ]
     return payload

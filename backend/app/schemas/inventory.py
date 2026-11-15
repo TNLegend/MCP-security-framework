@@ -1,4 +1,5 @@
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -65,6 +66,48 @@ class DiscoveredMCPTool(BaseModel):
 class DiscoveryImportPayload(BaseModel):
     server: DiscoveredMCPServer
     tools: list[DiscoveredMCPTool] = []
+    generation_id: str | None = None
+    reserved_profile_id: str | None = Field(default=None, max_length=100)
+    # The signed reservation records the caller's requested protocol hint;
+    # tools/list may negotiate a different supported version.
+    reserved_protocol_version: str | None = Field(default=None, max_length=50)
+
+    @field_validator("generation_id")
+    @classmethod
+    def validate_generation_id(cls, value: str | None) -> str | None:
+        if value is not None:
+            UUID(value)
+        return value
+
+
+class DiscoveryReservationRequest(BaseModel):
+    endpoint: str = Field(min_length=8, max_length=2048)
+    transport: Literal["streamable_http", "sse"] = "streamable_http"
+    protocol_version: str | None = Field(default=None, max_length=50)
+    auth_mode: str = AUTH_MODE_NONE
+    credential_ref: str | None = Field(default=None, max_length=128)
+    profile_id: str | None = Field(default=None, max_length=100)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_auth(self) -> "DiscoveryReservationRequest":
+        try:
+            self.auth_mode, self.credential_ref = validate_upstream_auth_config(
+                self.auth_mode, self.credential_ref
+            )
+        except UpstreamAuthError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+    @field_validator("endpoint")
+    @classmethod
+    def validate_endpoint(cls, value: str) -> str:
+        try:
+            validate_mcp_endpoint(value, resolve_dns=False)
+        except MCPEndpointValidationError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
 
 
 class DiscoveryRequest(BaseModel):

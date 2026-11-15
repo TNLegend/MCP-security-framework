@@ -19,12 +19,10 @@ from app.services.control_plane_audit import record_control_plane_audit
 from app.services.control_plane_config import active_revision, patch_draft_revision
 from app.services.published_configuration import validate_config_content
 from proxy.security_packs import (
-    SecurityPackDependency,
     SecurityPackError,
     SecurityPackInstallation,
     SecurityPackInstalledVersion,
     SecurityPackManifest,
-    SecurityPackRegistry,
     active_lifecycle_manifests,
     builtin_security_packs,
     parse_security_pack_version,

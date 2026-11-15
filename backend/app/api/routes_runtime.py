@@ -1,8 +1,9 @@
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -22,13 +23,7 @@ from app.services.signed_service_request import (
 
 router = APIRouter(prefix="/runtime", tags=["Runtime"])
 
-RUNTIME_ERROR_STATUSES = (
-    "tool_error",
-    "protocol_error",
-    "http_error",
-    "policy_error",
-    "inventory_error",
-)
+from app.services.runtime_operations import RUNTIME_ERROR_STATUSES
 
 
 def resolve_server_id(server_id: int | str | None, db: Session) -> int | None:
@@ -95,12 +90,24 @@ def list_runtime_logs(
             func.count(RuntimeCall.id).filter(RuntimeCall.decision == "BLOCK"),
             func.count(RuntimeCall.id).filter(RuntimeCall.executed.is_(True)),
             func.count(RuntimeCall.id).filter(
-                or_(RuntimeCall.executed.is_(False), RuntimeCall.execution_status == "skipped")
+                or_(
+                    RuntimeCall.execution_status == "skipped",
+                    and_(
+                        RuntimeCall.executed.is_(False),
+                        RuntimeCall.decision == "BLOCK",
+                    ),
+                )
             ),
             func.count(RuntimeCall.id).filter(
                 RuntimeCall.execution_status.in_(RUNTIME_ERROR_STATUSES)
             ),
-        ).where(*filters)
+        ).where(
+            *filters,
+            or_(
+                RuntimeCall.execution_status.is_(None),
+                RuntimeCall.execution_status != "authorized_pending_execution",
+            ),
+        )
     ).one()
     return RuntimeCallPage(
         items=items,
@@ -146,9 +153,9 @@ def _runtime_log_filters(
             )
         )
     if from_time is not None:
-        filters.append(RuntimeCall.created_at >= from_time.replace(tzinfo=None))
+        filters.append(RuntimeCall.created_at >= from_time.astimezone(timezone.utc).replace(tzinfo=None))
     if to_time is not None:
-        filters.append(RuntimeCall.created_at <= to_time.replace(tzinfo=None))
+        filters.append(RuntimeCall.created_at <= to_time.astimezone(timezone.utc).replace(tzinfo=None))
     if search and search.strip():
         term = f"%{search.strip()}%"
         filters.append(
@@ -190,8 +197,33 @@ def create_runtime_log(
     log_data["server_id"] = resolve_server_id(log.server_id, db)
 
     db_log = RuntimeCall(**log_data)
+    # Serialize terminal outcome persistence with dispatch admission. A
+    # completed pre-dispatch failure must never be followed by a late tools/call
+    # admission under the same operation_id.
+    if log.operation_id and log.event_phase == "outcome":
+        from app.services.dispatch_admission import lock_emergency_dispatch_authority
+        lock_emergency_dispatch_authority(db)
     db.add(db_log)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # A repeat after a lost HTTP response must not create a duplicate.
+        # A mismatching retry under the same ID/phase is a conflict, never an
+        # opportunity to overwrite the original evidence.
+        if not log.operation_id or not log.event_phase:
+            raise
+        existing = db.scalar(
+            select(RuntimeCall).where(
+                RuntimeCall.operation_id == log.operation_id,
+                RuntimeCall.event_phase == log.event_phase,
+            )
+        )
+        if existing is None:
+            raise
+        if any(getattr(existing, name) != value for name, value in log_data.items()):
+            raise HTTPException(status_code=409, detail="runtime_operation_phase_conflict")
+        return existing
     db.refresh(db_log)
     maintenance = maybe_auto_cleanup_runtime_logs(
         db,

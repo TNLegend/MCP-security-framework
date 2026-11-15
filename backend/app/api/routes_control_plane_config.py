@@ -114,11 +114,15 @@ def patch_revision(
             content=payload.content,
             actor=current.user,
             change_summary=payload.change_summary,
+            expected_content_hash=payload.expected_content_hash,
         )
         db.commit()
         return ConfigRevisionPublic.model_validate(revision)
     except ControlPlaneConfigError as exc:
-        raise HTTPException(status_code=400, detail=exc.args[0])
+        raise HTTPException(
+            status_code=409 if str(exc) == "draft_content_changed_conflict" else 400,
+            detail=exc.args[0],
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -162,7 +166,12 @@ def publish_config_revision(
         db.commit()
         return ConfigRevisionPublic.model_validate(revision)
     except ControlPlaneConfigError as exc:
-        raise HTTPException(status_code=400, detail=exc.args[0])
+        error_code = exc.args[0]
+        conflict_codes = {"stale_draft_publication_conflict", "draft_active_parent_changed"}
+        raise HTTPException(
+            status_code=409 if error_code in conflict_codes else 400,
+            detail=error_code,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -207,3 +216,70 @@ def delete_config_revision(
     except ControlPlaneConfigError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=exc.args[0])
+
+
+# Preparation/decisions are separate from active approvals. All mutation paths
+# retain the existing authenticated ADMIN + CSRF dependency.
+from typing import Literal
+from pydantic import BaseModel, Field, ConfigDict
+
+class AnalyzerMigrationDecisionInput(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    observation_id: int = Field(gt=0)
+    action: Literal['APPROVE','EXCLUDE']
+    reason: str = Field(min_length=12,max_length=2000)
+    confirmed: Literal[True]
+
+class AnalyzerMigrationDecisionsInput(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    packet_hash: str = Field(pattern=r'^[0-9a-f]{64}$')
+    grouped: bool = False
+    decisions: list[AnalyzerMigrationDecisionInput] = Field(min_length=1,max_length=10000)
+
+class AnalyzerMigrationActivationInput(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    packet_hash: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+@router.post('/analyzer-migrations',status_code=201)
+def prepare_analyzer_migration(current: AuthenticatedControlPlaneUser=Depends(require_admin),db: Session=Depends(get_db)):
+    from app.services.tda_application.migration import prepare_migration
+    try:
+        run=prepare_migration(db,admin_id=current.user.id)
+        db.commit()
+        return {'migration_id':run.id,'state':run.state,'packet_hash':run.packet_hash,'payload':run.payload}
+    except ValueError as exc:
+        db.rollback();raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+@router.get('/analyzer-migrations/{migration_id}')
+def get_analyzer_migration(migration_id: str,current: AuthenticatedControlPlaneUser=Depends(require_admin),db: Session=Depends(get_db)):
+    from app.models.analyzer_migration import AnalyzerMigration,AnalyzerMigrationDecision
+    from app.services.tda_application.migration import _assert_packet
+    run=db.get(AnalyzerMigration,migration_id)
+    if run is None:raise HTTPException(status_code=404,detail='migration_not_found')
+    try:_assert_packet(run)
+    except ValueError as exc:raise HTTPException(status_code=409,detail=str(exc)) from exc
+    decisions=db.scalars(select(AnalyzerMigrationDecision).where(AnalyzerMigrationDecision.migration_id==run.id)).all()
+    return {'migration_id':run.id,'state':run.state,'packet_hash':run.packet_hash,'payload':run.payload,
+            'decisions':[{'decision_id':d.id,'act':d.act,'signature':d.signature,'signature_key_id':d.signature_key_id} for d in decisions]}
+
+@router.post('/analyzer-migrations/{migration_id}/decisions')
+def decide_analyzer_migration(migration_id: str,payload: AnalyzerMigrationDecisionsInput,current: AuthenticatedControlPlaneUser=Depends(require_admin),db: Session=Depends(get_db)):
+    from app.services.tda_application.migration import decide_migration
+    from sqlalchemy.exc import IntegrityError
+    try:
+        decide_migration(db,migration_id=migration_id,admin_id=current.user.id,packet_hash=payload.packet_hash,
+            decisions=[d.model_dump() for d in payload.decisions],grouped=payload.grouped)
+        db.commit();return {'migration_id':migration_id,'state':'DECISIONS_RECORDED_NON_ACTIVE'}
+    except IntegrityError as exc:
+        db.rollback();raise HTTPException(status_code=409,detail='migration_decision_already_recorded') from exc
+    except ValueError as exc:
+        db.rollback();raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+@router.post('/analyzer-migrations/{migration_id}/activate')
+def activate_analyzer_migration(migration_id: str,payload: AnalyzerMigrationActivationInput,current: AuthenticatedControlPlaneUser=Depends(require_admin),db: Session=Depends(get_db)):
+    from app.services.tda_application.migration import activate_migration
+    try:
+        result=activate_migration(db,migration_id=migration_id,admin_id=current.user.id,packet_hash=payload.packet_hash)
+        db.commit();return result
+    except ValueError as exc:
+        db.rollback();raise HTTPException(status_code=409,detail=str(exc)) from exc

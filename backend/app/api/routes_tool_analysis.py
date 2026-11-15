@@ -186,7 +186,9 @@ def _tool_or_404(tool_id: int, db: Session) -> MCPTool:
 
 
 def _analysis_payload(analysis: ToolAnalysis) -> dict:
+    from app.services.tda_application.evidence import evidence_provenance
     return {
+        "evidence_provenance": evidence_provenance(analysis),
         "id": analysis.id,
         "tool_id": analysis.tool_id,
         "version_id": analysis.version_id,

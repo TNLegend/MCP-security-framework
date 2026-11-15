@@ -26,6 +26,8 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
   const [mappings, setMappings] = useState({});
   const [fixedResources, setFixedResources] = useState({});
   const [scopeDrafts, setScopeDrafts] = useState({});
+  // Explicit, provider-neutral numeric/array limits for signed tool contracts.
+  const [schemaBoundsText, setSchemaBoundsText] = useState("[]");
   const [approveObservations, setApproveObservations] = useState(true);
   const [changeSummary, setChangeSummary] = useState("");
   const [draftRevisionId, setDraftRevisionId] = useState(null);
@@ -57,6 +59,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
       setTemplateId("");
       setMappings({});
       setFixedResources({});
+      setSchemaBoundsText("[]");
       setDraftRevisionId(null);
       setContractDraft(null);
       setPackBuilderOpen(false);
@@ -115,6 +118,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
         setTemplateId(first?.template_id || "");
         setMappings(first?.argument_mappings || {});
         setFixedResources({});
+        setSchemaBoundsText("[]");
         setDraftRevisionId(resumedDraft?.id || null);
         setContractDraft(null);
         setPackBuilderOpen(false);
@@ -135,6 +139,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
     setMappings(suggestion?.argument_mappings || {});
     setFixedResources({});
     setScopeDrafts({});
+    setSchemaBoundsText("[]");
     setError("");
     setMessage("");
   }
@@ -180,6 +185,16 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
     setError("");
     setMessage("");
     try {
+      let schemaBounds;
+      try {
+        schemaBounds = JSON.parse(schemaBoundsText);
+        if (!Array.isArray(schemaBounds) || schemaBounds.length > 64) {
+          throw new Error("invalid bounds");
+        }
+      } catch {
+        setError("Schema bounds must be a JSON array with no more than 64 explicit limits.");
+        return;
+      }
       const scopes = selectedResourceTypes.flatMap((resourceType) => {
         const draft = scopeDrafts[resourceType] || {};
         const canonicalValue = String(draft.value || "").trim();
@@ -198,6 +213,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
         fixed_resources: Object.fromEntries(
           Object.entries(fixedResources).filter(([, value]) => value.trim()),
         ),
+        schema_bounds: schemaBounds,
         scopes,
         draft_revision_id: draftRevisionId,
         approve_observations: approveObservations,
@@ -234,6 +250,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
       setMappings(suggestion?.argument_mappings || {});
       setFixedResources({});
       setScopeDrafts({});
+      setSchemaBoundsText("[]");
       setPackBuilderOpen(false);
       setMessage(`Security Pack added to draft ${revision.revision_number}. Complete its contract below.`);
     } catch (err) {
@@ -435,7 +452,11 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
                       disabled={!isAdmin || busy || Boolean(contractDraft)}
                       onChange={(event) => updateScopeDraft(setScopeDrafts, resourceType, "value", event.target.value)}
                       value={draft.value || ""}
+                      placeholder={resourceType === "filesystem_path" ? "e.g. contracts/contract1.txt (relative path)" : undefined}
                     />
+                    {resourceType === "filesystem_path" && (
+                      <small>Use a forward-slash relative path; Windows drive letters and backslashes are not supported.</small>
+                    )}
                   </label>
                   <label>
                     Match
@@ -465,6 +486,26 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
                 </div>
               );
             })}
+
+            {isAdmin && !contractDraft && (
+              <label className="wide-field">
+                Explicit input schema bounds (JSON array; optional)
+                <textarea
+                  disabled={busy}
+                  onChange={(event) => setSchemaBoundsText(event.target.value)}
+                  rows="4"
+                  spellCheck="false"
+                  value={schemaBoundsText}
+                />
+                <small>
+                  Review limits for any MCP: e.g. {JSON.stringify([
+                    { kind: "NUMBER_RANGE", path: ["offset"], minimum: 0, maximum: 100 },
+                    { kind: "ARRAY_MAX_ITEMS", path: ["items"], max_items: 20 },
+                  ])}. The original tool schema and fingerprint stay unchanged.
+                  Bounds that widen advertised limits or refer to unsupported paths are rejected.
+                </small>
+              </label>
+            )}
 
             {isAdmin && !contractDraft && (
               <div className="contract-submit-row">

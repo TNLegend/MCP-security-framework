@@ -2761,3 +2761,37 @@ code {
     flex-direction: column;
   }
 }
+
+/* Consultative M4 panel: keep long M1 identities and evidence readable. */
+.m4-advisory-panel {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.m4-advisory-panel code,
+.m4-advisory-panel .m4-source-identity,
+.m4-advisory-panel .m4-event-card,
+.m4-advisory-panel details li {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.m4-advisory-panel .m4-event-card {
+  min-width: 0;
+}
+
+.m4-advisory-panel details {
+  margin-top: 12px;
+  border-top: 1px solid #e5eaf2;
+  padding-top: 10px;
+}
+
+.m4-advisory-panel details summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.m4-advisory-panel .m4-event-card ul {
+  margin: 8px 0;
+  padding-left: 20px;
+}

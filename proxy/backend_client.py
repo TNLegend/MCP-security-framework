@@ -160,6 +160,20 @@ class BackendClient:
             raise BackendClientError("Backend emergency deny response is invalid.")
         return data
 
+    def admit_dispatch(self, context: dict[str, str]) -> dict[str, Any]:
+        data = self._request_json(
+            "POST", "/internal/emergency-deny/admit",
+            context, sign_as_service=True,
+        )
+        if (
+            not isinstance(data, dict)
+            or type(data.get("admitted")) is not bool
+            or (data.get("reason") is not None and not isinstance(data.get("reason"), str))
+            or (data.get("deny_id") is not None and not isinstance(data.get("deny_id"), str))
+        ):
+            raise BackendClientError("Backend dispatch admission response is invalid.")
+        return data
+
     def _request_json(
         self,
         method: str,

@@ -24,11 +24,41 @@ from proxy.tool_security_v2 import (
 
 
 SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,511}$")
-SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*){0,2}$")
-SQL_RESOURCE = re.compile(
-    r"\b(?:from|join|update|into|table)\s+([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*){0,2})\b",
-    re.IGNORECASE,
+# SQL is security-sensitive: this adapter intentionally accepts only a
+# strictly anchored, dialect-independent grammar with one literal table
+# reference. No quoted identifiers, string literals, functions, views
+# resolution, joins, expressions or dynamic object names are interpreted.
+SQL_TABLE = r"[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*){0,2}"
+SQL_COLUMN = r"[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*){0,2}"
+SQL_VALUE = r"(?:[+-]?[0-9]+(?:\.[0-9]+)?|:[A-Za-z_][A-Za-z0-9_]*|\?)"
+SQL_FILTER = (
+    rf"{SQL_COLUMN}\s*(?:=|!=|<>|<=|>=|<|>)\s*{SQL_VALUE}"
+    rf"(?:\s+AND\s+{SQL_COLUMN}\s*(?:=|!=|<>|<=|>=|<|>)\s*{SQL_VALUE})*"
 )
+SQL_COLUMN_LIST = rf"{SQL_COLUMN}(?:\s*,\s*{SQL_COLUMN})*"
+SQL_VALUE_LIST = rf"{SQL_VALUE}(?:\s*,\s*{SQL_VALUE})*"
+SQL_ASSIGNMENT = rf"{SQL_COLUMN}\s*=\s*{SQL_VALUE}(?:\s*,\s*{SQL_COLUMN}\s*=\s*{SQL_VALUE})*"
+SQL_STRICT_PATTERNS = {
+    "SELECT": re.compile(
+        rf"SELECT\s+(?:\*|{SQL_COLUMN_LIST})\s+FROM\s+(?P<table>{SQL_TABLE})"
+        rf"(?:\s+WHERE\s+{SQL_FILTER})?(?:\s+LIMIT\s+[0-9]+)?",
+        re.IGNORECASE,
+    ),
+    "INSERT": re.compile(
+        rf"INSERT\s+INTO\s+(?P<table>{SQL_TABLE})\s*"
+        rf"\({SQL_COLUMN_LIST}\)\s+VALUES\s*\({SQL_VALUE_LIST}\)",
+        re.IGNORECASE,
+    ),
+    "UPDATE": re.compile(
+        rf"UPDATE\s+(?P<table>{SQL_TABLE})\s+SET\s+{SQL_ASSIGNMENT}"
+        rf"\s+WHERE\s+{SQL_FILTER}",
+        re.IGNORECASE,
+    ),
+    "DELETE": re.compile(
+        rf"DELETE\s+FROM\s+(?P<table>{SQL_TABLE})\s+WHERE\s+{SQL_FILTER}",
+        re.IGNORECASE,
+    ),
+}
 SHELL_META = re.compile(r"(?:&&|\|\||[;&|<>`$*?{}~()%^]|\r|\n|\x00)")
 ARN_PATTERN = re.compile(
     r"^arn:(aws|aws-us-gov|aws-cn):([a-z0-9-]+):([a-z0-9-]*):([0-9]{0,12}):(.+)$",
@@ -125,7 +155,7 @@ class SQLAdapter(SpecializedAdapter):
     manifest = AdapterManifest(
         adapter_id="sql",
         adapter_api_version="1",
-        implementation_version="1.0.0",
+        implementation_version="2.0.0",
         supported_capabilities=(
             "database.sql.read",
             "database.sql.write",
@@ -134,7 +164,7 @@ class SQLAdapter(SpecializedAdapter):
         supported_resource_types=("sql_database_object",),
         display_name="SQL Statement",
         family="database",
-        argument_validation="single_statement_and_object_extraction",
+        argument_validation="strict_single_table_sql_grammar_v2",
         result_validation="bounded_structured_rows",
     )
 
@@ -159,20 +189,22 @@ class SQLAdapter(SpecializedAdapter):
         }
         if operation not in allowed_operations.get(capability, set()):
             raise SecurityModelError("sql_operation_capability_mismatch")
-        objects = tuple(dict.fromkeys(match.group(1) for match in SQL_RESOURCE.finditer(body)))
-        if not objects or len(objects) > 64:
-            raise SecurityModelError("sql_resource_extraction_failed")
+        # Match the entire statement, not fragments of SQL text. A partial
+        # resource interpretation is never safe for an authorization decision.
+        grammar = SQL_STRICT_PATTERNS.get(operation)
+        match = grammar.fullmatch(body) if grammar is not None else None
+        if match is None:
+            raise SecurityModelError("sql_resource_syntax_unsupported")
+        identifier = match.group("table")
         case_sensitive = bool(authority_config.get("case_sensitive", False))
-        return tuple(
+        return (
             self.canonical_reference(
                 resource_type,
                 identifier if case_sensitive else identifier.lower(),
                 authority_config,
                 flags=(f"sql_operation:{operation.lower()}",),
-            )
-            for identifier in objects
-            if SQL_IDENTIFIER.fullmatch(identifier)
-        ) or _raise("sql_resource_extraction_failed")
+            ),
+        )
 
     def inspect_structured_result(self, structured: dict[str, Any]) -> AdapterResultInspection:
         rows = structured.get("rows")

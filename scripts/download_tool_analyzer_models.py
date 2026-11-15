@@ -9,11 +9,8 @@ BACKEND_DIR = REPO_ROOT / "backend"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(BACKEND_DIR))
 
-from app.services.tool_analysis import (  # noqa: E402
-    EMBEDDING_MODEL_NAME,
-    MODEL_CACHE_DIR,
-    SEMANTIC_MODEL_NAME,
-)
+from app.services.tda.configuration import EMBEDDING_MODEL_NAME
+from app.core.runtime_paths import MODEL_CACHE_DIR
 from app.core.runtime_paths import configure_runtime_environment  # noqa: E402
 
 ALLOW_PATTERNS = [
@@ -39,7 +36,6 @@ IGNORE_PATTERNS = [
 ]
 
 APPROVED_MODEL_REVISIONS = {
-    SEMANTIC_MODEL_NAME: "0a71e92a985b6e1ad1828cf67ce9c459639c1dca",
     EMBEDDING_MODEL_NAME: "614241f622f53c4eeff9890bdc4f31cfecc418b3",
 }
 
@@ -58,7 +54,7 @@ def portable_snapshot_directory(cache_dir: Path, repo_id: str, revision: str) ->
 def main() -> int:
     configure_runtime_environment()
     parser = argparse.ArgumentParser(
-        description="Download Task 7B local analyzer models into the project runtime cache."
+        description="Download the M6 E5 drift model only. Signed M4 weights must be provisioned from the frozen bundle."
     )
     parser.add_argument(
         "--cache-dir",
@@ -77,7 +73,7 @@ def main() -> int:
     cache_dir = Path(args.cache_dir).resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
     downloads = []
-    for repo_id in [SEMANTIC_MODEL_NAME, EMBEDDING_MODEL_NAME]:
+    for repo_id in [EMBEDDING_MODEL_NAME]:
         revision = APPROVED_MODEL_REVISIONS[repo_id]
         destination = portable_snapshot_directory(cache_dir, repo_id, revision)
         destination.mkdir(parents=True, exist_ok=True)

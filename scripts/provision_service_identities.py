@@ -23,6 +23,7 @@ from app.services.signed_service_request import (  # noqa: E402
     PERMISSION_INTERNAL_INVENTORY_TOOLS_READ,
     PERMISSION_INVENTORY_IMPORT_DISCOVERY,
     PERMISSION_RUNTIME_LOGS_WRITE,
+    PERMISSION_RUNTIME_DISPATCH_ADMIT,
     SERVICE_ID_DISCOVERY,
     SERVICE_ID_PROXY,
 )
@@ -60,6 +61,7 @@ def provision_service_identities(
                     PERMISSION_INTERNAL_INVENTORY_TOOLS_READ,
                     PERMISSION_RUNTIME_LOGS_WRITE,
                     PERMISSION_EMERGENCY_DENY_CHECK,
+                    PERMISSION_RUNTIME_DISPATCH_ADMIT,
                 ],
                 "keys": [
                     {

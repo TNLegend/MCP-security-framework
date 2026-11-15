@@ -4,7 +4,7 @@ import base64
 from dataclasses import dataclass, field
 from typing import Any
 
-from common.canonical_json import canonical_json_bytes, sha256_canonical_json
+from common.canonical_json import sha256_canonical_json
 from proxy.protocol_revisions import (
     FRAMEWORK_SUPPORTED_VERSIONS,
     LEGACY_FRAMEWORK_SUPPORTED_VERSIONS,

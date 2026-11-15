@@ -35,6 +35,7 @@ PERMISSION_INTERNAL_INVENTORY_TOOLS_READ = "internal.inventory.tools.read"
 PERMISSION_RUNTIME_LOGS_WRITE = "runtime.logs.write"
 PERMISSION_INVENTORY_IMPORT_DISCOVERY = "inventory.import_discovery"
 PERMISSION_EMERGENCY_DENY_CHECK = "emergency_deny.check"
+PERMISSION_RUNTIME_DISPATCH_ADMIT = "runtime.dispatch.admit"
 
 EMPTY_BODY_SHA256 = sha256(b"").hexdigest()
 

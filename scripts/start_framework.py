@@ -1,14 +1,32 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import signal
+import subprocess
 import sys
 import time
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = REPO_ROOT / "backend"
-VENV_PYTHON = BACKEND_DIR / ".venv" / "Scripts" / "python.exe"
+VENV_PYTHON = BACKEND_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+# Bootstrap before importing FastAPI/SQLAlchemy so a new clone can start.
+# The internal --ready flag does not bypass model integrity verification.
+if __name__ == "__main__" and "--ready" not in sys.argv:
+    setup = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "setup_local_environment.py")],
+        cwd=REPO_ROOT, check=False,
+    )
+    if setup.returncode:
+        raise SystemExit(setup.returncode)
+    if not VENV_PYTHON.is_file():
+        raise SystemExit("BOOTSTRAP_DID_NOT_CREATE_BACKEND_VENV")
+    raise SystemExit(subprocess.call(
+        [str(VENV_PYTHON), str(Path(__file__).resolve()), "--ready"],
+        cwd=REPO_ROOT,
+    ))
 
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(BACKEND_DIR))
@@ -70,10 +88,17 @@ def main() -> int:
             return 1
 
         gateway = manager.ensure_gateway(auto_start=True)
+        frontend_ensure = getattr(manager, "ensure_frontend", None)
+        frontend = frontend_ensure(auto_start=True) if callable(frontend_ensure) else None
         status = manager.status()
         status_payload = status.as_dict()
         status_payload["mcp_lab"] = mcp_lab.as_dict()
-        status_payload["ready"] = status.ready and mcp_lab.status == "healthy"
+        if frontend is not None:
+            status_payload["frontend"] = frontend.as_dict()
+        frontend_ready = frontend is None or frontend.status == "healthy"
+        status_payload["ready"] = (
+            status.ready and mcp_lab.status == "healthy" and frontend_ready
+        )
         print(json.dumps(status_payload, indent=2))
         if gateway.status != "healthy" or not status_payload["ready"]:
             return 1

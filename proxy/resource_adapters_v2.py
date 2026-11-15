@@ -435,6 +435,7 @@ def inspect_adapter_result(
 ) -> AdapterResultInspection:
     adapters = registry or AdapterRegistry()
     findings: set[str] = set()
+    blocked = False
     inspected: set[tuple[str, str, str]] = set()
     for resolution in adapter_resolutions:
         key = (
@@ -459,13 +460,27 @@ def inspect_adapter_result(
                 True,
                 ("adapter_result_inspection_error",),
             )
-        if not isinstance(inspection, AdapterResultInspection):
+        if (
+            not isinstance(inspection, AdapterResultInspection)
+            or type(inspection.blocked) is not bool
+            or not isinstance(inspection.finding_codes, tuple)
+            or any(
+                not isinstance(code, str) or not code or len(code) > 128
+                for code in inspection.finding_codes
+            )
+            or len(inspection.finding_codes) > 64
+        ):
             return AdapterResultInspection(
                 True,
                 ("adapter_result_inspection_invalid",),
             )
+        # A veto is authoritative even when its adapter emits no diagnostic.
+        # Existing finding-based refusals remain fail-closed independently.
+        blocked = blocked or inspection.blocked
         findings.update(inspection.finding_codes)
-    return AdapterResultInspection(bool(findings), tuple(sorted(findings)))
+        if inspection.blocked and not inspection.finding_codes:
+            findings.add("adapter_result_rejected")
+    return AdapterResultInspection(blocked or bool(findings), tuple(sorted(findings)))
 
 
 def _resolve_declaratively(

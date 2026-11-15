@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -43,6 +43,10 @@ class DatabasePoolStats(BaseModel):
 
 
 class RuntimeStorageStats(BaseModel):
+    # Intent events past grace with no outcome. Execution state is unknown,
+    # not automatically failed or safe to retry.
+    unresolved_intents: int = 0
+    intent_grace_seconds: int = 120
     total_rows: int
     oldest_at: datetime | None = None
     newest_at: datetime | None = None
@@ -65,6 +69,23 @@ class OperationsSummary(BaseModel):
     database_pool: DatabasePoolStats
     runtime_storage: RuntimeStorageStats
     process_logs: ProcessLogPolicy
+
+
+class RuntimeOperationReconciliation(BaseModel):
+    operation_id: str
+    state: Literal[
+        "INTENT_ADMISSION_MISSING",
+        "ADMITTED_OUTCOME_MISSING",
+        "RECORDED_UNCERTAIN_OUTCOME",
+        "OUTCOME_RECORDED",
+    ]
+    intent_recorded: bool
+    admission_recorded: bool
+    outcome_recorded: bool
+    execution_status: str | None
+    effect_possible: bool
+    retry_unsafe: bool
+    manual_reconciliation_required: bool
 
 
 class RuntimeCleanupRequest(BaseModel):

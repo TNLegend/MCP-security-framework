@@ -3,8 +3,10 @@ import sys
 import time
 from typing import Any
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from pydantic import ValidationError
+from proxy.observation_admission import live_review_admissible
 
 backend_path = Path(__file__).resolve().parents[1] / "backend"
 if str(backend_path) not in sys.path:
@@ -14,14 +16,12 @@ from proxy.agent_identity import (
     AgentIdentityError,
     AgentIdentityVerifier,
     JWTJWKSAgentIdentityVerifier,
-    VerifiedExternalIdentity,
 )
 from proxy.backend_client import BackendClient, BackendClientError
 from proxy.http_mcp_client import (
     MCPHttpClient,
     MCPHttpError,
     MCPProtocolError,
-    SUPPORTED_PROTOCOL_VERSION,
 )
 from proxy.protocol_profiles import (
     LEGACY_PROFILE_ID,
@@ -39,7 +39,6 @@ from app.services.published_configuration import (
 from proxy.identity_binding import (
     IdentityBindingError,
     IdentityBindingResolver,
-    ResolvedIdentityBinding,
 )
 from proxy.internal_identity_assertion import (
     InternalIdentityAssertionError,
@@ -47,6 +46,7 @@ from proxy.internal_identity_assertion import (
 )
 from proxy.runtime_logger import (
     build_runtime_log,
+    safe_runtime_error_code,
     send_runtime_log,
     summarize_tool_result,
 )
@@ -57,6 +57,7 @@ from proxy.tool_request_preparation import (
 from proxy.resource_adapters_v2 import inspect_adapter_result
 from proxy.tool_security_v2 import AdapterResolution
 from proxy.tool_result_guard import ToolResultGuard, is_external_effect, should_track_result
+from proxy.shared_taint_store import SharedTaintStoreError
 from common.canonical_json import sha256_canonical_json
 from common.mcp_endpoint import (
     MCPEndpointValidationError,
@@ -81,6 +82,13 @@ try:
     from app.schemas.policy_decision import PolicyDecision, PolicyEffect
 except ModuleNotFoundError:
     from app.schemas.policy_decision import PolicyDecision, PolicyEffect
+
+
+class DispatchAdmissionRejected(RuntimeError):
+    def __init__(self, code: str, deny_id: str | None = None) -> None:
+        self.code = code
+        self.deny_id = deny_id
+        super().__init__(code)
 
 
 SUPPORTED_RUNTIME_OBLIGATIONS = {"LOG", "WARN"}
@@ -210,6 +218,9 @@ class MCPProxy:
             and not str(key).startswith("_runtime_")
         }
         safe_input_tool_call["_runtime_started_monotonic"] = runtime_started
+        # Never trust an operation identifier supplied by the agent/MCP.
+        # One logical invocation gets one UUID shared by all audit phases.
+        safe_input_tool_call["_runtime_operation_id"] = str(uuid4())
 
         try:
             config_snapshot = self._load_config_snapshot()
@@ -391,9 +402,11 @@ class MCPProxy:
             )
             if approval.contract_hash != contract.contract_hash:
                 raise PublishedConfigurationError("approval_contract_hash_mismatch")
-            if tool.get("analysis_status") in {
-                "ANALYSIS_FAILED", "BLOCKED", "PENDING_ANALYSIS", "QUARANTINED", "STALE",
-            }:
+            # Signed approval is necessary but not sufficient: it cannot
+            # clear a more recent review requirement or administrative hold.
+            # Check both live analysis and review planes before preparing or
+            # dispatching the call, including unknown states (fail closed).
+            if not live_review_admissible(tool):
                 raise PublishedConfigurationError("approved_observation_not_current")
             tool = {
                 **tool,
@@ -401,6 +414,12 @@ class MCPProxy:
                 "review_status": "APPROVED",
                 "approved_fingerprint": current_fingerprint,
                 "approved_fingerprint_match": True,
+            }
+            # The trusted selected fingerprint must survive the intent audit.
+            # Never substitute a fresh, mutable inventory fingerprint later.
+            tool_call = {
+                **tool_call,
+                "_runtime_authorized_tool_fingerprint": current_fingerprint,
             }
             adapter_resolutions = tuple(
                 resolution
@@ -622,6 +641,32 @@ class MCPProxy:
                 skip_reason=skip_reason,
             )
 
+        # Some modern MCP providers bind selected JSON tool arguments to matching
+        # Mcp-Param-* routing headers. Source only from the approved inventory
+        # schema; untrusted callers cannot supply _runtime_* metadata.
+        # The restricted input_schema projection removes provider routing metadata;
+        # take hints from the approved, fingerprinted raw observation instead.
+        raw_definition = tool.get("raw_tool_definition")
+        schema = raw_definition.get("inputSchema") if isinstance(raw_definition, dict) else None
+        validated_schema = tool.get("input_schema")
+        validated_properties = (validated_schema.get("properties") if isinstance(validated_schema, dict) else None)
+        if upstream_protocol_profile.protocol_era == ProtocolEra.MODERN and isinstance(schema, dict):
+            properties = schema.get("properties")
+            if isinstance(properties, dict) and isinstance(validated_properties, dict):
+                hints = {
+                    name: spec["x-mcp-header"]
+                    for name, spec in properties.items()
+                    if isinstance(name, str)
+                    and name in validated_properties
+                    and isinstance(spec, dict)
+                    and "x-mcp-header" in spec
+                }
+                if hints:
+                    prepared_tool_call = {
+                        **prepared_tool_call,
+                        "_runtime_parameter_header_hints": hints,
+                    }
+
         return self._execute_tool_call(
             prepared_tool_call,
             server,
@@ -743,11 +788,11 @@ class MCPProxy:
                 server.get("auth_mode"),
                 server.get("credential_ref"),
             )
-            if server.get("auth_mode") == "OAUTH" and not isinstance(
-                server.get("oauth_config"),
-                dict,
-            ):
-                raise UpstreamAuthError("upstream_oauth_configuration_invalid")
+            if server.get("auth_mode") == "OAUTH":
+                if server.get("oauth_status") != "CONNECTED":
+                    raise UpstreamAuthError("upstream_oauth_connection_not_active")
+                if not isinstance(server.get("oauth_config"), dict):
+                    raise UpstreamAuthError("upstream_oauth_configuration_invalid")
         except (MCPEndpointValidationError, UpstreamAuthError) as exc:
             raise BackendClientError(
                 f"Resolved MCP server configuration is invalid: {exc}"
@@ -1081,14 +1126,131 @@ class MCPProxy:
                 error_summary="MCP client initialization failed.",
             )
 
+        # Configure provider-defined parameter headers only on a modern,
+        # already authorized tool call. Failure must never reach upstream.
+        parameter_header_hints = tool_call.get("_runtime_parameter_header_hints")
+        if parameter_header_hints:
+            try:
+                mcp_client.set_parameter_header_hints(parameter_header_hints)
+            except Exception:
+                return self._execution_error_response(
+                    tool_call=tool_call,
+                    server_id=server["id"],
+                    decision=decision,
+                    mcp_called=False,
+                    execution_status="invalid_upstream_parameter_headers",
+                    error_summary="Provider parameter header metadata is invalid.",
+                )
+
+        # Persist the authorized intent before any tools/call can execute.
+        # A post-execution log alone is insufficient: upstream mutations
+        # cannot be rolled back if audit persistence is unavailable.
+        intent_log = self._send_runtime_log(build_runtime_log(
+            tool_call,
+            decision,
+            server_id=server["id"],
+            executed=False,
+            execution_status="authorized_pending_execution",
+            status="allowed",
+        ))
+        if not intent_log.get("created"):
+            denied = _fail_closed_proxy_decision(
+                rule_id="runtime_audit_unavailable",
+                reason="Runtime audit could not durably record the authorized intent.",
+                severity="critical",
+                policy_revision="proxy-audit-guard-v1",
+            ).model_dump(mode="json")
+            return self._response(
+                status="blocked",
+                decision=denied,
+                executed=False,
+                mcp_called=False,
+                execution_status="audit_unavailable",
+                tool_result=None,
+                runtime_log=intent_log,
+                message="MCP call skipped because runtime audit storage is unavailable.",
+                skip_reason="runtime_audit_unavailable",
+            )
+
+        dispatch_admitted = False
         mcp_called = False
+        dispatch_context = {
+            "agent_id": str(tool_call.get("agent_id") or ""),
+            "framework_session_id": session_reference,
+            "server_ref": server_ref_for_server(server),
+            "tool_name": str(tool_call.get("tool_name") or ""),
+            "operation_id": str(tool_call.get("_runtime_operation_id") or ""),
+        }
+
+        def admit_before_send() -> None:
+            nonlocal dispatch_admitted, mcp_called
+            # F10: initialization and client-lock waits may allow another
+            # governed read to persist new taint after the earlier precheck.
+            # Revalidate just before durable admission and tools/call POST.
+            # This narrows the window; it is NOT atomic with concurrent
+            # taint writers on another process/host.
+            if (
+                is_external_effect(prepared_request)
+                and self.tool_result_guard.matches_prior_result(
+                    session_reference, tool_call.get("arguments") or {},
+                )
+            ):
+                raise DispatchAdmissionRejected("cross_call_data_exfiltration_guard")
+            # Requires a signed, durable backend admission. A read-only
+            # Emergency Deny query is NOT an acceptable dispatch fence.
+            admit = getattr(self.backend_client, "admit_dispatch", None)
+            if not callable(admit):
+                raise DispatchAdmissionRejected("dispatch_admission_unavailable")
+            try:
+                result = admit(dispatch_context)
+            except Exception as exc:
+                raise DispatchAdmissionRejected("dispatch_admission_unavailable") from exc
+            if not isinstance(result, dict) or result.get("admitted") is not True:
+                reason = (
+                    str(result.get("reason") or "dispatch_admission_invalid")
+                    if isinstance(result, dict) else "dispatch_admission_invalid"
+                )
+                # Prevent arbitrary upstream/HTTP response text in audit codes.
+                if reason not in {
+                    "emergency_deny_active", "dispatch_already_admitted",
+                    "dispatch_intent_missing_or_invalid",
+                    "dispatch_operation_already_finalized",
+                    "dispatch_tool_identity_missing",
+                    "human_review_hold_active",
+                    "human_review_fingerprint_changed",
+                    "dispatch_observation_fingerprint_changed",
+                    "dispatch_observation_not_approved",
+                }:
+                    reason = "dispatch_admission_invalid"
+                deny_id = result.get("deny_id") if isinstance(result, dict) else None
+                raise DispatchAdmissionRejected(
+                    reason, deny_id if isinstance(deny_id, str) else None,
+                )
+            dispatch_admitted = True
+            # From admission onward, a transport failure cannot prove that
+            # the remote side effect did not happen.
+            mcp_called = True
+
         upstream_started = time.perf_counter()
         try:
-            mcp_called = True
-            tool_result = mcp_client.call_tool(
-                str(tool_call.get("tool_name")),
-                tool_call.get("arguments") or {},
-            )
+            if isinstance(mcp_client, MCPHttpClient):
+                # The client acquires its session lock and initializes before
+                # invoking our admission at the tools/call dispatch boundary.
+                tool_result = mcp_client.call_tool(
+                    str(tool_call.get("tool_name")),
+                    tool_call.get("arguments") or {},
+                    before_dispatch=admit_before_send,
+                )
+            else:
+                # Injected client implementations must still use the durable
+                # backend admission; only MCPHttpClient has a verified
+                # post-lock admission hook.
+                admit_before_send()
+                tool_result = mcp_client.call_tool(
+                    str(tool_call.get("tool_name")),
+                    tool_call.get("arguments") or {},
+                )
+            mcp_called = dispatch_admitted
             tool_call = {
                 **tool_call,
                 "_runtime_upstream_duration_ms": (time.perf_counter() - upstream_started) * 1000,
@@ -1135,10 +1297,24 @@ class MCPProxy:
                     message="Tool result withheld by the security framework.",
                 )
             if should_track_result(prepared_request):
-                self.tool_result_guard.remember_read_result(
-                    session_reference,
-                    tool_result,
-                )
+                try:
+                    self.tool_result_guard.remember_read_result(
+                        session_reference,
+                        tool_result,
+                    )
+                except SharedTaintStoreError:
+                    # The remote MCP has already been called. Do NOT return
+                    # its sensitive result when shared taint evidence cannot
+                    # be durably stored, and do NOT imply it was not executed.
+                    return self._blocked_tool_result_response(
+                        tool_call=tool_call,
+                        server_id=server["id"],
+                        mcp_called=mcp_called,
+                        finding_codes=("shared_taint_persistence_unavailable",),
+                        rule_id="shared_taint_persistence_failed",
+                        policy_revision="proxy-result-guard-v2",
+                        message="Tool result withheld because shared taint persistence failed.",
+                    )
             execution_status = (
                 "tool_error" if bool(tool_result.get("isError", False)) else "success"
             )
@@ -1152,6 +1328,21 @@ class MCPProxy:
                 status="allowed",
             )
             runtime_log = self._send_runtime_log(log_payload)
+            if not runtime_log.get("created"):
+                # The request has already executed; do not falsely report
+                # successful, fully audited completion or expose its result.
+                # The durable intent_log remains available for reconciliation.
+                return self._response(
+                    status="error",
+                    decision=decision,
+                    executed=True,
+                    mcp_called=True,
+                    execution_status="audit_completion_failed",
+                    tool_result=None,
+                    runtime_log=intent_log,
+                    message="MCP call executed, but completion audit persistence failed.",
+                    skip_reason="audit_completion_failed",
+                )
 
             return self._response(
                 status="allowed",
@@ -1162,6 +1353,38 @@ class MCPProxy:
                 tool_result=tool_result,
                 runtime_log=runtime_log,
                 message="Tool call executed through the MCP HTTP server.",
+            )
+        except DispatchAdmissionRejected as exc:
+            if exc.code == "emergency_deny_active":
+                return self._emergency_deny_response(
+                    tool_call=tool_call,
+                    server_id=server.get("id"),
+                    error_code=exc.code,
+                    deny_id=exc.deny_id,
+                )
+            late_taint = exc.code == "cross_call_data_exfiltration_guard"
+            rejected = _fail_closed_proxy_decision(
+                rule_id=exc.code,
+                reason=(
+                    "Outgoing arguments contain data returned by a prior read operation."
+                    if late_taint else
+                    "Durable dispatch admission was denied or unavailable."
+                ),
+                severity="critical",
+                policy_revision=(
+                    "proxy-result-guard-v2" if late_taint
+                    else "proxy-dispatch-admission-v1"
+                ),
+            ).model_dump(mode="json")
+            return self._skip_response(
+                tool_call=tool_call,
+                server_id=server["id"],
+                decision=rejected,
+                status="blocked",
+                execution_status="blocked",
+                message="Tool call was not dispatched.",
+                error_summary=exc.code,
+                skip_reason=exc.code,
             )
         except MCPHttpError as exc:
             tool_call = {
@@ -1174,7 +1397,7 @@ class MCPProxy:
                 decision=decision,
                 mcp_called=mcp_called,
                 execution_status="http_error",
-                error_summary=str(exc),
+                error_summary="upstream_mcp_http_error",
             )
         except MCPProtocolError as exc:
             tool_call = {
@@ -1187,7 +1410,7 @@ class MCPProxy:
                 decision=decision,
                 mcp_called=mcp_called,
                 execution_status="protocol_error",
-                error_summary=str(exc),
+                error_summary="upstream_mcp_protocol_error",
             )
 
     def _blocked_tool_result_response(
@@ -1317,6 +1540,15 @@ class MCPProxy:
         execution_status: str,
         error_summary: str,
     ) -> dict[str, Any]:
+        # Keep the client response as confidential as the audit database.
+        # Arbitrary upstream exception text is not a diagnostic code.
+        error_summary = safe_runtime_error_code(error_summary)
+        # After dispatch, an HTTP/protocol failure is NOT proof that the MCP
+        # did nothing. Persist the uncertainty explicitly, while retaining
+        # the transport-specific error code for diagnosis. The caller must
+        # not retry a potentially effectful tool invocation automatically.
+        if mcp_called and execution_status in {"http_error", "protocol_error"}:
+            execution_status = "upstream_outcome_unknown"
         log_payload = build_runtime_log(
             tool_call,
             decision,
@@ -1377,6 +1609,10 @@ class MCPProxy:
             "reason": decision.get("reason"),
             "executed": executed,
             "mcp_called": mcp_called,
+            # Fail closed *without* claiming an already-sent upstream call
+            # had no effect. Callers must not blindly replay it.
+            "effect_possible": bool(mcp_called),
+            "retry_unsafe": bool(mcp_called and status == "error"),
             "execution_status": execution_status,
             "tool_result": tool_result,
             "result_summary": summarize_tool_result(tool_result),

@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from statistics import fmean
 from typing import Iterable
 
-from sqlalchemy import delete, exists, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, delete, exists, func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.core.config import settings
 from app.db.database import engine
@@ -28,10 +28,13 @@ RUNTIME_ERROR_STATUSES = {
     "tool_error",
     "protocol_error",
     "http_error",
+    "upstream_outcome_unknown",
     "policy_error",
     "inventory_error",
     "client_initialization_error",
     "upstream_auth_error",
+    "audit_completion_failed",
+    "audit_unavailable",
 }
 
 
@@ -39,6 +42,13 @@ def operations_summary(db: Session) -> OperationsSummary:
     now = datetime.utcnow()
     window_minutes = settings.operations_metrics_window_minutes
     window_start = now - timedelta(minutes=window_minutes)
+    # A logical operation writes an authorized intent and a final outcome.
+    # Intent records are durable audit evidence but NOT additional calls.
+    # Retention/storage counts deliberately include both records.
+    is_outcome = or_(
+        RuntimeCall.execution_status.is_(None),
+        RuntimeCall.execution_status != "authorized_pending_execution",
+    )
     total, allowed, blocked, errors, executed, result_blocked = db.execute(
         select(
             func.count(RuntimeCall.id),
@@ -51,7 +61,7 @@ def operations_summary(db: Session) -> OperationsSummary:
             func.count(RuntimeCall.id).filter(
                 RuntimeCall.execution_status == "result_blocked"
             ),
-        ).where(RuntimeCall.created_at >= window_start)
+        ).where(RuntimeCall.created_at >= window_start, is_outcome)
     ).one()
     total = int(total or 0)
     allowed = int(allowed or 0)
@@ -62,7 +72,7 @@ def operations_summary(db: Session) -> OperationsSummary:
 
     rows = db.scalars(
         select(RuntimeCall)
-        .where(RuntimeCall.created_at >= window_start)
+        .where(RuntimeCall.created_at >= window_start, is_outcome)
         .order_by(RuntimeCall.id.desc())
         .limit(10_000)
     ).all()
@@ -95,6 +105,29 @@ def operations_summary(db: Session) -> OperationsSummary:
         )
     ).one()
 
+    # Correlate only new two-phase operations. Legacy NULL events remain
+    # visible normally. An old intent without outcome is an *unknown*
+    # operation (possibly executed upstream), never a failed tool call.
+    completion = aliased(RuntimeCall)
+    unresolved_intents = int(
+        db.scalar(
+            select(func.count(RuntimeCall.id)).where(
+                RuntimeCall.event_phase == "intent",
+                RuntimeCall.operation_id.is_not(None),
+                RuntimeCall.created_at < (
+                    now - timedelta(seconds=settings.runtime_intent_grace_seconds)
+                ),
+                ~exists(
+                    select(completion.id).where(
+                        completion.operation_id == RuntimeCall.operation_id,
+                        completion.event_phase == "outcome",
+                    )
+                ),
+            )
+        )
+        or 0
+    )
+
     return OperationsSummary(
         generated_at=now,
         ready=ready,
@@ -116,6 +149,8 @@ def operations_summary(db: Session) -> OperationsSummary:
         ),
         database_pool=_pool_stats(),
         runtime_storage=RuntimeStorageStats(
+            unresolved_intents=unresolved_intents,
+            intent_grace_seconds=settings.runtime_intent_grace_seconds,
             total_rows=int(total_rows or 0),
             oldest_at=oldest_at,
             newest_at=newest_at,
@@ -141,48 +176,111 @@ def cleanup_runtime_logs(
     total_before = int(
         db.scalar(select(func.count(RuntimeCall.id))) or 0
     )
-    unreferenced = ~exists(
+    # Retention operates on *logical evidence units*, never isolated phases:
+    # - historical uncorrelated rows are single units;
+    # - a paired intent/outcome is one indivisible unit of two rows;
+    # - an intent without an outcome is not eligible for automatic deletion,
+    #   because it might have executed upstream and still require review.
+    #
+    # Policy-decision references protect the whole unit. A soft size limit
+    # may remain exceeded when only protected/uncertain events remain; this is
+    # safer than destroying the last evidence of an unknown external effect.
+    batch = settings.runtime_log_cleanup_batch_size
+    scan_limit = min(max(batch * 2, 1000), 200_000)
+    no_policy_reference = ~exists(
         select(PolicyDecision.id).where(
             PolicyDecision.runtime_call_id == RuntimeCall.id
         )
     )
-    eligible_expired = int(
-        db.scalar(
-            select(func.count(RuntimeCall.id)).where(
-                RuntimeCall.created_at < cutoff,
-                unreferenced,
-            )
+    legacy_rows = db.execute(
+        select(RuntimeCall.id, RuntimeCall.created_at)
+        .where(
+            RuntimeCall.operation_id.is_(None),
+            # Older log producers did not emit operation identifiers.
+            # Never delete their unmatched authorized intents either:
+            # the external effect might be unknown and unrecoverable.
+            or_(
+                RuntimeCall.execution_status.is_(None),
+                RuntimeCall.execution_status != "authorized_pending_execution",
+            ),
+            no_policy_reference,
         )
-        or 0
+        .order_by(RuntimeCall.created_at.asc(), RuntimeCall.id.asc())
+        .limit(scan_limit)
+    ).all()
+
+    intent = aliased(RuntimeCall)
+    outcome = aliased(RuntimeCall)
+    paired_rows = db.execute(
+        select(
+            intent.id,
+            outcome.id,
+            intent.created_at,
+            outcome.created_at,
+        )
+        .join(
+            outcome,
+            and_(
+                outcome.operation_id == intent.operation_id,
+                outcome.event_phase == "outcome",
+            ),
+        )
+        .where(
+            intent.operation_id.is_not(None),
+            intent.event_phase == "intent",
+            ~exists(
+                select(PolicyDecision.id).where(
+                    PolicyDecision.runtime_call_id == intent.id
+                )
+            ),
+            ~exists(
+                select(PolicyDecision.id).where(
+                    PolicyDecision.runtime_call_id == outcome.id
+                )
+            ),
+        )
+        .order_by(intent.created_at.asc(), intent.id.asc())
+        .limit(scan_limit)
+    ).all()
+
+    # (oldest timestamp, tuple of ids, expiration eligibility)
+    units = [
+        (created_at, (int(row_id),), created_at < cutoff)
+        for row_id, created_at in legacy_rows
+    ]
+    units.extend(
+        (
+            min(started, finished),
+            (int(intent_id), int(outcome_id)),
+            started < cutoff and finished < cutoff,
+        )
+        for intent_id, outcome_id, started, finished in paired_rows
     )
+    units.sort(key=lambda unit: (unit[0], unit[1][0]))
+
+    eligible_expired = sum(len(ids) for _, ids, expired in units if expired)
     eligible_over_limit = max(0, total_before - settings.runtime_log_max_rows)
-
-    batch = settings.runtime_log_cleanup_batch_size
     target_deletions = min(
-        batch,
-        max(eligible_expired, eligible_over_limit),
+        batch, max(eligible_expired, eligible_over_limit)
     )
-    selected: list[int] = list(
-        db.scalars(
-            select(RuntimeCall.id)
-            .where(RuntimeCall.created_at < cutoff, unreferenced)
-            .order_by(RuntimeCall.id.asc())
-            .limit(target_deletions)
-        ).all()
-    )
-    capacity = target_deletions - len(selected)
-    if capacity > 0 and eligible_over_limit > 0:
-        query = (
-            select(RuntimeCall.id)
-            .where(unreferenced)
-            .order_by(RuntimeCall.id.asc())
-            .limit(min(capacity, eligible_over_limit))
-        )
-        if selected:
-            query = query.where(RuntimeCall.id.not_in(selected))
-        selected.extend(db.scalars(query).all())
 
-    selected = list(dict.fromkeys(int(value) for value in selected))[:batch]
+    selected: list[int] = []
+    selected_units: set[tuple[int, ...]] = set()
+    # Prefer fully expired units before size-pressure removal. A pair that
+    # exceeds remaining capacity is skipped rather than split.
+    for expiration_only in (True, False):
+        if len(selected) >= target_deletions:
+            break
+        for _, ids, expired in units:
+            if ids in selected_units or (expiration_only and not expired):
+                continue
+            if len(selected) + len(ids) > target_deletions:
+                continue
+            selected.extend(ids)
+            selected_units.add(ids)
+            if len(selected) >= target_deletions:
+                break
+    selected = selected[:batch]
     deleted = 0
     if not dry_run and selected:
         result = db.execute(delete(RuntimeCall).where(RuntimeCall.id.in_(selected)))

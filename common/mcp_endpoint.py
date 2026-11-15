@@ -39,6 +39,11 @@ SENSITIVE_QUERY_PARAMETER_NAMES = frozenset(
     }
 )
 
+# RFC 6052's well-known NAT64 prefix embeds one IPv4 address in the
+# low 32 bits. Accept only its globally routable IPv4 translations.
+# This is not a blanket exception for reserved IPv6 addresses.
+NAT64_WELL_KNOWN_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
+
 
 class MCPEndpointValidationError(ValueError):
     """Raised when an Inventory-owned MCP endpoint is unsafe or malformed."""
@@ -137,7 +142,13 @@ def validate_mcp_endpoint(
     if not addresses:
         raise MCPEndpointValidationError("endpoint_host_resolution_failed")
     for address in addresses:
-        _reject_blocked_address(address)
+        # Only the explicit 'localhost' lab name may resolve to loopback.
+        # A remote DNS hostname advertising 127.0.0.1/::1 is not a lab.
+        if parsed.hostname == "localhost" and not address.is_loopback:
+            raise MCPEndpointValidationError("endpoint_localhost_resolution_invalid")
+        _reject_blocked_address(
+            address, allow_loopback=parsed.hostname == "localhost"
+        )
     return parsed
 
 
@@ -164,15 +175,52 @@ def _ip_address(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | N
 
 def _reject_blocked_address(
     address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    *, allow_loopback: bool = True,
 ) -> None:
+    if isinstance(address, ipaddress.IPv6Address) and address in NAT64_WELL_KNOWN_PREFIX:
+        # NAT64 AAAA records can accompany ordinary public A records.
+        # Python labels 64:ff9b::/96 reserved: inspect the embedded IPv4
+        # rather than approving arbitrary IPv6 reserved blocks.
+        translated = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+        if (
+            not translated.is_global
+            or translated.is_multicast
+            or translated.is_reserved
+            or translated in BLOCKED_METADATA_ADDRESSES
+        ):
+            raise MCPEndpointValidationError("endpoint_special_address_blocked")
+        return
     comparable = address.ipv4_mapped if isinstance(address, ipaddress.IPv6Address) else None
     effective = comparable or address
+    # Loopback MCPs are deliberately supported for local labs on both
+    # address families. IPv6 ::1 is marked "reserved" by ipaddress.
+    if (
+        allow_loopback
+        and effective.is_loopback
+        and address not in BLOCKED_METADATA_ADDRESSES
+    ):
+        return
     if (
         address in BLOCKED_METADATA_ADDRESSES
         or effective in BLOCKED_METADATA_ADDRESSES
+        # RFC1918 and CGNAT IPv4 space is not classified as 'reserved' by
+        # ipaddress. Require globally routable addresses instead of only
+        # banning a few special flags; explicit loopback labs are handled
+        # above. Also protects a hostname with mixed public/private answers.
+        or not effective.is_global
         or effective.is_link_local
         or effective.is_unspecified
         or effective.is_multicast
         or effective.is_reserved
+        or (
+            isinstance(effective, ipaddress.IPv6Address)
+            and effective.is_private
+        )
     ):
         raise MCPEndpointValidationError("endpoint_special_address_blocked")
+
+def format_http_authority(hostname: str, port: int | None, scheme: str) -> str:
+    """Provider-neutral RFC 3986 bracketed IPv6 serialization."""
+    host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
+    default_port = 443 if scheme.lower() == "https" else 80
+    return host if port in (None, default_port) else f"{host}:{port}"

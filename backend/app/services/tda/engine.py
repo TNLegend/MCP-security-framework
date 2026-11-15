@@ -1,0 +1,246 @@
+"""V19 TDA: one signed GLiNER/DeBERTa semantic M4, no V1 model path.
+
+M1/M2/M3/M5 deterministic safety checks remain independent of M4
+hypotheses. M6/M7 receive source-exact candidates but never infer permissions.
+Unknown/unverified semantic behavior cannot approve a tool.
+"""
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from app.services.tda.configuration import (
+    FINDING_DECISION_BLOCK, FINDING_DECISION_REVIEW,
+    STATUS_BLOCKED, STATUS_QUARANTINED, STATUS_REVIEW_REQUIRED,
+)
+from app.services.tda.types import SemanticResult, EmbeddingModel
+from app.services.tda.findings import _deduplicate_findings, _finding, _finding_decision
+from app.services.tda.detectors import deterministic_findings
+from app.services.tda.m1_sources.capture import capture_context
+from app.services.tda.m3_instructions.semantic_input import _semantic_input_with_coverage
+from app.services.tda.m3_instructions.detectors import interpret_m4_directives_advisory
+from app.services.tda.m4_semantics.consumer_contract import project_m4_for_consumers
+from app.services.tda.m6_comparison.consistency import (
+    inspect_m4_operations_advisory, consistency_result_from_m4, consistency_result,
+)
+from app.services.tda.m6_comparison.drift import (
+    drift_result, _drift_findings,
+)
+from app.services.tda.m7_assessment.reduction import (
+    summarize_m4_evidence_advisory, _risk_level, _risk_score,
+)
+from app.services.tda.security_guards.extraction import extract_tool_semantic_facts as extract_deterministic_safety_facts
+
+
+MODEL_COMBINED = "GLINER2.5_BASE_PASS10+DEBERTA_V3_SMALL_V2"
+MODEL_GLINER = "GLINER2.5_BASE_PASS10"
+MODEL_DEBERTA = "DEBERTA_V3_SMALL_V2"
+
+
+def _sha_identity(value: Any, error: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError(error)
+    return value
+
+
+def analyze_tool_version(
+    *,
+    tool_snapshot: dict[str, Any],
+    profile_snapshot: dict[str, Any] | None,
+    baseline_snapshot: dict[str, Any] | None = None,
+    m4_report: dict[str, Any] | None = None,
+    m4_identity: str | None = None,
+    m4_pipeline_identity: str | None = None,
+    embedding_model: EmbeddingModel | None = None,
+) -> dict[str, Any]:
+    """Consume only a checked, signed and source-bound M4 report.
+
+    This pure function checks exact-source integrity and identity shape.
+    The calling service MUST verify the actual Ed25519 signatures, bytes,
+    worker generation, and observed tool fingerprint before persistence.
+    """
+    model_identity = _sha_identity(
+        m4_identity, "M4_SIGNED_PIPELINE_IDENTITY_REQUIRED"
+    )
+    pipeline_identity = _sha_identity(
+        m4_pipeline_identity, "M4_V2_SIGNED_ANALYZER_IDENTITY_REQUIRED"
+    )
+    if not isinstance(m4_report, dict):
+        raise ValueError("M4_V2_REPORT_REQUIRED_NO_LEGACY_FALLBACK")
+
+    context = capture_context(tool_snapshot, profile_snapshot, baseline_snapshot)
+    snapshot = json.loads(context.original.json_bytes)
+    profile = (
+        json.loads(context.profile_json)
+        if context.profile_json is not None else None
+    )
+    baseline = (
+        json.loads(context.baseline_json)
+        if context.baseline_json is not None else None
+    )
+
+    checked = project_m4_for_consumers(
+        m4_report, str(snapshot.get("description") or "")
+    )
+    m4_views = {
+        "model_report": checked,
+        "m3": interpret_m4_directives_advisory(checked["m3"]),
+        "m6": inspect_m4_operations_advisory(checked["m6"]),
+        "m7": summarize_m4_evidence_advisory(checked["m7"]),
+        "signed_model_and_source_identity": model_identity,
+        "signed_analyzer_pipeline_identity": pipeline_identity,
+    }
+
+    # M2/M3/M6/M7 deterministic security evidence is independent of M4.
+    # Re-homed from the old semantic package to security_guards; not a
+    # competing M4 neural predictor and never runtime authorization.
+    guard_facts = extract_deterministic_safety_facts(snapshot)
+    findings = deterministic_findings(snapshot, profile, semantic_facts=guard_facts)
+
+    # M6 retains its original capability/contract verification and E5-based
+    # drift implementation. M4 hypotheses are attached advisory-only.
+    existing_consistency = consistency_result(
+        snapshot, profile, semantic_facts=guard_facts
+    )
+    advisory_consistency = consistency_result_from_m4(
+        snapshot, profile, m4_views["m6"]
+    )
+    consistency = dict(existing_consistency)
+    consistency["m4_advisory_operations"] = advisory_consistency["m4_advisory_operations"]
+    consistency["m4_capabilities_verified"] = False
+    consistency["m4_unresolved"] = True
+    findings.extend(existing_consistency["findings"])
+    findings.extend(advisory_consistency["findings"])
+    if embedding_model is None:
+        raise ValueError("M6_E5_EMBEDDING_REQUIRED")
+    drift = drift_result(baseline, snapshot, embedding_model)
+    findings.extend(_drift_findings(drift))
+
+    _, coverage = _semantic_input_with_coverage(snapshot)
+    coverage["complete"] = False
+    reasons = coverage.setdefault("incomplete_reasons", [])
+    for item in (
+        "M4_MODEL_HYPOTHESES_NOT_VERIFIED_RUNTIME_BEHAVIOR",
+        "M4_INDEPENDENT_BEHAVIORAL_QUALIFICATION_REQUIRED",
+    ):
+        if item not in reasons:
+            reasons.append(item)
+    model_coverage = m4_report.get("coverage")
+    model_coverage = model_coverage if isinstance(model_coverage, dict) else {}
+    coverage["token_budget"] = {
+        "complete": model_coverage.get("source_tokens_covered") is True,
+        "status": "M4_SOURCE_COVERAGE_REPORTED_NOT_BEHAVIOR_VERIFIED",
+    }
+    findings.append(_finding(
+        "analysis_coverage_incomplete", "analysis_coverage", "metadata",
+        "medium", 70,
+        "Description analysis is a grounded model hypothesis, not observed behavior.",
+        "Require independent runtime/contract evidence and explicit ADMIN review.",
+        decision=FINDING_DECISION_REVIEW,
+    ))
+    findings = _deduplicate_findings(findings)
+
+    blocked = any(
+        _finding_decision(finding) == FINDING_DECISION_BLOCK
+        for finding in findings
+    )
+    status = (
+        STATUS_BLOCKED if blocked else
+        STATUS_QUARANTINED if profile is None else
+        STATUS_REVIEW_REQUIRED
+    )
+    review_status = STATUS_BLOCKED if blocked else STATUS_REVIEW_REQUIRED
+    version = "pipeline-sha256:" + pipeline_identity
+    model_result = SemanticResult(
+        scores={}, best_category="m4_structured_events_not_a_risk_classifier",
+        confidence=0.0, model_name=MODEL_COMBINED,
+        model_version=version, flagged=False,
+        coverage=coverage["token_budget"],
+    )
+    risk_score = _risk_score(findings, model_result, drift)
+    risk_level = _risk_level(risk_score)
+    shadow_effects = {
+        "revision": "m4-structured-events-v19",
+        "status": "MODEL_HYPOTHESES_UNVERIFIED",
+        "shadow_only": True, "creates_permissions": False,
+        "claims": m4_views["m6"]["semantic_operation_candidates"],
+        "unresolved_semantic_reasons": list(guard_facts.unknown_reasons),
+        "limitations": [
+            "neural_metadata_not_runtime_behavior",
+            "no_model_generated_permissions",
+        ],
+    }
+    proposition_shadow = {
+        "schema": "tool-propositions-v1",
+        "status": "NOT_EVALUATED_IN_M4_NEURAL_PATH",
+        "shadow_only": True, "creates_permissions": False,
+        "propositions": [],
+        "omissions": [{"reason": "legacy_m4_extractor_retired"}],
+        "coverage": {
+            "proposition_discovery": {
+                "complete": None, "status": "NOT_EVALUATED"
+            }
+        },
+    }
+    return {
+        "analysis_status": status,
+        "risk_score": risk_score,
+        "risk_level": risk_level,
+        "semantic_flagged": False,
+        "deterministic_critical_finding": blocked,
+        "consistency_status": consistency["status"],
+        "drift_status": drift.status,
+        "review_status": review_status,
+        "coverage": coverage,
+        "shadow_effects": shadow_effects,
+        "proposition_shadow": proposition_shadow,
+        "semantic_scores": {
+            "scores": {},
+            "best_category": model_result.best_category,
+            "confidence": 0.0,
+            "threshold": None,
+            "model_best_category": model_result.best_category,
+            "model_flagged": False,
+            "corroborated": False,
+            "flagged": False,
+            "abstained": True,
+            # Sensitivity must NOT be reset to False by a missing M4 prediction.
+            "facts": {
+                **guard_facts.to_dict(),
+                "source": "INDEPENDENT_DETERMINISTIC_SAFETY_GUARDS",
+                "model_behavior_proven": False,
+            },
+            "unresolved_unknown_reasons": list(guard_facts.unknown_reasons),
+            "raw_unknown_reasons": list(guard_facts.unknown_reasons),
+            "contract_bounded_unknowns": [],
+            "unknown_policy": "A_REQUIRE_REVIEW",
+            "authorization_evidence": {
+                "contract_present": profile is not None,
+                "declared_contract_hash": (profile or {}).get("contract_hash"),
+                "authority_verified_here": False,
+                "note": "M4 cannot authorize capabilities or runtime execution.",
+            },
+            "coverage": coverage,
+            "shadow_effects": shadow_effects,
+            "proposition_shadow": proposition_shadow,
+            "m4_structured_semantics": m4_views,
+            "m4_asserted_authority": "NONE",
+            "historic_deterministic_guard_still_active": True,
+        },
+        "consistency_result": consistency,
+        "drift_result": {
+            "status": drift.status, "changes": drift.changes,
+            "similarity": drift.similarity,
+        },
+        "model_versions": {
+            "semantic": {"name": MODEL_COMBINED, "version": version},
+            "m4_gliner": {"name": MODEL_GLINER, "version": version},
+            "m4_deberta": {"name": MODEL_DEBERTA, "version": version},
+            "embedding": {
+                "name": getattr(embedding_model, "model_name", "intfloat/multilingual-e5-small"),
+                "version": getattr(embedding_model, "model_version", "test-unversioned"),
+            },
+        },
+        "findings": findings,
+    }
