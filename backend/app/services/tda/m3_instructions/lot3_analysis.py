@@ -62,31 +62,34 @@ def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
         limitations.append("DERIVED_FINDINGS_ARE_NOT_AUTHORITY")
     if m2_limitations:
         limitations.extend(m2_limitations)
-    # Language scope is independent of maliciousness and is declared for
-    # *every* applicable raw VALUE, including languages written in Latin.
-    # Latin-only text is never certified English by this lightweight check.
+    # The language heuristic runs independently from the actual detectors.
+    # A short English field can have UNKNOWN linguistic scope even though
+    # all scheduled scans executed. Never equate unknown with CLEAN.
+    # Free-text values under _meta, default, examples or enum are in scope.
+    structural_values=frozenset({
+        "name","type","format","$schema","additionalProperties",
+        "minLength","maxLength","minimum","maximum","exclusiveMinimum",
+        "exclusiveMaximum","minItems","maxItems","uniqueItems",
+        "required","pattern","propertyNames",
+    })
     for surface in surfaces:
-        language_text=surface.kind=="VALUE" and (
-            surface.pointer.rsplit("/",1)[-1].lower() in (
-                "description","instructions","instruction","prompt","message",
-                "content","summary","text","help")
-        )
-        if language_text:
-            scope=language_scope(surface.text)
-            unsupported=scope!="ENGLISH_POSITIVE_CUES_NOT_CERTIFIED"
-            if unsupported and "LANGUAGE_COVERAGE_UNVERIFIED_NOT_MALICIOUS" not in limitations:
-                limitations.append("LANGUAGE_COVERAGE_UNVERIFIED_NOT_MALICIOUS")
-            new_rows.append(InspectionRow(
-                surface.pointer,surface.kind,surface.view_id,
-                "M3_LANGUAGE_SCOPE","SHADOW",
-                "NOT_ANALYZED" if unsupported else "INSPECTED",
-                scope,surface.text_sha256))
-        else:
+        token=surface.pointer.rsplit("/",1)[-1].replace("~1","/").replace("~0","~")
+        is_structural=surface.kind=="KEY" or token in structural_values
+        if is_structural:
             new_rows.append(InspectionRow(
                 surface.pointer,surface.kind,surface.view_id,
                 "M3_LANGUAGE_SCOPE","SHADOW","NOT_APPLICABLE",
-                "NOT_NATURAL_LANGUAGE_SURFACE_OR_SCHEMA_KEY",
+                "STRUCTURAL_FIELD_LANGUAGE_SCOPE_NOT_APPLICABLE",
                 surface.text_sha256))
+            continue
+        scope=language_scope(surface.text)
+        unsupported=scope!="ENGLISH_POSITIVE_CUES_NOT_CERTIFIED"
+        if unsupported and "LANGUAGE_COVERAGE_UNVERIFIED_NOT_MALICIOUS" not in limitations:
+            limitations.append("LANGUAGE_COVERAGE_UNVERIFIED_NOT_MALICIOUS")
+        new_rows.append(InspectionRow(
+            surface.pointer,surface.kind,surface.view_id,
+            "M3_LANGUAGE_SCOPE","SHADOW","INSPECTED",
+            scope,surface.text_sha256))
 
     scanned_count=0
     chars=0

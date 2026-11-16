@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import re
 
 from app.services.tda.claim_context import quotation_spans
-from app.services.tda.m3_instructions.framing import source_frame
+from app.services.tda.m3_instructions.framing import source_frame, ENACT_QUOTE
 from app.services.tda.security_guards.propositions import extract_propositions
 from app.services.tda.m3_instructions.span_rules import SpanCandidate
 
@@ -151,8 +151,17 @@ def response_directive_candidates(raw: str) -> tuple[ResponseCandidate,...]:
             if (p["source_path"]=="/description"
                 and p["start"]<=relative<p["end"])
         ),None)
-        if prop is None or prop["quotation"]:
+        if prop is None:
             continue
+        quoted=bool(prop["quotation"])
+        if quoted:
+            quote_end=next(
+                (b for a,b in quotation_spans(raw) if a<=begin<b),None)
+            following=raw[quote_end:min(len(raw),quote_end+180)] if quote_end is not None else ""
+            if not ENACT_QUOTE.search(following):
+                # A bare quotation is documentary, even when it contains
+                # imperative language and mentions the final answer.
+                continue
         # Proposition-level polarity may reflect a later qualifier such as
         # "without a user request". The negation must govern the ACTION,
         # checked below against its original local prefix, not the whole span.
@@ -176,7 +185,15 @@ def response_directive_candidates(raw: str) -> tuple[ResponseCandidate,...]:
         # An unanchored expression may describe tool output or formatting.
         # Keep it as a candidate, never an established agent directive.
         context=same_sentence+" "+raw[begin:stop]
-        anchor=bool(AGENT_ANCHOR.search(context)) and local_frame=="INSTRUCTION"
+        # Even if text after a quotation asks to enact it, the matched
+        # action span is still inside a quote. That span alone cannot prove
+        # the separate instruction to comply; preserve an uncertain shadow
+        # candidate and let a dedicated enactment relation prove the link.
+        if quoted:
+            local_frame="CONTEXT_DEPENDENT"
+            uncertainty=tuple((*uncertainty,"QUOTE_ENACTMENT_REQUIRES_RELATIONAL_PROOF"))
+        anchor=(not quoted and bool(AGENT_ANCHOR.search(context))
+                and local_frame=="INSTRUCTION")
         candidates.append(ResponseCandidate(
             span=SpanCandidate(rule_id=rule,start=begin,end=stop,
                 excerpt=raw[begin:stop],

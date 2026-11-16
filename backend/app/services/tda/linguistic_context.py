@@ -177,6 +177,22 @@ def _match_is_non_operational(text: str, match: re.Match[str]) -> bool:
     ):
         return True
     sentence_before = re.split("[.!?\\n]", before)[-1]
+    # Security-analysis tools describe untrusted attack phrases as *data*.
+    # Only a bounded same-clause reporting verb governing a quoted phrase,
+    # attempted action, or third-party document can make the match
+    # non-operational; no phrase-specific allowlist and no distant governor.
+    # An independent imperative after punctuation or a contrasting
+    # conjunction must still be evaluated by the ordinary V0 guards.
+    if re.search(
+        r"\b(?:detects?|flags?|identifies?|recognizes?|classifies?|"
+        r"reports?|matches?|quotes?)\b.{0,100}?"
+        r"(?:attempts?\s+to\s+|instructions?\s+to\s+|"
+        r"requests?\s+to\s+|phrases?\s+(?:such\s+as|like)\s+"
+        r"(?:'|\x22)?|documents?\s+that\s+"
+        r"(?:ask|asks|instruct|instructs)\s+(?:the\s+)?"
+        r"(?:reader|user|assistant)\s+to\s+)$",
+        sentence_before,re.IGNORECASE):
+        return True
     if re.search(
         "\\b(?:documentation|docs?|guides?|manuals?|manuels?|examples?|samples?|reports?|articles?|tutorials?)\\b.{0,80}\\b(?:about|on|regarding|concerning|explaining|describing|documenting|how\\s+to|for|sur|concernant|expliquant|décrivant|comment)\\b.{0,80}$",
         sentence_before,

@@ -87,7 +87,7 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
             )
         )
     if (operational_pattern_search(
-        "\\b(ignore|bypass|disable|ignorer?|contourner?|désactiver?).{0,40}\\b(policy|security|restriction|instruction|politique|sécurité|règle)",
+        "\\b(ignore|bypass|disable|ignorer?|contourner?|désactiver?)[^.;!?\\n,]{0,40}\\b(policy|security|restriction|instruction|politique|sécurité|règle)",
         text,
     )):
         findings.append(

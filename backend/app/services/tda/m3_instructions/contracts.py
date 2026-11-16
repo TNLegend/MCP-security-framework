@@ -159,11 +159,32 @@ class M3Report:
         errors=sum(r.status=="ERROR" for r in self.rows)
         applicable=sum(r.status!="NOT_APPLICABLE" for r in self.rows)
         budget_incomplete=any("BUDGET" in reason for reason in self.limitations)
-        language_unverified="LANGUAGE_COVERAGE_UNVERIFIED_NOT_MALICIOUS" in self.limitations
+        domain_rows=[r for r in self.rows
+                     if r.detector_id=="M3_LANGUAGE_SCOPE" and r.status=="INSPECTED"]
+        unqualified_rows=[r for r in domain_rows
+                          if r.detail!="ENGLISH_POSITIVE_CUES_NOT_CERTIFIED"]
+        qualified_english_cues=sum(
+            r.detail=="ENGLISH_POSITIVE_CUES_NOT_CERTIFIED"
+            for r in domain_rows)
+        language_unverified=(bool(unqualified_rows) or
+            "LANGUAGE_COVERAGE_UNVERIFIED_NOT_MALICIOUS" in self.limitations)
         actual={(r.pointer,r.surface_kind,r.view_id,r.detector_id) for r in self.rows}
         planned=set(self.expected_inspections)
         missing_expected=planned-actual
         duplicates=len(actual)!=len(self.rows)
+        # Execution completeness describes only the work that actually ran.
+        # Supported linguistic domain and a threat verdict are independent
+        # dimensions and are never promoted by successful execution.
+        execution_complete=(omitted==0 and errors==0 and applicable>0
+                            and not budget_incomplete and not missing_expected
+                            and not duplicates)
+        domain_status=("NOT_ASSESSED" if not domain_rows else
+                       "UNQUALIFIED_OR_UNKNOWN" if language_unverified else
+                       "ENGLISH_CUES_NOT_CERTIFIED")
+        observed=("OBSERVATION_PRESENT" if (self.raw_signals or self.directives)
+                  else "NO_CANDIDATE_NOT_A_CLEAN_VERDICT")
+        if not execution_complete:
+            observed="INCOMPLETE_INSPECTION_"+observed
         return {
             "schema": self.version, "mode": self.mode, "authority": self.authority,
             "context_id": self.context_id, "source_sha256": self.source_sha256,
@@ -173,7 +194,29 @@ class M3Report:
             "coverage": {
                 "complete": None, "status": "SHADOW_NOT_ASSESSED",
                 "required_incomplete": False,
-                "technical_complete_in_shadow": (omitted==0 and errors==0 and applicable>0 and not budget_incomplete and not missing_expected and not duplicates),
+                "technical_complete_in_shadow": execution_complete,
+                "execution": {
+                    "status":"COMPLETED" if execution_complete else "INCOMPLETE",
+                    "inspected_rows":inspected,"omitted_rows":omitted,"error_rows":errors,
+                    "missing_planned_rows":len(missing_expected),
+                    "duplicate_ledger_rows":duplicates,
+                    "budget_incomplete":budget_incomplete,
+                },
+                "supported_domain": {
+                    "status":domain_status,
+                    "english_cues_not_certified_fields":qualified_english_cues,
+                    "unqualified_or_unknown_fields":len(unqualified_rows),
+                    "qualified_for_general_semantics":False,
+                    "never_skips_deterministic_scan":True,
+                },
+                "result": {
+                    "status":observed,
+                    "source_bound_candidates":sum(s.source_proof is not None
+                         for s in (*self.raw_signals,*self.directives)),
+                    "unlocated_candidates":sum(s.source_proof is None
+                         for s in (*self.raw_signals,*self.directives)),
+                    "clean_verdict":False,
+                },
                 "planned_rows":len(planned),
                 "missing_planned_rows":len(missing_expected),
                 "duplicate_ledger_rows": duplicates,
