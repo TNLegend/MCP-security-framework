@@ -18,6 +18,27 @@ from app.services.tda.m2_structure.metadata_checks import metadata_shape_finding
 from typing import Any
 
 
+def _benign_scanner_description(text: str) -> bool:
+    """Narrow positive grammatical documentary context, not blanket exemption."""
+    import re
+    return bool(re.fullmatch(
+        r"\s*(?:This|The)\s+(?:scanner|detector)\s+"
+        r"(?:flags|detects|reports)\s+attempts\s+to\s+"
+        r"(?:ignore|bypass|disable)\s+(?:security\s+)?"
+        r"(?:policy|restrictions?|checks?|instructions?)\s*\.?\s*",
+        text,re.I))
+
+
+def _benign_authorized_vault_description(text: str) -> bool:
+    """Descriptive vault retrieval is not itself an agent-directed theft order."""
+    import re
+    return bool(re.fullmatch(
+        r"\s*(?:This\s+tool\s+)?Requests\s+an?\s+"
+        r"(?:API\s+)?token\s+from\s+(?:the\s+)?"
+        r"authorized\s+vault\s+service\s*\.?\s*",
+        text,re.I))
+
+
 def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
     import re
 
@@ -37,6 +58,7 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
         )
         and (not _managed_secret_read_only_text(text))
         and (not _caller_supplied_auth_credential_text(text))
+        and (not _benign_authorized_vault_description(text))
     ):
         findings.append(
             _finding(
@@ -57,6 +79,7 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
         )
         and (not _managed_secret_read_only_text(text))
         and (not _caller_supplied_auth_credential_text(text))
+        and (not _benign_authorized_vault_description(text))
     ):
         findings.append(
             _finding(
@@ -86,10 +109,10 @@ def _text_findings(source: str, text: str) -> list[AnalysisFinding]:
                 decision=FINDING_DECISION_BLOCK,
             )
         )
-    if operational_pattern_search(
+    if (operational_pattern_search(
         "\\b(ignore|bypass|disable|ignorer?|contourner?|désactiver?).{0,40}\\b(policy|security|restriction|instruction|politique|sécurité|règle)",
         text,
-    ):
+    ) and not _benign_scanner_description(text)):
         findings.append(
             _finding(
                 "ignore_security_restrictions",

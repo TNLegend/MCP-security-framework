@@ -21,6 +21,7 @@ from app.services.tda.m1_sources.capture import capture_context
 from app.services.tda.m3_instructions.semantic_input import _semantic_input_with_coverage
 from app.services.tda.m7_assessment.m4_advisory import interpret_m4_directives_advisory
 from app.services.tda.m3_instructions.pipeline import run_m3, M2Input, M5Input
+from app.services.tda.m2_structure.views import collect_derived_views
 from app.services.tda.m3_instructions.contracts import shadow_error
 from app.services.tda.m3_instructions.decision_adapter import with_shadow_m3_report
 from app.services.tda.m4_semantics.consumer_contract import project_m4_for_consumers
@@ -104,7 +105,10 @@ def analyze_tool_version(
     # cross-tool resolutions have no attested V0 interface yet, so both are
     # explicitly NOT_EXPOSED / NOT_RESOLVED, never fabricated or promoted.
     try:
-        m3_shadow = run_m3(context, M2Input(), M5Input())
+        m2_views, m2_limits = collect_derived_views(context)
+        m3_shadow = run_m3(context, M2Input(
+            status="M2_ATTESTED_VIEWS", decoded_views=m2_views,
+            transforms_verified=True, limitations=m2_limits), M5Input())
     except Exception as exc:
         # Shadow failures are visible and cannot suppress legacy BLOCK/REVIEW.
         # No untrusted error text or secrets are emitted.

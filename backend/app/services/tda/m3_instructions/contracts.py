@@ -44,7 +44,7 @@ def _pointer_get(root: object, pointer: str) -> object:
 
 @dataclass(frozen=True)
 class SourceProof:
-    """Source-bound text proof. Decoded evidence is never verified as RAW."""
+    """Source-bound proof: TOKEN anchors original raw span, not derived match offsets."""
     kind: Literal["VALUE", "KEY"]
     view_id: str
     source_digest: str
@@ -62,7 +62,7 @@ class SourceProof:
                 or self.source_digest != context.original.sha256):
             raise ValueError("M3_SOURCE_MISMATCH")
         if (type(self.start) is not int or type(self.end) is not int
-                or self.offset_precision != "EXACT"):
+                or self.offset_precision not in ("EXACT", "TOKEN")):
             raise ValueError("M3_UNVERIFIED_OFFSETS")
         if self.kind == "VALUE":
             if self.key is not None:
@@ -136,7 +136,7 @@ class M3Report:
     limitations: tuple[str, ...] = ()
     mode: Literal["SHADOW"] = "SHADOW"
     authority: Literal["AT_MOST_REVIEW_ADVISORY"] = "AT_MOST_REVIEW_ADVISORY"
-    version: Literal["m3-report-lot2-v1"] = "m3-report-lot2-v1"
+    version: Literal["m3-report-lot2-v1", "m3-report-lot3-v1"] = "m3-report-lot2-v1"
     # Not authoritative: shadow ledger does not change global coverage.
     coverage_complete: bool | None = None
 
@@ -147,6 +147,10 @@ class M3Report:
             raise ValueError("M3_SHADOW_COVERAGE_MUST_REMAIN_UNASSESSED")
 
     def to_dict(self) -> dict:
+        inspected=sum(r.status=="INSPECTED" for r in self.rows)
+        omitted=sum(r.status=="NOT_ANALYZED" for r in self.rows)
+        errors=sum(r.status=="ERROR" for r in self.rows)
+        applicable=sum(r.status!="NOT_APPLICABLE" for r in self.rows)
         return {
             "schema": self.version, "mode": self.mode, "authority": self.authority,
             "context_id": self.context_id, "source_sha256": self.source_sha256,
@@ -156,7 +160,10 @@ class M3Report:
             "coverage": {
                 "complete": None, "status": "SHADOW_NOT_ASSESSED",
                 "required_incomplete": False,
-                "note": "No production coverage or decision changes in Lot 2",
+                "technical_complete_in_shadow": (omitted==0 and errors==0 and applicable>0),
+                "inspected_rows": inspected, "omitted_rows": omitted,
+                "error_rows": errors, "applicable_rows": applicable,
+                "note": "Shadow inspection accounting only; not production approval or enforced REQUIRED coverage",
             },
             "limitations": list(self.limitations),
             "security_decision_changes": "NONE",

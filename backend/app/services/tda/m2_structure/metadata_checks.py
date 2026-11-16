@@ -1,5 +1,6 @@
 from __future__ import annotations
 from app.services.tda.types import AnalysisFinding
+from app.services.tda.m2_structure.views import suspicious_invisible_at
 from app.services.tda.findings import _finding
 from app.services.tda.configuration import (
     INVISIBLE_RE,
@@ -15,7 +16,7 @@ def metadata_shape_findings(
     source: str, raw_text: str, text: str
 ) -> list[AnalysisFinding]:
     findings = []
-    if INVISIBLE_RE.search(raw_text):
+    if any(suspicious_invisible_at(raw_text, m.start()) for m in INVISIBLE_RE.finditer(raw_text)):
         findings.append(
             _finding(
                 "unicode_invisible_text",

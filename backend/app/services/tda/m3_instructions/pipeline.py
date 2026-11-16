@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.services.tda.m1_sources.capture import AnalysisContext
+from app.services.tda.m2_structure.views import AttestedView
+from app.services.tda.m3_instructions.lot3_analysis import apply_lot3_shadow
 from app.services.tda.m3_instructions.contracts import (
     M3Report, InspectionRow, InstructionSignal, SourceProof, finding_id,
 )
@@ -29,11 +31,12 @@ M2_CATEGORIES = frozenset({"obfuscation", "hidden_text"})
 class M2Input:
     """Explicit M2 handoff. Existing V0 exposes no independently attested decoded views."""
     status: str = "NOT_EXPOSED_IN_V0"
-    decoded_views: tuple[Any, ...] = ()
+    decoded_views: tuple[AttestedView, ...] = ()
     transforms_verified: bool = False
+    limitations: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.decoded_views and not self.transforms_verified:
+        if self.decoded_views and (not self.transforms_verified or not all(isinstance(v, AttestedView) for v in self.decoded_views)):
             # Do not pretend to inspect decoded text without M2 attestation.
             raise ValueError("M3_M2_UNVERIFIED_DERIVED_INPUT")
 
@@ -150,7 +153,7 @@ def run_m3(context: AnalysisContext, m2: M2Input, m5: M5Input) -> M3Report:
     # Unique source-path/rule occurrence, without the legacy global dedupe
     # key (code, source, summary), which can hide distinct JSON locations.
     distinct = dict((s.finding_id, s) for s in signals)
-    return M3Report(
+    report = M3Report(
         context_id=context.context_id,
         source_sha256=context.original.sha256,
         rows=tuple(ledger),
@@ -158,3 +161,7 @@ def run_m3(context: AnalysisContext, m2: M2Input, m5: M5Input) -> M3Report:
         raw_signals=tuple(distinct.values()),
         limitations=tuple(limitations),
     )
+    if m2.status == "NOT_EXPOSED_IN_V0" and not m2.decoded_views and not m2.limitations:
+        return report  # Lot 2 direct-caller contract preserved verbatim.
+    return apply_lot3_shadow(context, report, derived_views=m2.decoded_views,
+                             m2_limitations=m2.limitations)
