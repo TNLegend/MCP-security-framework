@@ -7,9 +7,8 @@ from app.services.tda.schema_traversal import iter_schema_fields
 from app.services.tda.serialization import _safe_json
 from app.services.tda.types import AnalysisFinding
 from app.services.tda.security_guards.facts import ToolSemanticFacts
-from app.services.tda.text import _annotation_text
-from app.services.tda.findings import _deduplicate_findings
 from app.services.tda.m3_instructions.detectors import _text_findings
+from app.services.tda.m3_instructions.review import legacy_instruction_review_findings
 from app.services.tda.m6_comparison.consistency import capabilities_from_profile
 from app.services.tda.configuration import FINDING_DECISION_REVIEW
 from app.services.tda.configuration import SEMANTIC_CORROBORATION_PATTERNS
@@ -17,12 +16,6 @@ from app.services.tda.findings import _finding
 from app.services.tda.security_guards.risk_support import _semantic_fact_support
 from app.services.tda.m3_instructions.semantic_input import _semantic_text
 from app.services.tda.linguistic_context import operational_pattern_search
-from app.services.tda.claim_context import poisoning_signals, metadata_texts
-from app.services.tda.m3_instructions.quoted_enactment import instruction_concerns, _narrow_post_quote_enactment
-from app.services.tda.security_guards.propositions import extract_propositions
-from app.services.tda.m3_instructions.authority_relation import (
-    extract_priority_relations,
-)
 from app.services.tda.security_guards.transfer_relation import positive_external_transfers
 from typing import Any
 
@@ -37,11 +30,6 @@ def _contextual_security_review_findings(
     facts extracted from the tool metadata/schema. They never BLOCK by themselves.
     """
     text = _semantic_text(tool_snapshot)
-    poisoning = [
-        (path, signal)
-        for path, value in metadata_texts(tool_snapshot)
-        for signal in poisoning_signals(value)
-    ]
     checks = {
         "prompt_injection": (
             "contextual_prompt_injection",
@@ -119,57 +107,7 @@ def _contextual_security_review_findings(
             "Use fixed executable/argument templates and reject untrusted command construction.",
         ),
     }
-    findings: list[AnalysisFinding] = []
-    for relation in extract_priority_relations(tool_snapshot)["relations"]:
-        first = relation["evidence"][0]
-        finding = _finding(
-            "agent_instruction_priority_spoof",
-            "prompt_injection",
-            first["source_path"],
-            "high",
-            90,
-            "Tool metadata claims its instructions outrank earlier instructions for the agent.",
-            "Reject instructions promoting untrusted tool messages above prior trusted instructions.",
-            decision=FINDING_DECISION_REVIEW,
-        )
-        finding.evidence["instruction_authority_relation"] = {
-            "addressee": relation["addressee"],
-            "promoted_source": relation["promoted_source"],
-            "displaced_source": relation["displaced_source"],
-            "operator": relation["operator"],
-            "evidence": relation["evidence"],
-            "creates_permissions": False,
-        }
-        findings.append(finding)
-    for concern in explicit_instruction_review(tool_snapshot):
-        detail = concern["evidence"][0]
-        instruction_finding = _finding(
-            "agent_directed_unreviewed_action",
-            "prompt_injection",
-            detail["source_path"],
-            "high",
-            90,
-            concern["claim"],
-            "Review caller-directed concealed actions and enacted quotations independently of tool permissions.",
-            decision=FINDING_DECISION_REVIEW,
-        )
-        instruction_finding.evidence.update(
-            reason=concern["code"], spans=concern["evidence"]
-        )
-        findings.append(instruction_finding)
-    if poisoning:
-        findings.append(
-            _finding(
-                "agent_directed_hidden_transfer",
-                "prompt_injection",
-                poisoning[0][0],
-                "high",
-                92,
-                "Metadata directs the agent to collect and transfer content while concealing the action.",
-                "Remove agent-directed hidden actions; require explicit reviewed tool behavior.",
-                decision=FINDING_DECISION_REVIEW,
-            )
-        )
+    findings: list[AnalysisFinding] = legacy_instruction_review_findings(tool_snapshot)
     for category, (code, evidence, recommendation) in checks.items():
         patterns = SEMANTIC_CORROBORATION_PATTERNS.get(category, ())
         if not any((operational_pattern_search(pattern, text) for pattern in patterns)):
@@ -226,15 +164,8 @@ def _schema_findings(
 
 
 def explicit_instruction_review(snapshot: dict) -> list[dict]:
-    """Promoted narrow guard. Advisory engine failures remain independently isolated.
-
-    Broad uncertain-effect abstention and cross-tool classification are NOT
-    promoted here. Only action concealment and explicit quotation enactment
-    warrant this independent instruction review.
-    """
-    trusted = [
-        c
-        for c in instruction_concerns(extract_propositions(snapshot))
-        if c["code"] in {"agent_conceals_action", "agent_enacts_quoted_instruction"}
-    ]
-    return trusted + _narrow_post_quote_enactment(snapshot)
+    """Historical M7 entrypoint; M3 owns instruction review from Lot 2 onward."""
+    from app.services.tda.m3_instructions.review import (
+        explicit_instruction_review as m3_explicit_instruction_review,
+    )
+    return m3_explicit_instruction_review(snapshot)

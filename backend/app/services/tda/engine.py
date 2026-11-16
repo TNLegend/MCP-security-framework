@@ -19,7 +19,10 @@ from app.services.tda.findings import _deduplicate_findings, _finding, _finding_
 from app.services.tda.detectors import deterministic_findings
 from app.services.tda.m1_sources.capture import capture_context
 from app.services.tda.m3_instructions.semantic_input import _semantic_input_with_coverage
-from app.services.tda.m3_instructions.detectors import interpret_m4_directives_advisory
+from app.services.tda.m7_assessment.m4_advisory import interpret_m4_directives_advisory
+from app.services.tda.m3_instructions.pipeline import run_m3, M2Input, M5Input
+from app.services.tda.m3_instructions.contracts import shadow_error
+from app.services.tda.m3_instructions.decision_adapter import with_shadow_m3_report
 from app.services.tda.m4_semantics.consumer_contract import project_m4_for_consumers
 from app.services.tda.m6_comparison.consistency import (
     inspect_m4_operations_advisory, consistency_result_from_m4, consistency_result,
@@ -97,6 +100,15 @@ def analyze_tool_version(
     # competing M4 neural predictor and never runtime authorization.
     guard_facts = extract_deterministic_safety_facts(snapshot)
     findings = deterministic_findings(snapshot, profile, semantic_facts=guard_facts)
+    # Lot 2: independent shadow observation only. M2's decoded views and M5's
+    # cross-tool resolutions have no attested V0 interface yet, so both are
+    # explicitly NOT_EXPOSED / NOT_RESOLVED, never fabricated or promoted.
+    try:
+        m3_shadow = run_m3(context, M2Input(), M5Input())
+    except Exception as exc:
+        # Shadow failures are visible and cannot suppress legacy BLOCK/REVIEW.
+        # No untrusted error text or secrets are emitted.
+        m3_shadow = shadow_error(context, type(exc).__name__)
 
     # M6 retains its original capability/contract verification and E5-based
     # drift implementation. M4 hypotheses are attached advisory-only.
@@ -183,7 +195,7 @@ def analyze_tool_version(
             }
         },
     }
-    return {
+    legacy_result = {
         "analysis_status": status,
         "risk_score": risk_score,
         "risk_level": risk_level,
@@ -244,3 +256,4 @@ def analyze_tool_version(
         },
         "findings": findings,
     }
+    return with_shadow_m3_report(legacy_result, m3_shadow)

@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.models.mcp_tool import MCPTool
 from app.services.tda.m4_semantics.consumer_contract import project_m4_for_consumers
-from app.services.tda.m3_instructions.detectors import interpret_m4_directives_advisory
+from app.services.tda.m7_assessment.m4_advisory import interpret_m4_directives_advisory
 from app.services.tda.m6_comparison.consistency import inspect_m4_operations_advisory
 from app.services.tda.m7_assessment.reduction import summarize_m4_evidence_advisory
 from app.services.tda_application.m4_pipeline_integrity import configured_m4_identity
