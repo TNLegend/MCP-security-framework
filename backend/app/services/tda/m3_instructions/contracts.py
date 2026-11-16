@@ -117,6 +117,10 @@ class InstructionSignal:
     scope: str = "UNRESOLVED"
     source_proof: SourceProof | None = None
     detail: str = "LEGACY_RULE_WITHOUT_EXACT_MATCH_OFFSETS"
+    proposition_id: str = "UNKNOWN"
+    requested_action: str = "UNKNOWN"
+    target: str = "UNKNOWN"
+    uncertainty_reasons: tuple[str,...] = ()
 
     def __post_init__(self):
         if self.support not in ("MECHANICAL_VERIFIED", "LINGUISTICALLY_SUPPORTED",
@@ -134,9 +138,12 @@ class M3Report:
     directives: tuple[InstructionSignal, ...] = ()
     raw_signals: tuple[InstructionSignal, ...] = ()
     limitations: tuple[str, ...] = ()
+    # Expected inspection keys are declared from M1/M2 inputs before scanning,
+    # not inferred from whichever detector happened to emit a ledger row.
+    expected_inspections: tuple[tuple[str,str,str,str], ...] = ()
     mode: Literal["SHADOW"] = "SHADOW"
     authority: Literal["AT_MOST_REVIEW_ADVISORY"] = "AT_MOST_REVIEW_ADVISORY"
-    version: Literal["m3-report-lot2-v1", "m3-report-lot3-v1"] = "m3-report-lot2-v1"
+    version: Literal["m3-report-lot2-v1", "m3-report-lot3-v1", "m3-report-prelot5-v1"] = "m3-report-lot2-v1"
     # Not authoritative: shadow ledger does not change global coverage.
     coverage_complete: bool | None = None
 
@@ -153,6 +160,10 @@ class M3Report:
         applicable=sum(r.status!="NOT_APPLICABLE" for r in self.rows)
         budget_incomplete=any("BUDGET" in reason for reason in self.limitations)
         language_unverified="LANGUAGE_COVERAGE_UNVERIFIED_NOT_MALICIOUS" in self.limitations
+        actual={(r.pointer,r.surface_kind,r.view_id,r.detector_id) for r in self.rows}
+        planned=set(self.expected_inspections)
+        missing_expected=planned-actual
+        duplicates=len(actual)!=len(self.rows)
         return {
             "schema": self.version, "mode": self.mode, "authority": self.authority,
             "context_id": self.context_id, "source_sha256": self.source_sha256,
@@ -162,7 +173,10 @@ class M3Report:
             "coverage": {
                 "complete": None, "status": "SHADOW_NOT_ASSESSED",
                 "required_incomplete": False,
-                "technical_complete_in_shadow": (omitted==0 and errors==0 and applicable>0 and not budget_incomplete),
+                "technical_complete_in_shadow": (omitted==0 and errors==0 and applicable>0 and not budget_incomplete and not missing_expected and not duplicates),
+                "planned_rows":len(planned),
+                "missing_planned_rows":len(missing_expected),
+                "duplicate_ledger_rows": duplicates,
                 "budget_incomplete": budget_incomplete,
                 "language_coverage": "UNVERIFIED" if language_unverified else "ENGLISH_FIRST_NOT_LANGUAGE_DETECTED",
                 "semantic_complete": False,

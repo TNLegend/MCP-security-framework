@@ -42,11 +42,15 @@ RULES = (
 )
 # English-first. Unknown languages are tracked as coverage limitations, not
 # evidence of attacker intent.
-DOCUMENTARY = re.compile(
-    r"\b(?:scanner|detector|security\s+report|documentation|tutorial|"
-    r"example|explanation|educational|flags?\s+attempts?|detects?|"
-    r"prevents?|quotes?|quoted\s+phrase|protects?\s+against|"
-    r"describes?\s+(?:a\s+)?(?:threat|attack))\b", re.I)
+# A documentary word somewhere *nearby* is NOT an exemption. Only a
+# grammatical governor in the same clause can classify the rule match as
+# merely described/quoted. The quote matcher in claim_context remains intact.
+DOCUMENTARY_GOVERNOR = re.compile(
+    r"\b(?:detects?|flags?|prevents?|quotes?|documents?|describes?|"
+    r"explains?|search(?:es)?\s+for|matches?)\s+"
+    r"(?:attempts?\s+to\s+|an?\s+(?:example|attack|attempt)\s+(?:to\s+|of\s+)?"
+    r"|a\s+quoted\s+(?:phrase|instruction)\s+|"
+    r"(?:the\s+)?(?:literal|quoted)\s+(?:phrase|text)\s+)?$",re.I)
 ENACT_QUOTE = re.compile(
     r"\b(?:then|now|after\s+that)\s+(?:follow|obey|execute|perform|apply)\b", re.I)
 RULE_TRIGGER = re.compile(
@@ -66,7 +70,11 @@ class SpanCandidate:
 
 
 def _protected(text: str, start: int, end: int) -> bool:
-    prefix=text[max(0,start-180):start]
+    # Source-bound local clause only: previous sentences cannot protect a
+    # subsequent independent imperative. Do not propagate a negation across
+    # sentence or semicolon boundaries.
+    sentence_start=max(text.rfind(ch,0,start) for ch in (".",";","!","?","\n"))+1
+    prefix=text[max(sentence_start,start-180):start]
     mode=claim_mode(text,start,end)
     if mode in ("NEGATED","HYPOTHETICAL"):
         return True
@@ -75,7 +83,7 @@ def _protected(text: str, start: int, end: int) -> bool:
     enacted=bool(ENACT_QUOTE.search(follow))
     if mode=="QUOTED" and not enacted:
         return True
-    if DOCUMENTARY.search(prefix) and not enacted:
+    if DOCUMENTARY_GOVERNOR.search(prefix) and not enacted:
         return True
     # Describing a tool that detects forbidden phrases is not directing
     # an agent to carry out those phrases.
