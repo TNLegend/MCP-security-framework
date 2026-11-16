@@ -18,6 +18,7 @@ from app.services.tda.m3_instructions.contracts import (
 from app.services.tda.m3_instructions.span_rules import exact_directive_candidates
 from app.services.tda.m3_instructions.response_manipulation import response_directive_candidates
 from app.services.tda.m3_instructions.language_scope import language_scope
+from app.services.tda.m3_instructions.framing import derived_source_frame
 from app.services.tda.m3_instructions.surfaces import original_surfaces
 
 def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
@@ -65,9 +66,14 @@ def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
     # *every* applicable raw VALUE, including languages written in Latin.
     # Latin-only text is never certified English by this lightweight check.
     for surface in surfaces:
-        if surface.kind=="VALUE":
+        language_text=surface.kind=="VALUE" and (
+            surface.pointer.rsplit("/",1)[-1].lower() in (
+                "description","instructions","instruction","prompt","message",
+                "content","summary","text","help")
+        )
+        if language_text:
             scope=language_scope(surface.text)
-            unsupported=scope!="ENGLISH_FIRST_NO_LANGUAGE_ID"
+            unsupported=scope!="ENGLISH_POSITIVE_CUES_NOT_CERTIFIED"
             if unsupported and "LANGUAGE_COVERAGE_UNVERIFIED_NOT_MALICIOUS" not in limitations:
                 limitations.append("LANGUAGE_COVERAGE_UNVERIFIED_NOT_MALICIOUS")
             new_rows.append(InspectionRow(
@@ -79,7 +85,7 @@ def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
             new_rows.append(InspectionRow(
                 surface.pointer,surface.kind,surface.view_id,
                 "M3_LANGUAGE_SCOPE","SHADOW","NOT_APPLICABLE",
-                "SCHEMA_KEYS_ARE_NOT_LANGUAGE_IDENTIFICATION",
+                "NOT_NATURAL_LANGUAGE_SURFACE_OR_SCHEMA_KEY",
                 surface.text_sha256))
 
     scanned_count=0
@@ -130,7 +136,21 @@ def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
         # Proposition-aware response redirection. Never interpret a schema
         # key as a user-facing action or grant authorization from its wording.
         if surface.kind=="VALUE":
-            for candidate in response_directive_candidates(surface.text):
+            try:
+                response_candidates=response_directive_candidates(surface.text)
+            except (ValueError, RuntimeError) as exc:
+                response_candidates=()
+                limitations.append("M3_RESPONSE_FIELD_ERROR")
+                new_rows.append(InspectionRow(
+                    surface.pointer,surface.kind,surface.view_id,
+                    "M3_RESPONSE_RELATIONS","SHADOW","ERROR",
+                    type(exc).__name__+":"+str(exc)[:70],surface.text_sha256))
+            else:
+                new_rows.append(InspectionRow(
+                    surface.pointer,surface.kind,surface.view_id,
+                    "M3_RESPONSE_RELATIONS","SHADOW","INSPECTED",
+                    "PROPOSITION_ANCHORED_SOURCE_OFFSETS",surface.text_sha256))
+            for candidate in response_candidates:
                 hit=candidate.span
                 proof=SourceProof(
                     kind="VALUE",view_id=surface.view_id,
@@ -138,7 +158,8 @@ def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
                     pointer=surface.pointer,
                     start=hit.start,end=hit.end,excerpt=hit.excerpt)
                 proof.verify(context)
-                new_directives.append(InstructionSignal(
+                target_list=new_directives if candidate.directive_eligible else new_signals
+                target_list.append(InstructionSignal(
                     finding_id=finding_id(hit.rule_id,surface.pointer,
                                           hit.start,hit.end,surface.view_id),
                     rule_id=hit.rule_id,pointer=surface.pointer,
@@ -155,11 +176,6 @@ def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
                     target=candidate.target,
                     uncertainty_reasons=candidate.uncertainty_reasons,
                 ))
-            new_rows.append(InspectionRow(
-                surface.pointer,surface.kind,surface.view_id,
-                "M3_RESPONSE_RELATIONS","SHADOW","INSPECTED",
-                "PROPOSITION_ANCHORED_SOURCE_OFFSETS",
-                surface.text_sha256))
         else:
             new_rows.append(InspectionRow(
                 surface.pointer,surface.kind,surface.view_id,
@@ -183,17 +199,10 @@ def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
         # The raw source can explicitly quote/negate a dangerous decoded
         # example. M2 attesting a transform does not erase that framing.
         raw=original_text_by_pointer.get((view.pointer,view.source_kind),"")
-        preceding=raw[max(0,view.start-200):view.start]
-        after=raw[view.end:min(len(raw),view.end+120)]
-        protective=bool(re.search(
-            r"\b(?:never\s+(?:execute|obey|follow)|do\s+not\s+(?:execute|obey|follow)"
-            r"|display\s+(?:it\s+)?only|do\s+not\s+run|security\s+example)\b",
-            preceding+" "+after,re.I))
-        enacted=bool(re.search(
-            r"\b(?:then|now)\s+(?:execute|follow|obey|run)\b",
-            preceding+" "+after,re.I))
-        if protective and not enacted:
-            matches=()
+        source_context_frame=derived_source_frame(raw,view.start,view.end)
+        # A documentary or negated context downgrades the signal's framing.
+        # Never discard the mechanically attested M2 evidence; an unrelated
+        # earlier "Security example." sentence cannot mask an attack.
         for hit in matches:
             # The proof attests the ORIGINAL enclosing encoded/normalized
             # span. Derived offsets below are NOT ORIGINAL character offsets.
@@ -214,7 +223,7 @@ def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
                 view_id=view.view_id,support="LINGUISTICALLY_SUPPORTED",
                 claimed_authority="UNRESOLVED",addressee=hit.addressee,
                 activation_context="UNRESOLVED",
-                framing=hit.framing,scope="DERIVED_M2_ATTESTED",
+                framing=(source_context_frame if source_context_frame!="INSTRUCTION" else hit.framing),scope="DERIVED_M2_ATTESTED",
                 source_proof=original,
                 detail=("M2_"+view.transform+
                         "_SOURCE_TOKEN_ATTESTED_DERIVED_OFFSETS_ONLY_"
@@ -223,15 +232,28 @@ def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
         new_rows.append(InspectionRow(
             view.pointer,view.source_kind,view.view_id,
             "M3_DERIVED_DIRECTIVES","SHADOW","INSPECTED",
-            ("M2_ATTESTED_PROTECTIVE_SOURCE_NO_DIRECTIVE" if protective and not enacted else
+            ("M2_ATTESTED_CONTEXT_DOCUMENTARY_EVIDENCE_RETAINED" if source_context_frame!="INSTRUCTION" else
              "M2_ATTESTED_TOKEN_ORIGIN_NOT_DERIVED_CHARACTER_OFFSETS"),
             view.source_digest,True))
         # Explicitly consume the same M2-attested derived scope for
         # response manipulation; proofs remain enclosing ORIGINAL TOKEN
         # spans, never fake exact offsets in decoded text.
         if view.source_kind=="VALUE":
-            response_candidates=() if protective and not enacted else (
-                response_directive_candidates(view.derived_text))
+            try:
+                response_candidates=response_directive_candidates(view.derived_text)
+            except (ValueError,RuntimeError) as exc:
+                response_candidates=()
+                limitations.append("M3_DERIVED_RESPONSE_FIELD_ERROR")
+                new_rows.append(InspectionRow(
+                    view.pointer,view.source_kind,view.view_id,
+                    "M3_DERIVED_RESPONSE_RELATIONS","SHADOW","ERROR",
+                    type(exc).__name__+":"+str(exc)[:70],view.source_digest,True))
+            else:
+                new_rows.append(InspectionRow(
+                    view.pointer,view.source_kind,view.view_id,
+                    "M3_DERIVED_RESPONSE_RELATIONS","SHADOW","INSPECTED",
+                    "SOURCE_TOKEN_VERIFIED_DERIVED_MATCH_OFFSETS_NOT_RAW",
+                    view.source_digest,True))
             for response in response_candidates:
                 hit=response.span
                 proof=SourceProof(
@@ -240,7 +262,8 @@ def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
                     start=view.start,end=view.end,excerpt=view.original_excerpt,
                     offset_precision="TOKEN")
                 proof.verify(context)
-                new_directives.append(InstructionSignal(
+                target_list=(new_directives if response.directive_eligible and source_context_frame=="INSTRUCTION" else new_signals)
+                target_list.append(InstructionSignal(
                     finding_id=finding_id(hit.rule_id,view.pointer,
                                           view.start,view.end,view.view_id)
                                +":r"+str(hit.start)+":"+str(hit.end),
@@ -248,18 +271,13 @@ def apply_lot3_shadow(context: AnalysisContext, baseline: M3Report,
                     view_id=view.view_id,
                     support="LINGUISTICALLY_SUPPORTED",
                     addressee=hit.addressee,
-                    framing=hit.framing,scope="DERIVED_M2_ATTESTED",
+                    framing=(source_context_frame if source_context_frame!="INSTRUCTION" else hit.framing),scope="DERIVED_M2_ATTESTED",
                     source_proof=proof,
                     detail="M2_ATTESTED_SOURCE_TOKEN_DERIVED_RESPONSE_RELATION",
                     proposition_id=response.proposition_id,
                     requested_action=response.action,target=response.target,
                     uncertainty_reasons=response.uncertainty_reasons,
                 ))
-            new_rows.append(InspectionRow(
-                view.pointer,view.source_kind,view.view_id,
-                "M3_DERIVED_RESPONSE_RELATIONS","SHADOW","INSPECTED",
-                "SOURCE_TOKEN_VERIFIED_DERIVED_MATCH_OFFSETS_NOT_RAW",
-                view.source_digest,True))
         else:
             new_rows.append(InspectionRow(
                 view.pointer,view.source_kind,view.view_id,

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from app.services.tda.claim_context import claim_mode
+from app.services.tda.m3_instructions.framing import source_frame
 
 # Narrow, positive patterns; no generic 'must', 'always' or 'before using'
 # detector. Legitimate usage guidance remains non-malicious.
@@ -69,28 +69,6 @@ class SpanCandidate:
     addressee: str = "UNKNOWN"
 
 
-def _protected(text: str, start: int, end: int) -> bool:
-    # Source-bound local clause only: previous sentences cannot protect a
-    # subsequent independent imperative. Do not propagate a negation across
-    # sentence or semicolon boundaries.
-    sentence_start=max(text.rfind(ch,0,start) for ch in (".",";","!","?","\n"))+1
-    prefix=text[max(sentence_start,start-180):start]
-    mode=claim_mode(text,start,end)
-    if mode in ("NEGATED","HYPOTHETICAL"):
-        return True
-    # A quote that is subsequently told to be enacted stays operative.
-    follow=text[end:min(len(text),end+180)]
-    enacted=bool(ENACT_QUOTE.search(follow))
-    if mode=="QUOTED" and not enacted:
-        return True
-    if DOCUMENTARY_GOVERNOR.search(prefix) and not enacted:
-        return True
-    # Describing a tool that detects forbidden phrases is not directing
-    # an agent to carry out those phrases.
-    if re.search(r"\b(?:detects?|flags?|prevents?|recognizes?)\s+(?:attempts?\s+to\s+)?$",prefix,re.I) and not enacted:
-        return True
-    return False
-
 
 def exact_directive_candidates(text: str, *, key: bool = False) -> tuple[SpanCandidate,...]:
     # KEY names like "ignore_previous_security_instructions" are attack-like
@@ -108,12 +86,11 @@ def exact_directive_candidates(text: str, *, key: bool = False) -> tuple[SpanCan
     all_hits=[]
     for rule, pattern in RULES:
         for match in pattern.finditer(probe):
-            if _protected(probe,match.start(),match.end()):
-                continue
+            frame=source_frame(probe,match.start(),match.end())
             all_hits.append(SpanCandidate(
                 rule_id=rule,start=match.start(),end=match.end(),
                 excerpt=text[match.start():match.end()],
-                framing="INSTRUCTION" if not key else "SCHEMA_KEY_INJECTION_CANDIDATE",
+                framing=frame if not key else "SCHEMA_KEY_INJECTION_CANDIDATE",
                 addressee="AGENT" if re.search(
                     r"\b(?:you|assistant|agent|model)\b",probe[:match.end()+30],re.I) else "UNKNOWN",
             ))

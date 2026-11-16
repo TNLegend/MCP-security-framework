@@ -13,7 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
-from app.services.tda.claim_context import claim_mode, quotation_spans
+from app.services.tda.claim_context import quotation_spans
+from app.services.tda.m3_instructions.framing import source_frame
 from app.services.tda.security_guards.propositions import extract_propositions
 from app.services.tda.m3_instructions.span_rules import SpanCandidate
 
@@ -36,10 +37,10 @@ EXACT_CONTENT = re.compile(
 RECOMMEND = re.compile(r"\b(?:recommend|suggest|advise)\b",re.I)
 PACKAGE = re.compile(r"\b(?:install(?:ing)?|packages?|plugins?|libraries?|tools?|products?)\b",re.I)
 UNSOLICITED = re.compile(
-    r"\b(?:even\s+if|regardless\s+of|without\s+(?:being\s+)?asked|"
+    r"\b(?:even\s+if\s+(?:the\s+)?user\s+(?:did\s+not|does\s+not)|regardless\s+of\s+(?:the\s+)?user(?:\x27s|\s+)?\s+question|without\s+(?:being\s+)?asked|"
     r"not\s+(?:ask(?:ed)?|request(?:ed)?)|did\s+not\s+ask|"
     r"without\s+(?:an?\s+)?(?:explicit\s+)?user\s+request|"
-    r"whether\s+or\s+not)\b",re.I)
+    r"whether\s+or\s+not\s+(?:the\s+)?user\s+(?:asked|requested))\b",re.I)
 RELIABILITY = re.compile(
     r"\b(?:verified|authoritative|authenticated|certified|fully\s+trusted|"
     r"most\s+reliable|most\s+trusted|trusted\s+over|"
@@ -54,6 +55,13 @@ DOCUMENTARY_ACTION_GOVERNOR = re.compile(
     r"(?:how\s+(?:an?\s+)?(?:attacker|adversary|malicious\s+user)\s+"
     r"(?:may|might|can|could)\s+|attempts?\s+to\s+|examples?\s+of\s+)?$",
     re.I)
+AGENT_ANCHOR = re.compile(
+    r"\b(?:you|your\s+assistant|assistant|agent|to\s+the\s+user|"
+    r"when\s+(?:answering\b|this\s+tool\s+is\s+(?:used|called)|"
+    r"using\s+this\s+tool|answering\s+the\s+user|"
+    r"presenting\s+information\s+from\s+this\s+tool)|"
+    r"final\s+(?:answer|response|message)|"
+    r"user-facing\s+(?:answer|response|message))\b",re.I)
 TRUST_PRESSURE = re.compile(
     r"\b(?:ignoring|disregarding|not\s+using)\b.{0,85}?"
     r"\b(?:tool(?:'s)?\s+(?:output|result)|this\s+tool)\b"
@@ -66,6 +74,7 @@ class ResponseCandidate:
     action: str
     target: str
     uncertainty_reasons: tuple[str,...] = ()
+    directive_eligible: bool = False
 
 
 def _end_of_statement(raw: str, begin: int) -> int:
@@ -97,7 +106,7 @@ def _classify(raw: str, start: int, end: int):
     if re.match(r"(?:state|say|claim|present|describe|label)\b",chunk,re.I):
         if RELIABILITY.search(joined) and RELIABILITY_QUALIFIER.search(joined):
             return ("response_source_reliability_spoof","claim","SOURCE_RELIABILITY",())
-        if RELIABILITY.search(joined) and re.search(
+        if RELIABILITY.search(joined) and re.search(r"\b(?:this\s+tool|(?:other\s+)?sources?)\b",joined,re.I) and re.search(
             r"\b(?:most\s+reliable|most\s+trusted|trusted\s+over|outranks?)\b",joined,re.I):
             return ("response_source_priority_spoof","claim","SOURCE_PRIORITY",())
     if re.match(r"warn\b",chunk,re.I):
@@ -150,11 +159,9 @@ def response_directive_candidates(raw: str) -> tuple[ResponseCandidate,...]:
         # A preceding sentence cannot exempt an unrelated later imperative.
         same_sentence=raw[max(0,max(raw.rfind(c,0,begin)
                       for c in ".;!?\n")+1):begin]
+        local_frame=source_frame(raw,begin,begin+len(action.group()))
         if DOCUMENTARY_ACTION_GOVERNOR.search(same_sentence):
-            continue
-        if claim_mode(raw,begin,begin+len(action.group())) in (
-                "NEGATED","HYPOTHETICAL","QUOTED"):
-            continue
+            local_frame="DOCUMENTARY"
         stop=_end_of_statement(raw,begin)
         if stop<=begin:
             continue
@@ -166,13 +173,21 @@ def response_directive_candidates(raw: str) -> tuple[ResponseCandidate,...]:
         if key in found:
             continue
         found.add(key)
+        # An unanchored expression may describe tool output or formatting.
+        # Keep it as a candidate, never an established agent directive.
+        context=same_sentence+" "+raw[begin:stop]
+        anchor=bool(AGENT_ANCHOR.search(context)) and local_frame=="INSTRUCTION"
         candidates.append(ResponseCandidate(
             span=SpanCandidate(rule_id=rule,start=begin,end=stop,
                 excerpt=raw[begin:stop],
-                framing="CONTEXT_DEPENDENT" if uncertainty else "INSTRUCTION",
-                addressee="AGENT_OR_ASSISTANT_INFERRED"),
+                framing=(local_frame if local_frame!="INSTRUCTION" else
+                         ("CONTEXT_DEPENDENT" if uncertainty or not anchor
+                          else "INSTRUCTION")),
+                addressee="AGENT_OR_ASSISTANT_INFERRED" if anchor else "UNKNOWN"),
             proposition_id=prop["id"]+"@"+str(window_start),
             action=verb,target=target,
-            uncertainty_reasons=uncertainty,
+            uncertainty_reasons=uncertainty if anchor else
+                tuple((*uncertainty,"AGENT_ADDRESSEE_UNVERIFIED")),
+            directive_eligible=anchor,
         ))
     return tuple(candidates)
