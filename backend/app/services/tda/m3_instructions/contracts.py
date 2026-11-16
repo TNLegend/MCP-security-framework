@@ -151,6 +151,8 @@ class M3Report:
         omitted=sum(r.status=="NOT_ANALYZED" for r in self.rows)
         errors=sum(r.status=="ERROR" for r in self.rows)
         applicable=sum(r.status!="NOT_APPLICABLE" for r in self.rows)
+        budget_incomplete=any("BUDGET" in reason for reason in self.limitations)
+        language_unverified="LANGUAGE_COVERAGE_UNVERIFIED_NOT_MALICIOUS" in self.limitations
         return {
             "schema": self.version, "mode": self.mode, "authority": self.authority,
             "context_id": self.context_id, "source_sha256": self.source_sha256,
@@ -160,7 +162,10 @@ class M3Report:
             "coverage": {
                 "complete": None, "status": "SHADOW_NOT_ASSESSED",
                 "required_incomplete": False,
-                "technical_complete_in_shadow": (omitted==0 and errors==0 and applicable>0),
+                "technical_complete_in_shadow": (omitted==0 and errors==0 and applicable>0 and not budget_incomplete),
+                "budget_incomplete": budget_incomplete,
+                "language_coverage": "UNVERIFIED" if language_unverified else "ENGLISH_FIRST_NOT_LANGUAGE_DETECTED",
+                "semantic_complete": False,
                 "inspected_rows": inspected, "omitted_rows": omitted,
                 "error_rows": errors, "applicable_rows": applicable,
                 "note": "Shadow inspection accounting only; not production approval or enforced REQUIRED coverage",
