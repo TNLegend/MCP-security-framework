@@ -39,6 +39,7 @@ class ProcessClient:
         self._child: subprocess.Popen[bytes] | None = None
         self._response_queue: Queue[bytes | None] | None = None
         self._owner_pid = os.getpid()
+        self._last_tree_kill_confirmed: bool | None = None
 
     def _close_locked(self) -> None:
         child = self._child
@@ -46,9 +47,29 @@ class ProcessClient:
         self._response_queue = None
         if child is None:
             return
+        self._last_tree_kill_confirmed = None
         try:
             if child.poll() is None:
-                child.kill()
+                if os.name == "nt" and isinstance(child, subprocess.Popen):
+                    # Windows venv python.exe can be a small redirector that
+                    # launches the real Python/PyTorch interpreter as a child.
+                    # Killing only Popen.pid would leave that model process
+                    # running after a hard timeout. Kill the entire tree.
+                    try:
+                        completed = subprocess.run(
+                            ["taskkill", "/PID", str(child.pid), "/T", "/F"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=8, check=False, shell=False,
+                            creationflags=subprocess.CREATE_NO_WINDOW,
+                        )
+                        self._last_tree_kill_confirmed = completed.returncode == 0
+                    except (OSError, subprocess.TimeoutExpired):
+                        self._last_tree_kill_confirmed = False
+                if child.poll() is None:
+                    # Fallback is only a parent kill, NEVER proof of a
+                    # descendant-tree termination.
+                    child.kill()
             child.wait(timeout=2)
         except (OSError, subprocess.TimeoutExpired):
             pass
@@ -178,6 +199,12 @@ class ProcessClient:
                     IsolatedShadowWorkerFailure) as exc:
                 self._close_locked()
                 if isinstance(exc, IsolatedShadowWorkerFailure):
+                    if (str(exc) == "HARD_TIMEOUT_CHILD_KILLED"
+                            and os.name == "nt"
+                            and self._last_tree_kill_confirmed is False):
+                        raise IsolatedShadowWorkerFailure(
+                            "HARD_TIMEOUT_TREE_KILL_NOT_CONFIRMED"
+                        ) from None
                     raise
                 raise IsolatedShadowWorkerFailure("IPC_TRANSPORT_FAILURE") from None
 
@@ -190,6 +217,8 @@ class ProcessClient:
                 "torch_threads_per_child": 4,
                 "hard_inference_timeout_seconds": CHILD_TIMEOUT_SECONDS,
                 "kill_child_on_hard_timeout": True,
+                "windows_tree_kill_on_timeout": os.name == "nt",
+                "last_tree_kill_confirmed": self._last_tree_kill_confirmed,
                 "memory_hard_limit_enforced": False,
                 "os_privilege_sandbox": False,
             }
