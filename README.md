@@ -45,9 +45,16 @@ The installed model resides at `.runtime/models/m3_prompt_guard2_v3/` (never
 committed). Its full model SHA-256 is
 `5751dd3a08fad1178d835941a8ad98e019aadcdb6dcfd54a616d9908b0204bf8`.
 For isolated **research QA only**, set `M3_PG2_V3_SHADOW_ENABLED=true`.
-The detector then appends a source-bound `m3_report.neural_shadow` score for
-raw English `/description` only, recording non-English, token-budget and
-model-loading errors as incomplete analysis. Normal startup remains unchanged
+Since Phase 3 Lot B2, the engine returns a source-bound
+`m3_report.neural_shadow` **PENDING** ticket without performing any Torch
+inference in the request thread. One bounded in-process daemon worker later
+produces a score. Internal QA can retrieve its result using
+`lookup_v3_neural_shadow_job(job_id, source_sha256=...)`; results expire and
+are lost on restart. No externally accessible result endpoint is installed.
+Queue overflow, unknown language, deadlines and worker failures are
+incomplete/unknown, never benign. This research queue is not crash-isolated:
+soft deadlines do **not** forcibly stop a hung Torch computation. Do not
+activate on production gateways without a separately qualified worker. Normal startup remains unchanged
 when no local V3 source is configured. CPU cold load and synchronous latency
 have not passed the Phase 3 Lot B gate; do not enable on a production gateway.
 Existing deterministic decisions and M1/M2/M4/M6/M7 authority boundaries remain
