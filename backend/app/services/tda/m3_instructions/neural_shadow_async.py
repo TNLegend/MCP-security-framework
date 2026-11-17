@@ -1,13 +1,10 @@
 """Bounded, opt-in, research-only Prompt Guard 2 V3 async SHADOW queue.
 
-A single in-process daemon worker performs ALL model loading and inference.
-The TDA request thread only does bounded source preflight and enqueues with
-put_nowait. Result lookup requires opaque job ID plus original M1 source SHA.
-
-This is *not* a hard resource-isolated worker: Torch CPU work can contend with
-the host and soft deadlines do not terminate a wedged inference. Results and
-queued texts exist only in this process and are lost on restart. Do not enable
-on production gateways until a separately qualified, isolated worker exists.
+A local daemon orchestrator submits to a persistent, separate inference
+subprocess with hard 90-second kill on timeout. Model loading runs outside the
+Gateway process, with four Torch threads in child only. No model score can
+affect policy. This is still NOT an OS privilege or memory-hard-limit sandbox.
+Tickets/results are process-local and ephemeral, not durable across restart.
 """
 from __future__ import annotations
 
@@ -26,8 +23,11 @@ from uuid import uuid4
 from app.services.tda.m1_sources.capture import AnalysisContext
 from app.services.tda.m3_instructions.language_scope import language_scope
 from app.services.tda.m3_instructions.neural_shadow import (
-    _result_base, enabled, run_v3_neural_shadow,
+    _result_base, enabled,
     MODEL_SHA256 as EXPECTED_MODEL_SHA256, SCHEMA as EXPECTED_RESULT_SCHEMA,
+)
+from app.services.tda.m3_instructions.neural_shadow_process_transport import (
+    score_in_isolated_process, isolated_worker_health,
 )
 
 MAX_QUEUE = 8
@@ -51,7 +51,7 @@ def _timeout_view(state: dict[str, Any]) -> dict[str, Any]:
     result = dict(state)
     result.update({
         "status": "TIMED_OUT",
-        "reason": "SOFT_DEADLINE_EXCEEDED_RESULT_NOT_TRUSTED",
+        "reason": "DEADLINE_EXCEEDED_RESULT_NOT_TRUSTED",
         "score": None,
         "coverage_complete": False,
         "clean_verdict": False,
@@ -200,8 +200,9 @@ class _AsyncRuntime:
 
     @staticmethod
     def _execute(context: AnalysisContext) -> dict[str, Any]:
-        # This cannot run in the request thread.
-        return run_v3_neural_shadow(context)
+        # Model and tokenizer load exclusively in a separate subprocess.
+        # A hard timeout forcibly kills the child rather than wedging TDA.
+        return score_in_isolated_process(context)
 
     def _work_forever(self) -> None:
         while True:
@@ -246,7 +247,7 @@ class _AsyncRuntime:
                             "job_id": job.job_id,
                             "result_lookup_scope": "SAME_PROCESS_SOURCE_SHA_BOUND",
                             "results_persist_across_restart": False,
-                            "soft_timeout_does_not_cancel_worker": True,
+                            "soft_timeout_does_not_cancel_worker": False,
                         })
                     self._results[job.job_id] = (submitted, final)
                     self._evict_locked(time.monotonic())
@@ -347,6 +348,26 @@ class _AsyncRuntime:
                 self._results[job_id] = (submitted, dict(answer))
             return answer
 
+    def list_jobs_for_admin(self) -> list[dict[str, Any]]:
+        """Ephemeral same-process research view; never expose raw tool text."""
+        with self._lock:
+            self._evict_locked(time.monotonic())
+            return [
+                {
+                    "job_id": job_id,
+                    "source_sha256": value.get("source_sha256"),
+                    "input_text_sha256": value.get("input_text_sha256"),
+                    "status": value.get("status"),
+                    "reason": value.get("reason"),
+                    "score": value.get("score") if value.get("status") == "SCORED" else None,
+                    "score_support": "MODEL_HYPOTHESIS_ONLY",
+                    "authority": "NONE",
+                    "model_sha256": value.get("model_sha256"),
+                    "mode": "SHADOW",
+                }
+                for job_id, (_, value) in reversed(self._results.items())
+            ]
+
     def health(self) -> dict[str, int | bool]:
         with self._lock:
             self._evict_locked(time.monotonic())
@@ -356,7 +377,8 @@ class _AsyncRuntime:
                 "result_store_count": len(self._results),
                 "result_store_capacity": self.result_capacity,
                 "one_daemon_worker_alive": bool(self._worker and self._worker.is_alive()),
-                "hard_process_isolation": False,
+                "hard_process_isolation": True,
+                "hard_memory_limit_enforced": False,
             }
 
 
@@ -389,5 +411,11 @@ def lookup_v3_neural_shadow_job(
     return _DEFAULT.lookup(job_id, source_sha256=source_sha256)
 
 
-def async_shadow_queue_health() -> dict[str, int | bool]:
-    return _DEFAULT.health()
+def async_shadow_queue_health() -> dict[str, int | bool | None]:
+    # Read-only operational status. Never returns tool text or secrets.
+    return {**_DEFAULT.health(), **isolated_worker_health()}
+
+
+def list_v3_neural_shadow_jobs_for_admin() -> list[dict[str, Any]]:
+    # The HTTP authorization boundary must be applied by the caller.
+    return _DEFAULT.list_jobs_for_admin()

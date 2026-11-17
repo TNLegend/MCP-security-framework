@@ -531,12 +531,20 @@ def run_post_dependency_setup(
         )
         _run([python, REPO_ROOT / "scripts" / "install_m4_models.py"], env=env)
         completed.append("analyzer_models_m6_e5_and_frozen_m4")
-        # Opt-in local research-only M3 V3 assets; never fetch a new model
-        # or activate inference implicitly. Standard starter is unchanged.
-        if os.environ.get("M3_PG2_V3_SOURCE_DIR", "").strip():
+        # M3 V3 research SHADOW: existing startup supports private HF only
+        # after the owner pins the actual private upload commit (or gives an
+        # immutable SHA via env). No unpinned/public model fallback.
+        from scripts.install_m3_pg2_v3 import HF_FROZEN_REVISION
+        source = os.environ.get("M3_PG2_V3_SOURCE_DIR", "").strip()
+        revision = os.environ.get("M3_PG2_V3_HF_REVISION", "").strip() or HF_FROZEN_REVISION
+        if source:
             _run([python, REPO_ROOT / "scripts" / "install_m3_pg2_v3.py",
-                  "--source", os.environ["M3_PG2_V3_SOURCE_DIR"]], env=env)
-            completed.append("m3_pg2_v3_research_shadow_assets")
+                  "--source", source], env=env)
+            completed.append("m3_pg2_v3_research_shadow_assets_local")
+        elif revision:
+            _run([python, REPO_ROOT / "scripts" / "install_m3_pg2_v3.py",
+                  "--from-private-hf"], env=env)
+            completed.append("m3_pg2_v3_research_shadow_assets_private_hf")
 
     if not options.skip_service_identities:
         _run(

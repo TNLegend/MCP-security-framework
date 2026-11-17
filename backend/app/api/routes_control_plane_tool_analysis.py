@@ -17,11 +17,63 @@ from app.services.control_plane_auth import (
 )
 from app.services.server_security_metadata import refresh_server_security_status
 from app.services.tda_application.review_service import ToolReviewService
+from app.services.tda.m3_instructions.neural_shadow_async import (
+    lookup_v3_neural_shadow_job, async_shadow_queue_health,
+    list_v3_neural_shadow_jobs_for_admin,
+)
 
 router = APIRouter(
     prefix="/control-plane/tool-analysis",
     tags=["Control Plane Tool Analysis"],
 )
+
+
+@router.get("/shadow/health")
+def m3_v3_shadow_health(
+    _: AuthenticatedControlPlaneUser = Depends(require_admin),
+):
+    """Admin-only; read-only research SHADOW status, never a policy action."""
+    return {
+        "mode": "SHADOW",
+        "model": "PROMPT_GUARD_2_86M_V3",
+        "authority": "NONE",
+        "production_approved": False,
+        "scope": "PROCESS_LOCAL_EPHEMERAL_ONLY",
+        "worker": async_shadow_queue_health(),
+    }
+
+
+@router.get("/shadow/jobs")
+def m3_v3_shadow_jobs(
+    _: AuthenticatedControlPlaneUser = Depends(require_admin),
+):
+    """Admin-only, ephemeral research list; source text never returned."""
+    return {
+        "mode": "SHADOW",
+        "authority": "NONE",
+        "production_approved": False,
+        "scope": "SAME_BACKEND_PROCESS_ONLY",
+        "jobs": list_v3_neural_shadow_jobs_for_admin(),
+    }
+
+
+@router.get("/shadow/jobs/{job_id}")
+def m3_v3_shadow_job_detail(
+    job_id: str,
+    source_sha256: str,
+    _: AuthenticatedControlPlaneUser = Depends(require_admin),
+):
+    """Admin-only, source-bound lookup. No endpoint for public users."""
+    import re
+    if (re.fullmatch(r"[0-9a-f]{32}", job_id) is None
+            or re.fullmatch(r"[0-9a-f]{64}", source_sha256) is None):
+        raise HTTPException(status_code=404, detail="Shadow result unavailable")
+    result = lookup_v3_neural_shadow_job(
+        job_id, source_sha256=source_sha256,
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Shadow result unavailable")
+    return result
 
 
 @router.get("/analyses")

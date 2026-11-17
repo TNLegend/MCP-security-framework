@@ -27,7 +27,7 @@ provide a Hugging Face **read-only** access token when prompted, or via
 Git or the project `.env`. Already verified local models are reused offline.
 M6's separate E5 dependency is installed by the analyzer cache downloader.
 
-**Experimental M3 Prompt Guard 2 V3 (Phase 3, Lot A):** the selected English
+**Experimental M3 Prompt Guard 2 V3 (Phase 3, B3 research):** the selected English
 MCP-description classifier is **research SHADOW only**, never an authorization
 or BLOCK source. It is **OFF by default**. A pinned, verified local V3
 checkpoint can be provisioned without modifying M4 or M6:
@@ -41,22 +41,41 @@ python scripts/install_m3_pg2_v3.py --source "<local V3 checkpoint folder>"
 python scripts/install_m3_pg2_v3.py --verify-only
 ```
 
+**Private Hugging Face port (prepared; upload pending authentication):**
+Use `scripts/upload_m3_pg2_v3_private_hf.py` to verify the five-file
+allowlist in dry-run mode, then with `--upload` to publish in
+`tnlegend/mcp-security-m3-prompt-guard-v3` as a **PRIVATE** model.
+After uploading, verify the remote hashes and pin the exact immutable
+commit SHA in `HF_FROZEN_REVISION` in `scripts/install_m3_pg2_v3.py`.
+The existing startup will then install the private checkpoint with a
+read-only Hugging Face credential and reverify all file hashes, just as
+it does for M4. Until the upload/revision pin is complete, a fresh clone
+cannot claim automatic M3 installation. An explicitly pinned
+`M3_PG2_V3_HF_REVISION` can be used in a controlled research setup.
+
+Never paste tokens into chat or commit them to Git. The upload script
+refuses public model repositories and needs a locally authenticated
+Hugging Face **write** credential.
+
 The installed model resides at `.runtime/models/m3_prompt_guard2_v3/` (never
 committed). Its full model SHA-256 is
 `5751dd3a08fad1178d835941a8ad98e019aadcdb6dcfd54a616d9908b0204bf8`.
 For isolated **research QA only**, set `M3_PG2_V3_SHADOW_ENABLED=true`.
-Since Phase 3 Lot B2, the engine returns a source-bound
+Since Phase 3 Lot B3, the engine returns a source-bound
 `m3_report.neural_shadow` **PENDING** ticket without performing any Torch
-inference in the request thread. One bounded in-process daemon worker later
-produces a score. Internal QA can retrieve its result using
+inference in the request thread. One bounded dispatcher worker sends each
+job to a **separate persistent subprocess using 4 CPU threads**. The subprocess
+can be killed on IPC timeout; it is not a privileged sandbox or RAM limit.
+Internal QA can retrieve its result using
 `lookup_v3_neural_shadow_job(job_id, source_sha256=...)`; results expire and
-are lost on restart. No externally accessible result endpoint is installed.
-Queue overflow, unknown language, deadlines and worker failures are
-incomplete/unknown, never benign. This research queue is not crash-isolated:
-soft deadlines do **not** forcibly stop a hung Torch computation. Do not
-activate on production gateways without a separately qualified worker. Normal startup remains unchanged
-when no local V3 source is configured. CPU cold load and synchronous latency
-have not passed the Phase 3 Lot B gate; do not enable on a production gateway.
+are lost on restart. Existing authenticated control-plane ADMIN-only
+read-only endpoints expose SHADOW health, an ephemeral job list, and a source-
+SHA-bound result lookup under `/control-plane/tool-analysis/shadow/`.
+Queue overflow, unknown language, deadlines and worker failures stay
+incomplete/unknown, never benign. An IPC timeout kills the inference child,
+but a hard RAM cap, privilege sandbox and live Gateway tests are still missing.
+Normal startup remains unchanged without a pinned local/HF V3 source.
+Do not enable this experimental queue in a production Gateway.
 Existing deterministic decisions and M1/M2/M4/M6/M7 authority boundaries remain
 unchanged. No pretrained or fine-tuned model may authorize or block MCP calls.
 

@@ -1,16 +1,19 @@
-"""Offline, SHA-pinned M3 Prompt Guard 2 V3 *research SHADOW* provisioner.
+"""SHA-pinned M3 Prompt Guard 2 V3 research-only local installer.
 
-This only copies already-qualified local files. It never downloads remote code,
-touches signed M4/M6 models, modifies policy, or grants production authority.
-Use the existing setup_local_environment.py with M3_PG2_V3_SOURCE_DIR, or call
-this script explicitly with --source for local/offline installation.
+Installs from a verified local folder, or from an authenticated PRIVATE
+Hugging Face model repository at an immutable 40-character commit SHA.
+All five files must match frozen size+SHA256 before installation.
+No remote Python code is imported, no model authorizes/block MCP, and M4/M6
+asset inventories remain unchanged. Production approval is never implied.
 """
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import sys
@@ -40,6 +43,11 @@ EXPECTED = {
     ),
 }
 SCOPE = "M3_ENGLISH_TOOL_DESCRIPTION_RESEARCH_SHADOW_NO_POLICY_AUTHORITY"
+HF_REPO_ID = "tnlegend/mcp-security-m3-prompt-guard-v3"
+# Set only after the private LFS upload has been verified against EXPECTED.
+# Until then a fresh clone MUST fail closed unless the owner provides a
+# pinned SHA via M3_PG2_V3_HF_REVISION and an authorized HF read token.
+HF_FROZEN_REVISION = ""
 
 
 def _regular_file(path: Path) -> bool:
@@ -131,20 +139,82 @@ def install(source: Path, target: Path = TARGET) -> dict[str, object]:
     return verify_install(target)
 
 
+def _private_hf_token() -> str:
+    token = (
+        os.environ.get("HF_TOKEN", "").strip()
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN", "").strip()
+    )
+    if token:
+        return token
+    from huggingface_hub import get_token
+    token = get_token()
+    if token:
+        return token
+    if sys.stdin.isatty():
+        token = getpass.getpass("Hugging Face PRIVATE model READ token (hidden): ").strip()
+        if token:
+            return token
+    raise RuntimeError("M3_PG2_V3_PRIVATE_HF_READ_TOKEN_REQUIRED")
+
+
+def install_private_hf(
+    revision: str, target: Path = TARGET,
+) -> dict[str, object]:
+    """Private-only, immutable-revision remote installation.
+
+    No repo, network, or credential use if a valid local installation exists.
+    A missing, moving or unsigned ref never silently resolves to main/HEAD.
+    """
+    if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        raise RuntimeError("M3_PG2_V3_IMMUTABLE_HF_COMMIT_REQUIRED")
+    if target.exists():
+        return verify_install(target)
+    from huggingface_hub import HfApi, hf_hub_download
+    token = _private_hf_token()
+    info = HfApi().model_info(HF_REPO_ID, revision=revision, token=token)
+    if info.private is not True or info.sha != revision:
+        raise RuntimeError("M3_PG2_V3_HF_REPO_NOT_PRIVATE_OR_NOT_PINNED")
+    configure_runtime_environment()
+    RUNTIME_TMP_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="m3-v3-private-hf-", dir=RUNTIME_TMP_DIR) as scratch:
+        folder = Path(scratch)
+        for name, (expected_hash, size) in EXPECTED.items():
+            source = Path(hf_hub_download(
+                repo_id=HF_REPO_ID, filename=name,
+                revision=revision, token=token,
+                repo_type="model",
+            ))
+            # HF's content-addressed cache may return a symlink to a blob.
+            # It is safe to copy only after byte size and SHA match exactly;
+            # the installed local bundle itself still forbids links.
+            if (not source.is_file()
+                    or source.stat().st_size != size
+                    or digest(source) != expected_hash):
+                raise RuntimeError("M3_PG2_V3_PRIVATE_HF_FILE_HASH_MISMATCH:" + name)
+            shutil.copyfile(source, folder / name)
+        verify_files(folder)
+        return install(folder, target=target)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=None)
+    parser.add_argument("--from-private-hf", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
+    source = args.source or (
+        Path(os.environ["M3_PG2_V3_SOURCE_DIR"])
+        if os.environ.get("M3_PG2_V3_SOURCE_DIR", "").strip() else None
+    )
+    if sum((bool(args.verify_only), bool(args.from_private_hf), source is not None)) != 1:
+        parser.error("choose exactly one of --verify-only, --source/local env, --from-private-hf")
     if args.verify_only:
         result = verify_install()
+    elif args.from_private_hf:
+        revision = os.environ.get("M3_PG2_V3_HF_REVISION", "").strip() or HF_FROZEN_REVISION
+        result = install_private_hf(revision)
     else:
-        source = args.source or (
-            Path(os.environ["M3_PG2_V3_SOURCE_DIR"])
-            if os.environ.get("M3_PG2_V3_SOURCE_DIR") else None
-        )
-        if source is None:
-            parser.error("--source or M3_PG2_V3_SOURCE_DIR is required")
+        assert source is not None
         result = install(source)
     print(json.dumps(result, sort_keys=True))
     return 0
