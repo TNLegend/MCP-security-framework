@@ -44,10 +44,10 @@ EXPECTED = {
 }
 SCOPE = "M3_ENGLISH_TOOL_DESCRIPTION_RESEARCH_SHADOW_NO_POLICY_AUTHORITY"
 HF_REPO_ID = "tnlegend/mcp-security-m3-prompt-guard-v3"
-# Set only after the private LFS upload has been verified against EXPECTED.
-# Until then a fresh clone MUST fail closed unless the owner provides a
-# pinned SHA via M3_PG2_V3_HF_REVISION and an authorized HF read token.
-HF_FROZEN_REVISION = ""
+# Immutable commit verified on the owner's PRIVATE Hugging Face repository.
+# The remote LFS weight and tokenizer hashes and remaining small file hashes
+# matched EXPECTED. A private-read credential is still required on fresh clones.
+HF_FROZEN_REVISION = "d215c10f63d2588eb43e5d631fbe952a56431162"
 
 
 def _regular_file(path: Path) -> bool:
