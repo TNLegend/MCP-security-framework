@@ -24,6 +24,9 @@ from app.services.tda.m3_instructions.pipeline import run_m3, M2Input, M5Input
 from app.services.tda.m2_structure.views import collect_derived_views
 from app.services.tda.m3_instructions.contracts import shadow_error
 from app.services.tda.m3_instructions.decision_adapter import with_shadow_m3_report
+from app.services.tda.m3_instructions.neural_shadow import (
+    enabled as m3_v3_shadow_enabled, run_v3_neural_shadow,
+)
 from app.services.tda.m4_semantics.consumer_contract import project_m4_for_consumers
 from app.services.tda.m6_comparison.consistency import (
     inspect_m4_operations_advisory, consistency_result_from_m4, consistency_result,
@@ -260,4 +263,13 @@ def analyze_tool_version(
         },
         "findings": findings,
     }
-    return with_shadow_m3_report(legacy_result, m3_shadow)
+    result = with_shadow_m3_report(legacy_result, m3_shadow)
+    # Experimental model hypothesis is subordinate to the existing
+    # deterministic M3/M7 result. Default OFF until Lot B performance QA.
+    # A neural failure cannot change legacy BLOCK/REVIEW or grant access.
+    if m3_v3_shadow_enabled():
+        result["m3_report"]["neural_shadow"] = run_v3_neural_shadow(context)
+        result["m3_report"]["limitations"].append(
+            "M3_PG2_V3_SHADOW_NOT_QUALIFIED_FOR_ENFORCEMENT"
+        )
+    return result

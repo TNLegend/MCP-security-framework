@@ -531,6 +531,12 @@ def run_post_dependency_setup(
         )
         _run([python, REPO_ROOT / "scripts" / "install_m4_models.py"], env=env)
         completed.append("analyzer_models_m6_e5_and_frozen_m4")
+        # Opt-in local research-only M3 V3 assets; never fetch a new model
+        # or activate inference implicitly. Standard starter is unchanged.
+        if os.environ.get("M3_PG2_V3_SOURCE_DIR", "").strip():
+            _run([python, REPO_ROOT / "scripts" / "install_m3_pg2_v3.py",
+                  "--source", os.environ["M3_PG2_V3_SOURCE_DIR"]], env=env)
+            completed.append("m3_pg2_v3_research_shadow_assets")
 
     if not options.skip_service_identities:
         _run(

@@ -27,6 +27,33 @@ provide a Hugging Face **read-only** access token when prompted, or via
 Git or the project `.env`. Already verified local models are reused offline.
 M6's separate E5 dependency is installed by the analyzer cache downloader.
 
+**Experimental M3 Prompt Guard 2 V3 (Phase 3, Lot A):** the selected English
+MCP-description classifier is **research SHADOW only**, never an authorization
+or BLOCK source. It is **OFF by default**. A pinned, verified local V3
+checkpoint can be provisioned without modifying M4 or M6:
+
+```text
+# Set M3_PG2_V3_SOURCE_DIR to the local folder containing V3 model.safetensors
+# plus config.json, tokenizer.json, tokenizer_config.json, special_tokens_map.json.
+# The existing start_framework script then installs those files during setup.
+# Or install explicitly with backend/.venv Python:
+python scripts/install_m3_pg2_v3.py --source "<local V3 checkpoint folder>"
+python scripts/install_m3_pg2_v3.py --verify-only
+```
+
+The installed model resides at `.runtime/models/m3_prompt_guard2_v3/` (never
+committed). Its full model SHA-256 is
+`5751dd3a08fad1178d835941a8ad98e019aadcdb6dcfd54a616d9908b0204bf8`.
+For isolated **research QA only**, set `M3_PG2_V3_SHADOW_ENABLED=true`.
+The detector then appends a source-bound `m3_report.neural_shadow` score for
+raw English `/description` only, recording non-English, token-budget and
+model-loading errors as incomplete analysis. Normal startup remains unchanged
+when no local V3 source is configured. CPU cold load and synchronous latency
+have not passed the Phase 3 Lot B gate; do not enable on a production gateway.
+Existing deterministic decisions and M1/M2/M4/M6/M7 authority boundaries remain
+unchanged. No pretrained or fine-tuned model may authorize or block MCP calls.
+
+
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.
