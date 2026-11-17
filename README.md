@@ -12,20 +12,21 @@ frontend lockfile dependencies, OPA, security scanners, service identities,
 database schema, and model caches are prepared. The launcher starts the
 local backend, MCP lab, OPA, gateway, identity provider and the React frontend.
 
-**Private fine-tuned M4 checkpoints** are hosted separately from GitHub:
+**Public fine-tuned M4 checkpoints** are hosted separately from GitHub:
 
-- `tnlegend/mcp-security-m4-gliner-pass10` (GLiNER PASS10)
-- `tnlegend/mcp-security-m4-deberta-v2` (DeBERTa V2)
+- [GLiNER PASS10](https://huggingface.co/tnlegend/mcp-security-m4-gliner-pass10) — Apache 2.0, with Microsoft MIT attribution.
+- [DeBERTa V2](https://huggingface.co/tnlegend/mcp-security-m4-deberta-v2) — MIT.
 
-The installer downloads their **pinned Hugging Face commits**, checks every
-file's frozen SHA-256 and size, and installs them to
-`.runtime/models/m4_semantics/GLINER/` and
-`.runtime/models/m4_semantics/DEBERTA_V2/` with
-`M4_BUNDLE_SHA256_MANIFEST.json` at the bundle root. For a new installation,
-provide a Hugging Face **read-only** access token when prompted, or via
-`HF_TOKEN` in the process environment. Never commit or paste tokens into
-Git or the project `.env`. Already verified local models are reused offline.
-M6's separate E5 dependency is installed by the analyzer cache downloader.
+The installer anonymously downloads their **pinned Hugging Face commits**,
+checks every executable model file's frozen SHA-256 and size, and installs
+them to `.runtime/models/m4_semantics/GLINER/` and
+`.runtime/models/m4_semantics/DEBERTA_V2/`. No Hugging Face account or
+token is required. Exact model-bundle inventory is preserved for signed M4
+integrity. Upstream license texts and attribution notices are downloaded
+separately to `.runtime/models/m4_redistribution_notices/` on fresh install;
+see each model repository's LICENSE, NOTICE, and README. Already verified
+models are reused offline. M6 E5 is independently downloaded from its
+public upstream repository; it is not part of the M4 semantics model.
 
 **Experimental M3 Prompt Guard 2 V3 (Phase 3, B3 research):** the selected English
 MCP-description classifier is **research SHADOW only**, never an authorization
@@ -41,21 +42,27 @@ python scripts/install_m3_pg2_v3.py --source "<local V3 checkpoint folder>"
 python scripts/install_m3_pg2_v3.py --verify-only
 ```
 
-**Private Hugging Face port (prepared; upload pending authentication):**
-Use `scripts/upload_m3_pg2_v3_private_hf.py` to verify the five-file
-allowlist in dry-run mode, then with `--upload` to publish in
-`tnlegend/mcp-security-m3-prompt-guard-v3` as a **PRIVATE** model.
-After uploading, verify the remote hashes and pin the exact immutable
-commit SHA in `HF_FROZEN_REVISION` in `scripts/install_m3_pg2_v3.py`.
-The existing startup will then install the private checkpoint with a
-read-only Hugging Face credential and reverify all file hashes, just as
-it does for M4. Until the upload/revision pin is complete, a fresh clone
-cannot claim automatic M3 installation. An explicitly pinned
-`M3_PG2_V3_HF_REVISION` can be used in a controlled research setup.
+**Public V3 model (research-only):** [Llama-MCP-Prompt-Guard-2-V3](https://huggingface.co/tnlegend/Llama-MCP-Prompt-Guard-2-V3)
+is a text-only fine-tune of Meta Llama Prompt Guard 2 86M, licensed under
+the **Llama 4 Community License** (not MIT/Apache). **Built with Llama.**
+See its LICENSE, NOTICE, USE_POLICY.md, and README for source attribution,
+redistribution conditions and restrictions. The derivative's model name
+starts with Llama as required by that license.
 
-Never paste tokens into chat or commit them to Git. The upload script
-refuses public model repositories and needs a locally authenticated
-Hugging Face **write** credential.
+The EXISTING startup now installs V3 anonymously using the immutable
+`HF_FROZEN_REVISION`, verifies five model files and four legal notices,
+and leaves the optional classifier **OFF unless explicitly opted in**.
+A local source override `M3_PG2_V3_SOURCE_DIR` or alternative explicitly
+pinned 40-character `M3_PG2_V3_HF_REVISION` is supported; neither implies
+production qualification. To install manually:
+
+```text
+python scripts/install_m3_pg2_v3.py --from-public-hf
+python scripts/install_m3_pg2_v3.py --verify-only
+```
+
+The former private-HF upload helper is historical and is **not** the
+deployment path. Never paste tokens into chat or commit them to Git.
 
 The installed model resides at `.runtime/models/m3_prompt_guard2_v3/` (never
 committed). Its full model SHA-256 is
@@ -74,7 +81,7 @@ SHA-bound result lookup under `/control-plane/tool-analysis/shadow/`.
 Queue overflow, unknown language, deadlines and worker failures stay
 incomplete/unknown, never benign. An IPC timeout kills the inference child,
 but a hard RAM cap, privilege sandbox and live Gateway tests are still missing.
-Normal startup remains unchanged without a pinned local/HF V3 source.
+Normal startup downloads the frozen public V3 assets but leaves inference disabled unless explicitly enabled.
 Do not enable this experimental queue in a production Gateway.
 Existing deterministic decisions and M1/M2/M4/M6/M7 authority boundaries remain
 unchanged. No pretrained or fine-tuned model may authorize or block MCP calls.
@@ -93,10 +100,10 @@ historical Gate3B verification limitations. By default M4 remains advisory
 and signed activation stays fail-closed until its release identity is updated.
 
 **Source publication:** GitHub contains source and mandatory declarative
-configuration plus this README. Models, trained weights, logs, QA datasets,
-test results, qualification reports, release manifests, secrets and other
-generated artifacts remain only in the local workspace or their dedicated
-private model repositories, not in the GitHub tree.
+configuration plus this README. Models and trained weights remain on the dedicated **public Hugging Face**
+model repositories with their licenses and immutable revisions, never in
+GitHub. Logs, QA datasets, test results, qualification reports, release
+manifests and secrets remain local/private and are not committed.
 
 Framework local de securite et de gouvernance pour agents IA utilisant MCP.
 

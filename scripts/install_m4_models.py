@@ -1,4 +1,4 @@
-"""Install the two frozen, fine-tuned M4 models from private Hugging Face.
+"""Install two frozen, fine-tuned M4 models anonymously from public Hugging Face.
 
 Security: exact allowlist, SHA256+byte sizes, no extra model files or symlinks,
 no automatic model approval, no download secrets recorded. E5 is M6 only.
@@ -6,7 +6,6 @@ no automatic model approval, no download secrets recorded. E5 is M6 only.
 from __future__ import annotations
 
 import argparse
-import getpass
 import hashlib
 import json
 import os
@@ -25,12 +24,12 @@ from app.core.runtime_paths import RUNTIME_MODELS_DIR, RUNTIME_TMP_DIR, configur
 
 MODEL_ROOT = RUNTIME_MODELS_DIR / "m4_semantics"
 MANIFEST = "M4_BUNDLE_SHA256_MANIFEST.json"
-# Revisions pin the private repositories. SHA256 pins each actual file
+# Revisions pin PUBLIC repositories. SHA256 pins each actual file
 # independently, including when the remote refs move.
 REPOSITORIES = {
     "GLINER": {
         "repo_id": "tnlegend/mcp-security-m4-gliner-pass10",
-        "revision": "f195451a70632a0edbf37cbc446d6ce4b02aa1e9",
+        "revision": "9ac908f9bf209b2c4b8e176e76cb33f811cf0961",
         "files": {
             "model.safetensors": ("6621bd9f90b9439d4b0883333c05a002bdae77b75b3e78d15f085830dd777130", 774366564),
             "config.json": ("5dee87c98247b89596b99994e957cf8eaa6f264b6ab1cc058234bae0d96bd312", 4097),
@@ -41,7 +40,7 @@ REPOSITORIES = {
     },
     "DEBERTA_V2": {
         "repo_id": "tnlegend/mcp-security-m4-deberta-v2",
-        "revision": "598eb0e55da3c694eab7b8725fe438d635de49d9",
+        "revision": "5cc43bc9f6f9cb24a5eebcb3678aed604b6ff417",
         "files": {
             "best_model.safetensors": ("331750fe70452dba7461d1dc1bc77cfc38726de59828d06588ae3c5c467c936d", 570007864),
             "config.json": ("b0bb1caf90a50aa67d1085130508dfbf8646ac5a11928305e280b07a36e100ae", 578),
@@ -50,6 +49,24 @@ REPOSITORIES = {
             "tokenizer.json": ("e9ddd853a4a31023721c993458663f2019e3154a05dacf0d2b3c217e53d9bdc8", 8339876),
             "tokenizer_config.json": ("28efde3273ceba3743712cfafd411e0a969507147b0cc8240a7089c18c9db2b4", 560),
         },
+    },
+}
+
+# Verbatim upstream license notices, downloaded at each immutable PUBLIC
+# model revision into a SEPARATE runtime directory. Do not add them to the
+# M4 signed semantic model bundle: that inventory is intentionally exact.
+PUBLIC_NOTICES_ROOT = RUNTIME_MODELS_DIR / "m4_redistribution_notices"
+PUBLIC_NOTICES = {
+    "GLINER": {
+        "LICENSE": ("c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4", 11357),
+        "NOTICE": ("0f1b31d17c59d5eb59b91f86008ba0b25838969fdfce13a136aa1d6498eddf7a", 525),
+        "README.md": ("af171d9a504aad31ea0b3435056aa94bde0a2e96c42cb648bf40b4a54eb85d36", 1379),
+        "THIRD_PARTY_LICENSE_MIT.txt": ("c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383", 1141),
+    },
+    "DEBERTA_V2": {
+        "LICENSE": ("c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383", 1141),
+        "NOTICE": ("3e827c3a55c36a7c5bdbebd008efa4770bd530053339654dc2b0442fed3d9e89", 376),
+        "README.md": ("3276d6f597771c525e2cf61d975c22846dff84baa682c1319fad5b1ddabe2f4d", 1194),
     },
 }
 
@@ -141,23 +158,43 @@ def create_local_manifest(root: Path) -> None:
     manifest.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf8")
 
 
-def _token() -> str:
-    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
-        token = os.environ.get(name, "").strip()
-        if token:
-            return token
-    from huggingface_hub import get_token
-    token = get_token()
-    if token:
-        return token
-    if not sys.stdin.isatty():
-        raise RuntimeError(
-            "PRIVATE_HF_MODELS_REQUIRE_A_READ_TOKEN: set HF_TOKEN locally before setup"
-        )
-    token = getpass.getpass("Hugging Face READ token (hidden, never saved): ").strip()
-    if not token:
-        raise RuntimeError("PRIVATE_HF_MODELS_REQUIRE_A_READ_TOKEN")
-    return token
+def _public_repo_verified(api, repo: dict) -> None:
+    # Explicitly force an anonymous request, even if the machine happens to
+    # have credentials configured. An immutable ref cannot silently drift.
+    info = api.model_info(repo["repo_id"], revision=repo["revision"], token=False)
+    if info.private is not False or info.sha != repo["revision"]:
+        raise RuntimeError("M4_PUBLIC_HF_REPOSITORY_NOT_PUBLIC_OR_NOT_PINNED")
+
+
+def _install_public_notices() -> None:
+    from huggingface_hub import hf_hub_download
+    if PUBLIC_NOTICES_ROOT.is_symlink() or getattr(PUBLIC_NOTICES_ROOT, "is_junction", lambda: False)():
+        raise RuntimeError("M4_PUBLIC_NOTICES_ROOT_LINKED")
+    for group, files in PUBLIC_NOTICES.items():
+        repo = REPOSITORIES[group]
+        for relative, (sha, size) in files.items():
+            destination = PUBLIC_NOTICES_ROOT / group / relative
+            if destination.exists():
+                verify_file(destination, PUBLIC_NOTICES_ROOT, sha, size)
+                continue
+            source = Path(hf_hub_download(
+                repo_id=repo["repo_id"],
+                filename=relative,
+                revision=repo["revision"],
+                token=False,
+                repo_type="model",
+            ))
+            if not source.is_file() or source.stat().st_size != size or digest_file(source) != sha:
+                raise RuntimeError("M4_PUBLIC_HF_NOTICE_HASH_MISMATCH:" + relative)
+            if destination.parent.is_symlink() or getattr(destination.parent, "is_junction", lambda: False)():
+                raise RuntimeError("M4_PUBLIC_HF_NOTICE_DIR_LINKED")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(destination.name + ".partial")
+            if temporary.exists() or temporary.is_symlink():
+                raise RuntimeError("M4_PUBLIC_HF_NOTICE_PARTIAL_ALREADY_PRESENT")
+            shutil.copyfile(source, temporary)
+            verify_file(temporary, PUBLIC_NOTICES_ROOT, sha, size)
+            os.replace(temporary, destination)
 
 
 def install(root: Path = MODEL_ROOT) -> dict:
@@ -180,8 +217,13 @@ def install(root: Path = MODEL_ROOT) -> dict:
     if all((root / rel).is_file() for rel in expected):
         create_local_manifest(root)
         return validate_bundle(root)
-    from huggingface_hub import snapshot_download
-    token = _token()
+    from huggingface_hub import HfApi, snapshot_download
+    hub = HfApi()
+    for repo in REPOSITORIES.values():
+        _public_repo_verified(hub, repo)
+    # License files are adjacent to—not inside—the byte-exact signed M4
+    # model bundle. This keeps the existing M4 signature inventory intact.
+    _install_public_notices()
     temp = RUNTIME_TMP_DIR / "m4-model-download"
     for directory, repo in REPOSITORIES.items():
         target = root / directory
@@ -198,7 +240,7 @@ def install(root: Path = MODEL_ROOT) -> dict:
             repo_id=repo["repo_id"],
             repo_type="model",
             revision=repo["revision"],
-            token=token,
+            token=False,
             local_dir=str(scratch),
             allow_patterns=list(files),
             max_workers=2,

@@ -531,9 +531,9 @@ def run_post_dependency_setup(
         )
         _run([python, REPO_ROOT / "scripts" / "install_m4_models.py"], env=env)
         completed.append("analyzer_models_m6_e5_and_frozen_m4")
-        # M3 V3 research SHADOW: existing startup supports private HF only
-        # after the owner pins the actual private upload commit (or gives an
-        # immutable SHA via env). No unpinned/public model fallback.
+        # M3 V3 research SHADOW: existing startup downloads an immutable
+        # PUBLIC release anonymously (or uses an explicit verified local
+        # source). No moving ref, unpinned model, or policy authority.
         from scripts.install_m3_pg2_v3 import HF_FROZEN_REVISION
         source = os.environ.get("M3_PG2_V3_SOURCE_DIR", "").strip()
         revision = os.environ.get("M3_PG2_V3_HF_REVISION", "").strip() or HF_FROZEN_REVISION
@@ -543,8 +543,8 @@ def run_post_dependency_setup(
             completed.append("m3_pg2_v3_research_shadow_assets_local")
         elif revision:
             _run([python, REPO_ROOT / "scripts" / "install_m3_pg2_v3.py",
-                  "--from-private-hf"], env=env)
-            completed.append("m3_pg2_v3_research_shadow_assets_private_hf")
+                  "--from-public-hf"], env=env)
+            completed.append("m3_pg2_v3_research_shadow_assets_public_hf")
 
     if not options.skip_service_identities:
         _run(
