@@ -131,6 +131,24 @@ def assert_current(db, token):
     return row
 
 
+def assert_analysis_generation_current(db, analysis_id, token):
+    """Require the observation's original immutable analyzer authority.
+
+    A worker may advance to generation N+1 while retaining exactly the same
+    model/source identity and analyzer revision. Merely checking the worker's
+    current generation would accidentally reauthorize evidence from N.
+    Never rebind or upgrade an old analysis on a runtime call.
+    """
+    from app.models.analysis_authority_binding import AnalysisAuthorityBinding
+
+    bound = db.get(AnalysisAuthorityBinding, analysis_id, populate_existing=True)
+    if bound is None or (bound.generation, bound.pipeline_identity) != (
+        token.generation, token.pipeline_identity
+    ):
+        raise PipelineIntegrityError("analysis_authority_generation_stale")
+    return bound
+
+
 def _check_commit(db):
     token = db.info.get("analyzer_authority_token")
     if token is not None:

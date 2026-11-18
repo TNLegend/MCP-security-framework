@@ -273,7 +273,7 @@ continues to perform SHA-256 checks on each runtime decision (slower but
 safe). This guarded fast path has not yet been end-to-end benchmarked on
 a completely protected installation, and multi-host or non-Windows sealed
 deployments are not qualified. Its analyst revision is now
-`tool-description-analyzer-v19.6-immutable-runtime-fence-gated`:
+`tool-description-analyzer-v19.7-observation-generation-fenced`:
 restart workers, initialize a new PostgreSQL analyzer generation, and
 requalify/reapprove existing observations as needed. Existing approvals
 must never silently migrate across different analyzer identities.
@@ -284,6 +284,36 @@ global backend suite was not green; Phase 3 must **not** be declared closed
 until failed/obsolete tests and real security regressions are arbitrated,
 the final global run is complete, and the immutable-deployment path is
 qualified if chosen for production. No HTTP timeout was raised.
+
+**B15.1 — bind runtime decisions to the analysis' original generation**
+(2026-11-18): real QA discovered that an explicit PostgreSQL generation
+rotation while model/source files were identical could leave an old
+analysis executable: the runtime compared the **worker** generation to the
+live database but did not verify the original immutable
+`AnalysisAuthorityBinding` attached to the analyzed observation.
+This was a genuine security failure (HTTP 200 after a rotation), not a
+historical test mismatch. Final dispatch and approved `tools/list`
+exposure now require the analysis binding's exact generation **and**
+pipeline identity to equal the current, PostgreSQL-verified authority;
+missing, stale or mismatched bindings fail closed, with no auto-rebinding.
+The analyzer revision becomes
+`tool-description-analyzer-v19.7-observation-generation-fenced`.
+
+A replay with real Gateway, signed ADMIN publication, real PostgreSQL and
+M4 inference / M3 research SHADOW confirmed: valid approved MCP read
+HTTP 200 and correct file bytes; disallowed read HTTP 403; an actual ADMIN
+HTTP Emergency Deny creation blocked a previously approved read (HTTP 403),
+its HTTP revocation restored it (HTTP 200), and an explicitly rotated
+analyzer generation then **refused the old approved analysis (HTTP 403)**.
+The original unpatched source had wrongly returned HTTP 200 at the last
+step. Testing used disposable QA credentials/database and did not grant
+the model any policy authority.
+
+**This security fix does not constitute completion of the entire historical
+backend regression** or a qualified fast-path production deployment:
+the writable desktop continues to use full per-decision SHA-256 and
+a separate protected, non-elevated Windows installation must still be
+qualified to obtain O(1) analyzer identity checks.
 
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server

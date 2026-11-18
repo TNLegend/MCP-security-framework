@@ -51,7 +51,49 @@ def _declared_artifact_paths(pipeline: Any) -> set[Path]:
     return files
 
 
-def _windows_lock_verified_artifacts(files: set[Path]) -> tuple[int, ...]:
+def _declared_directory_closure(pipeline: Any) -> set[Path]:
+    """Include empty and importable directories, not just known file parents.
+
+    Otherwise a worker could add a previously absent Python module in an
+    existing empty package directory after boot, without changing any
+    already-verified file. Never enumerate a generic filesystem/drive root.
+    """
+    import site
+    import sys
+    from app.services.tda_application.m4_pipeline_integrity import SOURCE_ROOTS
+
+    model = pipeline._m4_identity
+    roots = [
+        Path(model.repo_root) / rel for rel in SOURCE_ROOTS
+    ] + [
+        Path(model.model_root),
+        Path(pipeline._manifest["m6_embedding"]["snapshot"]),
+        Path(pipeline._manifest["execution"]["dependencies"]["gliner2"]["import_root"]),
+        Path(sys.base_prefix) / "Lib",
+        Path(sys.prefix) / "Lib",
+    ] + [Path(p) for p in site.getsitepackages()]
+    directories: set[Path] = set()
+    for root in roots:
+        if not root.exists():
+            raise PipelineIntegrityError("runtime_immutable_declared_root_missing")
+        if root.is_symlink() or getattr(root, "is_junction", lambda: False)():
+            raise PipelineIntegrityError("runtime_immutable_linked_root")
+        if root.is_file():
+            continue
+        if not root.is_dir() or root == root.parent:
+            raise PipelineIntegrityError("runtime_immutable_invalid_directory_root")
+        directories.add(root)
+        for candidate in root.rglob("*"):
+            if candidate.is_symlink() or getattr(candidate,"is_junction",lambda:False)():
+                raise PipelineIntegrityError("runtime_immutable_linked_directory_tree")
+            if candidate.is_dir():
+                directories.add(candidate)
+    return directories
+
+
+def _windows_lock_verified_artifacts(
+    files: set[Path], *, additional_directories: set[Path] | None = None,
+) -> tuple[int, ...]:
     """Fail closed unless OS access rights prove the complete closure unwritable.
 
     Refuse mutable *directories*, not just mutable existing files: otherwise
@@ -111,7 +153,16 @@ def _windows_lock_verified_artifacts(files: set[Path]) -> tuple[int, ...]:
             return -int(ctypes.get_last_error())
         return int(handle)
 
-    directories: set[Path] = set()
+    directories: set[Path] = set(additional_directories or ())
+    for directory in tuple(directories):
+        if not directory.is_dir() or directory.is_symlink() or getattr(directory,"is_junction",lambda:False)():
+            raise PipelineIntegrityError("runtime_immutable_declared_directory_invalid")
+        for ancestor in directory.parents:
+            if ancestor == ancestor.parent:
+                continue
+            if ancestor.is_symlink() or getattr(ancestor,"is_junction",lambda:False)():
+                raise PipelineIntegrityError("runtime_immutable_linked_ancestor")
+            directories.add(ancestor)
     for path in files:
         if not path.is_file() or path.is_symlink() or getattr(path,"is_junction",lambda:False)():
             raise PipelineIntegrityError("runtime_immutable_artifact_missing_or_linked")
@@ -172,7 +223,10 @@ def enable_immutable_runtime_pipeline(pipeline: Any) -> None:
         if _lease is not None:
             raise PipelineIntegrityError("runtime_immutable_double_initialization")
         files = _declared_artifact_paths(pipeline)
-        handles = _windows_lock_verified_artifacts(files)
+        directories = _declared_directory_closure(pipeline)
+        handles = _windows_lock_verified_artifacts(
+            files, additional_directories=directories
+        )
         try:
             pipeline.verify()  # Complete SHA-256 while all source/model bytes are pinned.
         except BaseException:

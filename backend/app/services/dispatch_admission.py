@@ -188,6 +188,10 @@ def admit_mcp_dispatch(
         # fence_session and assert_current keep DB-generation fencing intact.
         authority_token = fence_session(db, verified_observation_token(analysis))
         assert_current(db,authority_token)
+        from app.services.tda_application.authority import (
+            assert_analysis_generation_current,
+        )
+        assert_analysis_generation_current(db,analysis.id,authority_token)
         snapshot=PublishedConfigurationProvider(db).load_active_snapshot(fresh=True)
         # These are configuration revision coordinates, not a tool fingerprint
         # or the hash of one contract. An unchanged contract/approval in C2

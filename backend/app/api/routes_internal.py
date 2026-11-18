@@ -140,7 +140,12 @@ def get_internal_inventory_tool_observation(
         try:
             # One current SHA-256 identity check for this decision.
             # Preserve active-generation fencing and exact evidence checks.
-            assert_current(db, verified_observation_token(analysis))
+            token = verified_observation_token(analysis)
+            assert_current(db, token)
+            from app.services.tda_application.authority import (
+                assert_analysis_generation_current,
+            )
+            assert_analysis_generation_current(db, analysis.id, token)
             from app.services.published_configuration import PublishedConfigurationProvider
             from app.models.tool_analysis import ToolObservationReviewApproval
             from app.services.tda_application.observation_approval import evidence_bundle_for_observation
