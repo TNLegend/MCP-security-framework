@@ -21,8 +21,8 @@ The installer anonymously downloads their **pinned Hugging Face commits**,
 checks every executable model file's frozen SHA-256 and size, and installs
 them to `.runtime/models/m4_semantics/GLINER/` and
 `.runtime/models/m4_semantics/DEBERTA_V2/`. No Hugging Face account or
-token is required. Exact model-bundle inventory is preserved for signed M4
-integrity. Upstream license texts and attribution notices are downloaded
+token is required. Exact model-bundle inventory is preserved for local
+SHA-256 integrity (without an owner signature). Upstream license texts and attribution notices are downloaded
 separately to `.runtime/models/m4_redistribution_notices/` on fresh install;
 see each model repository's LICENSE, NOTICE, and README. Already verified
 models are reused offline. M6 E5 is independently downloaded from its
@@ -82,14 +82,50 @@ Queue overflow, unknown language, deadlines and worker failures stay
 incomplete/unknown, never benign. An IPC timeout kills the inference child. This build intentionally does not
 impose an additional OS RAM cap or privilege sandbox on the research worker;
 the existing input-size, queue, and timeout safety checks remain in place.
-Live Gateway/M3 integration has been exercised in disposable QA environments
-with temporary authority and fixture-based approvals, **not** approved
-production authority. Normal startup downloads the frozen public V3 assets
-but leaves inference disabled unless explicitly enabled.
+Phase 3 B11 QA (2026-11-18) exercised the actual HTTP Gateway, actual backend
+and published Control Plane configuration, PostgreSQL, OPA and the bundled MCP
+HTTP lab together. The QA created temporary ADMIN, agent JWT and service keys,
+then performed genuine review and publication operations with the framework's
+services (no mock backend approval or owner M4 signature). The modern client
+was mediated to the lab's Legacy 2025-11-25 upstream protocol: an approved
+read of test data returned HTTP 200 and an out-of-scope read was denied HTTP
+403 before upstream execution. This validates local QA mediation with generated
+QA actors, **not** authorization for production users or third-party servers.
+Normal startup downloads the frozen public V3 assets but leaves inference
+disabled unless explicitly enabled.
 Do not enable this experimental queue in a production Gateway.
 Existing deterministic decisions and M1/M2/M4/M6/M7 authority boundaries remain
 unchanged. No pretrained or fine-tuned model may authorize or block MCP calls.
 
+**Phase 3 research SHADOW qualification (B10/B11, 2026-11-18):**
+M3 V3 model bytes are frozen at the SHA-256 above. The old MiniLM path,
+dead M3 experiments, obsolete signing utilities, stale redundant caches and
+transient QA files have been removed or explicitly retained only as archival
+evidence. The normal installation needs no M4 owner-signing step, no extra
+OS RAM cap was added to the M3 worker, and no additional training was done.
+
+The historical, non-independent diagnostic cohort of 107 MCP descriptions
+(39 author-declared attacks / 68 author-declared benign) yielded 27/39
+attack flags and 0/68 benign flags at reporting threshold 0.5; in another
+out-of-domain agentic benign group, 17/30 were flagged. Those examples and
+labels are not independent human-certified ground truth. No sealed TEST
+split was opened. There are **no certified production precision/recall
+claims**, and V3 remains optional English-focused raw-description-only
+research SHADOW.
+
+On source revision `da240845`, prior focused QA passed 390 tests with
+3 archived Git-commit-pin failures and 2 skips; targeted backend tests
+passed 101 plus 63 subtests. A full backend run did **not** go green:
+3,110 passed, 386 failed, 35 errors, 119 skipped and 405 subtests passed.
+Many failures have old experiment/signature contracts or QA setup
+dependencies; all remain visible, including cases needing investigation.
+A second preprovisioned global run stopped at its 40-minute budget, so
+it is not counted as a successful full regression. These historical
+backend failures and environment-dependent integrations are not silently
+waived. Phase 3 may be used as **research SHADOW**, not as a production
+security certification. See the separate QA repository's B10/B11
+qualification records; private fixtures, results and logs stay out of
+the framework source repository.
 
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server

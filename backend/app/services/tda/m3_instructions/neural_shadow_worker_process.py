@@ -11,6 +11,8 @@ No training, no remote code, no Hugging Face network access at inference.
 from __future__ import annotations
 
 from hashlib import sha256
+from dataclasses import replace
+import re
 import json
 import os
 import sys
@@ -46,11 +48,14 @@ def _handle(line: bytes) -> None:
         nonce = envelope.get("nonce")
         raw = envelope.get("source_json")
         expected_source = envelope.get("source_sha256")
+        expected_view = envelope.get("source_view_id")
         expected_text = envelope.get("input_text_sha256")
         if not (isinstance(nonce, str) and len(nonce) == 32
                 and all(ch in "0123456789abcdef" for ch in nonce)
                 and isinstance(raw, str) and len(raw.encode("utf8")) <= 256 * 1024
                 and isinstance(expected_source, str) and len(expected_source) == 64
+                and isinstance(expected_view, str)
+                and re.fullmatch(r"original:[0-9a-f]{64}", expected_view) is not None
                 and isinstance(expected_text, str) and len(expected_text) == 64):
             _reply("", reason="INVALID_REQUEST_SOURCE")
             return
@@ -68,6 +73,14 @@ def _handle(line: bytes) -> None:
                 or context.original.sha256 != expected_source):
             _reply(nonce, reason="M1_SOURCE_SHA_MISMATCH")
             return
+        # The original M1 view id is bound to the parent profile/baseline
+        # context, which is deliberately NOT sent to this raw-text classifier.
+        # Preserve that parent-supplied correlation only AFTER verifying
+        # the exact raw JSON and /description hashes, so model output cannot
+        # invent or transplant a source view across IPC.
+        context = replace(context,
+            context_id=expected_view.removeprefix("original:"),
+            original=replace(context.original, view_id=expected_view))
         from app.services.tda.m3_instructions.neural_shadow import run_v3_neural_shadow
 
         scored = run_v3_neural_shadow(context)

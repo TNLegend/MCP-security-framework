@@ -164,11 +164,17 @@ class ProcessClient:
         ]
         if len(texts) != 1:
             raise IsolatedShadowWorkerFailure("M1_INPUT_NOT_BOUND")
+        # M1's original view identifier includes the profile/baseline
+        # context. The child intentionally receives only raw M1 JSON, so
+        # preserve the exact trusted parent identifier over IPC.
+        if context.original.view_id != "original:" + context.context_id:
+            raise IsolatedShadowWorkerFailure("M1_VIEW_CONTEXT_BINDING_INVALID")
         nonce = uuid4().hex
         packet = {
             "op": "score", "nonce": nonce,
             "source_json": context.original.json_bytes.decode("utf8"),
             "source_sha256": context.original.sha256,
+            "source_view_id": context.original.view_id,
             "input_text_sha256": __import__("hashlib").sha256(
                 texts[0].encode("utf8")).hexdigest(),
         }
