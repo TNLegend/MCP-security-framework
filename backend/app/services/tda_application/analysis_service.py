@@ -646,7 +646,7 @@ class ToolAnalysisService:
                 ToolProtocolObservation.upstream_protocol_profile_id
                 == upstream_protocol_profile_id,
                 ToolProtocolObservation.tool_fingerprint == fingerprint,
-            )
+            ).with_for_update()
         )
         if observation is None:
             if expected_observation_id is not None:
@@ -673,6 +673,40 @@ class ToolAnalysisService:
                 and observation.id != expected_observation_id
             ):
                 raise ValueError("reanalysis_observation_identity_mismatch")
+            from app.models.tool_analysis import ToolObservationReviewApproval
+            # A newly produced analysis is a CANDIDATE, not an ADMIN-approved
+            # replacement for already published, profile-specific evidence.
+            # This applies to ordinary rediscovery AND explicit reanalysis.
+            # The exact observed tool fingerprint is unchanged; a different
+            # definition still creates a separate observation and has no ALLOW.
+            signed_origin = db.scalar(
+                select(ToolObservationReviewApproval.id).where(
+                    ToolObservationReviewApproval.observation_id == observation.id,
+                    ToolObservationReviewApproval.tool_fingerprint == fingerprint,
+                    ToolObservationReviewApproval.active.is_(True),
+                ).limit(1)
+            )
+            if (
+                signed_origin is not None
+                and observation.analysis_id is not None
+                and observation.analysis_id != analysis.id
+            ):
+                # Do not rebind the signed evidence bundle to a new analysis.
+                # Retain the previous visible status and origin; no new
+                # approval, signature or policy permission is created here.
+                # The candidate remains in ToolAnalysis for ADMIN review.
+                approved_analysis = db.get(
+                    ToolAnalysis, observation.analysis_id, populate_existing=True
+                )
+                if approved_analysis is not None:
+                    apply_analysis_to_tool(
+                        tool, approved_analysis, baseline_for_tool(db, tool.id),
+                        protocol_approved_match=True,
+                    )
+                if expected_observation_id is None:
+                    observation.last_seen_at = now
+                db.flush()
+                return observation
             observation.protocol_era = protocol_profile.protocol_era.value
             observation.protocol_version = protocol_profile.protocol_version
             observation.transport_kind = protocol_profile.transport_kind.value

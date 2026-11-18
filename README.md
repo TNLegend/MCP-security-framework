@@ -278,6 +278,25 @@ The historical B15/B16 test receipts remain in the independent QA repo.
 The backend's 3,385-case legacy regression has not yet been certified
 fully green; Phase 3 must not be declared formally closed on the basis of
 this performance improvement alone.
+**B19 / V19.10 — candidate reanalysis cannot overwrite signed evidence.**
+An identical-fingerprint discovery or TDA reanalysis may create a *candidate*
+`ToolAnalysis` for ADMIN review, but cannot move an existing
+`ToolProtocolObservation.analysis_id` backed by an active ADMIN approval.
+This preserves the exact historical signed evidence, observation origin,
+contract and previously verified runtime eligibility. Changed fingerprints
+remain separate and unapproved; a concurrent stale analysis cannot replace
+a newer observation.
+
+When an ADMIN explicitly approves a new candidate, the human review service
+may promote its pointer while **deactivating the old observation approvals**.
+That is deliberately a fail-closed handover: a new observation-specific
+ADMIN approval and newly signed published Control Plane revision are
+required before the candidate can authorize MCP dispatch. Neither M4 nor
+M3 SHADOW can promote its own analysis or create permissions. Existing
+emergency denies, human BLOCK holds, revision locks and transaction ordering
+remain authoritative. Historical approval evidence is never re-signed or
+retagged to a new analyzer generation.
+
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.

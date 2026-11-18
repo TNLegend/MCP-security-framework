@@ -93,15 +93,30 @@ class ToolReviewService:
         tool = db.get(MCPTool, tool_id)
         if tool is not None:
             apply_analysis_to_tool(tool, analysis, baseline)
+        from app.models.tool_analysis import ToolObservationReviewApproval
+        # A reanalysis candidate never replaces signed observation evidence
+        # automatically. This is the *explicit* ADMIN promotion boundary:
+        # moving the pointer invalidates every live approval of the old
+        # evidence. A new observation-specific approval and newly signed
+        # Control Plane publication are required before MCP calls resume.
         observations = db.scalars(
             select(ToolProtocolObservation).where(
                 ToolProtocolObservation.tool_id == tool_id,
-                ToolProtocolObservation.analysis_id == analysis.id,
                 ToolProtocolObservation.tool_fingerprint == analysis.fingerprint,
                 ToolProtocolObservation.analysis_state != STATUS_STALE,
-            )
+            ).with_for_update()
         ).all()
         for observation in observations:
+            if observation.analysis_id != analysis.id:
+                previous = db.scalars(
+                    select(ToolObservationReviewApproval).where(
+                        ToolObservationReviewApproval.observation_id == observation.id,
+                        ToolObservationReviewApproval.active.is_(True),
+                    ).with_for_update()
+                ).all()
+                for approval in previous:
+                    approval.active = False
+                observation.analysis_id = analysis.id
             observation.analysis_state = analysis.analysis_status
         db.flush()
         return baseline
