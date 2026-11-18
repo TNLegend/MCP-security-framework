@@ -82,28 +82,34 @@ def root():
 
 
 @app.on_event('startup')
-def verify_analyzer_deployment_authority():
+def initialize_analyzer_local_identity():
+    """Boot current M4 from installed bytes; do not require owner signing."""
     from app.services.tda_application.pipeline import configured_pipeline
-    from app.services.tda_application.authority import worker_token,assert_current
+    from app.services.tda_application.authority import (
+        initialize_local_analyzer_generation, AuthorityToken, assert_current,
+    )
     from app.db.database import SessionLocal
-    configured_pipeline()
     import os
-    from app.services.tda_application.authority import AuthorityToken
+
+    pipeline=configured_pipeline()
     role=os.environ.get('ANALYZER_PROCESS_ROLE','WORKER')
     if role not in {'WORKER','MIGRATION_COORDINATOR'}:
         raise ValueError('unknown_analyzer_process_role')
-    with SessionLocal() as db:
-        if role=='MIGRATION_COORDINATOR':
-            # A verified target must be preparable while the old authority is
-            # active. The coordinator has no exposure/dispatch routes.
-            try:
-                source=AuthorityToken(int(os.environ['ANALYZER_MIGRATION_SOURCE_GENERATION']),
-                    os.environ['ANALYZER_MIGRATION_SOURCE_PIPELINE'])
-            except (KeyError,ValueError) as exc:
-                raise ValueError('explicit_migration_source_authority_required') from exc
+    if role=='MIGRATION_COORDINATOR':
+        # Retain legacy coordinator isolation; never expose worker routes.
+        try:
+            source=AuthorityToken(int(os.environ['ANALYZER_MIGRATION_SOURCE_GENERATION']),
+                os.environ['ANALYZER_MIGRATION_SOURCE_PIPELINE'])
+        except (KeyError,ValueError) as exc:
+            raise ValueError('explicit_migration_source_authority_required') from exc
+        with SessionLocal() as db:
             assert_current(db,source)
-        else:
-            assert_current(db,worker_token())
+            db.rollback()
+        return
+    with SessionLocal.begin() as db:
+        token=initialize_local_analyzer_generation(db,pipeline)
+    with SessionLocal() as db:
+        assert_current(db,token)
         db.rollback()
 
 

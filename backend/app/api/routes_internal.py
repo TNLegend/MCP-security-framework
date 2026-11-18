@@ -24,6 +24,7 @@ from proxy.tool_security_v2 import security_schema_projection
 
 from app.services.tda.configuration import STATUS_ADMIN_ALLOWED, STATUS_APPROVED, STATUS_STALE
 from app.services.tda_application.queries import latest_protocol_observation
+from app.services.tda_application._integrity import PipelineIntegrityError
 
 router = APIRouter(prefix="/internal", tags=["Internal Service APIs"])
 
@@ -137,7 +138,7 @@ def get_internal_inventory_tool_observation(
             assert_current, verified_observation_token,
         )
         try:
-            # One full SHA256/owner-signature verification for this decision.
+            # One current SHA-256 identity check for this decision.
             # Preserve active-generation fencing and exact evidence checks.
             assert_current(db, verified_observation_token(analysis))
             from app.services.published_configuration import PublishedConfigurationProvider
@@ -158,7 +159,9 @@ def get_internal_inventory_tool_observation(
                 ToolObservationReviewApproval.active.is_(True)))
             if live is None or sha256_canonical_json(evidence_bundle_for_observation(db,observation))!=approval.evidence_bundle_hash:
                 return None
-        except ValueError:
+        except (ValueError, PipelineIntegrityError):
+            # Changed analyzer source invalidates previous observation approval.
+            # Reject exposure rather than returning HTTP 500 or trusting old data.
             return None
     return {
         "id": tool.id,

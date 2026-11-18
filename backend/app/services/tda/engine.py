@@ -1,4 +1,4 @@
-"""V19 TDA: one signed GLiNER/DeBERTa semantic M4, no V1 model path.
+"""V19 TDA: one locally pinned GLiNER/DeBERTa M4, no V1 path.
 
 M1/M2/M3/M5 deterministic safety checks remain independent of M4
 hypotheses. M6/M7 receive source-exact candidates but never infer permissions.
@@ -64,17 +64,18 @@ def analyze_tool_version(
     m4_pipeline_identity: str | None = None,
     embedding_model: EmbeddingModel | None = None,
 ) -> dict[str, Any]:
-    """Consume only a checked, signed and source-bound M4 report.
+    """Consume a checked source-bound M4 report.
 
-    This pure function checks exact-source integrity and identity shape.
-    The calling service MUST verify the actual Ed25519 signatures, bytes,
-    worker generation, and observed tool fingerprint before persistence.
+    This pure function validates content-digest shapes and exact source.
+    The caller verifies pinned weight bytes, local source closure, worker
+    generation and observed tool fingerprint before persistence. No owner
+    cryptographic signature is required.
     """
     model_identity = _sha_identity(
-        m4_identity, "M4_SIGNED_PIPELINE_IDENTITY_REQUIRED"
+        m4_identity, "M4_MODEL_CONTENT_SHA256_REQUIRED"
     )
     pipeline_identity = _sha_identity(
-        m4_pipeline_identity, "M4_V2_SIGNED_ANALYZER_IDENTITY_REQUIRED"
+        m4_pipeline_identity, "M4_V2_CONTENT_SHA256_REQUIRED"
     )
     if not isinstance(m4_report, dict):
         raise ValueError("M4_V2_REPORT_REQUIRED_NO_LEGACY_FALLBACK")
@@ -98,8 +99,8 @@ def analyze_tool_version(
         "m3": interpret_m4_directives_advisory(checked["m3"]),
         "m6": inspect_m4_operations_advisory(checked["m6"]),
         "m7": summarize_m4_evidence_advisory(checked["m7"]),
-        "signed_model_and_source_identity": model_identity,
-        "signed_analyzer_pipeline_identity": pipeline_identity,
+        "m4_model_identity_sha256": model_identity,
+        "analyzer_pipeline_sha256": pipeline_identity,
     }
 
     # M2/M3/M6/M7 deterministic security evidence is independent of M4.

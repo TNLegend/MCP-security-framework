@@ -100,8 +100,8 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
             <div><dt>Uncertain events</dt><dd>{mainM4?.m7?.events_with_uncertainty ?? "Unknown"}</dd></div>
             <div><dt>Risk verdict</dt><dd>{mainM4?.m7?.risk_decision ?? "NOT_EVALUATED"}</dd></div>
           </dl>
-          <p className="hint-text">Signed model/source identity:
-            <code>{mainM4?.signed_model_and_source_identity || "NOT_VERIFIED"}</code>
+          <p className="hint-text">Local M4 model/source SHA-256:
+            <code>{mainM4?.m4_model_identity_sha256 || "NOT_VERIFIED"}</code>
           </p>
         </section>
       )}
@@ -139,8 +139,8 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
               </p>
             )}
             <p className="hint-text m4-source-identity">
-              Verified M4 source/model identity: <code>{result?.m4_signed_pipeline_sha256 || "NOT_VERIFIED"}</code>
-              {" · "}A verified identity is not a permission or ADMIN approval.
+              Local M4 source/model SHA-256: <code>{result?.m4_model_identity_sha256 || "NOT_VERIFIED"}</code>
+              {" · "}A local SHA-256 fingerprint is not a permission, authentication, or ADMIN approval.
             </p>
             <p className="hint-text">
               Models: GLiNER PASS10 + DeBERTa V2 · English-only · no automatic security decisions.

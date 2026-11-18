@@ -1,4 +1,4 @@
-"""ADMIN read-only view of the sole signed M4 semantic engine."""
+"""ADMIN read-only view of the local SHA-256 verified M4 semantic engine."""
 from fastapi import APIRouter,Depends,HTTPException
 from sqlalchemy.orm import Session
 from app.api.routes_tool_analysis import _tool_or_404
@@ -28,8 +28,8 @@ def m4_semantics_readonly(
  except LookupError as exc:
   raise HTTPException(status_code=409,detail=str(exc)) from exc
  except PipelineIntegrityError as exc:
-  # Never authorize or serve M4 predictions if release identity fails.
-  raise HTTPException(status_code=503,detail="M4_SIGNED_IDENTITY_NOT_VERIFIED") from exc
+  # Never serve M4 predictions if the local model/content check fails.
+  raise HTTPException(status_code=503,detail="M4_MODEL_CONTENT_NOT_VERIFIED") from exc
  except (ValueError,RuntimeError) as exc:
   # Do not turn a model failure into an approval/review mutation.
   raise HTTPException(status_code=422,detail=str(exc)) from exc

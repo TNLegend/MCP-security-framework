@@ -183,8 +183,8 @@ def admit_mcp_dispatch(
     )
     from app.services.published_configuration import PublishedConfigurationProvider
     try:
-        # The approval model/revision and every signed M4/analyzer/E5 byte
-        # are verified together once at this locked dispatch boundary.
+        # Recheck the current model/source identity (not owner-signed) and
+        # analyzer generation at this locked dispatch boundary.
         # fence_session and assert_current keep DB-generation fencing intact.
         authority_token = fence_session(db, verified_observation_token(analysis))
         assert_current(db,authority_token)

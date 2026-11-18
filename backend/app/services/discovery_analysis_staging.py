@@ -158,8 +158,8 @@ def stage_new_catalog_analysis(*, payload, generation_id: str, expected_context_
         # All catalog precomputation uses the *same signed* M4 pipeline.
         # The stage is still evidence only, not an approval or permission.
         from app.services.tda_application import m4_service as m4_service
-        m4_report, proof = m4_service.infer_m4_signed_description(
-            observed["description"], require_signed_identity=True
+        m4_report, proof = m4_service.infer_m4_description(
+            observed["description"]
         )
         result = analyze_tool_version(
             tool_snapshot=observed, profile_snapshot=profile,

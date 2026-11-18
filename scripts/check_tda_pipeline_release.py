@@ -1,7 +1,7 @@
-"""Read-only release/CI gate. Trust inputs must be supplied by deployment authority.
+"""Read-only local pipeline identity check; no signing prerequisites.
 
-Run with the backend environment and ANALYZER_PIPELINE_* inputs. An optional
-previous manifest is the trusted baseline supplied by CI, never the candidate.
+Optionally compare the current installed source with a previous manifest.
+Hashes are diagnostic evidence only, not an ADMIN tool approval.
 """
 import argparse,json,sys
 from pathlib import Path
@@ -16,7 +16,7 @@ def main():
         previous=json.loads(args.previous_manifest.read_text(encoding='utf8'))
         check_revision_transition(previous,pipeline._manifest)
     print(json.dumps({'pipeline_identity':pipeline.identity,'analyzer_revision':pipeline._manifest['execution']['analyzer_revision'],
-        'sources':len(pipeline._manifest['execution']['source_sha256']),'result':'VERIFIED'},sort_keys=True))
+        'sources':len(pipeline._manifest['execution']['source_sha256']),'result':'LOCAL_SHA256_CHECKED'},sort_keys=True))
     return 0
 
 if __name__=='__main__':sys.exit(main())

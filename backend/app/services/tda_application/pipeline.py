@@ -1,21 +1,21 @@
-"""Explicit verified pipeline. Trust anchor is supplied separately by the deployment owner.
+"""Local content-fingerprinted M4 analyzer pipeline, no owner signatures.
 
-Hashing detects accidental/untrusted artifact replacement, not a hostile local
-administrator controlling code, manifest and process. Protected immutable
-deployment is a prerequisite; this module does not establish Windows ACLs.
+SHA-256 pins checkpoint bytes and identifies an installed code/dependency
+closure. It does NOT authenticate a publisher or protect against someone who
+can replace both local code and recorded hashes. Tool approval and PostgreSQL
+revision fencing remain independent security boundaries.
 """
 
 from app.services.tda.configuration import (
     ANALYZER_REVISION,
 )
 from copy import deepcopy
-from hashlib import sha256
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 
 from app.services.tda_application._integrity import (
-    PipelineIntegrityError, canonical, digest, file_digest,
+    PipelineIntegrityError, digest, file_digest,
 )
 
 
@@ -99,10 +99,10 @@ def execution_configuration():
 
 
 def configured_pipeline():
-    """No V1 MiniLM manifest or unsigned analyzer fallback."""
+    """Use only installed M4 V2 semantics, without signing prerequisites."""
     import os
-    if os.environ.get("ANALYZER_M4_V2_ENABLED") != "1":
-        raise PipelineIntegrityError("signed_m4_v2_required")
+    if os.environ.get("ANALYZER_M4_V2_ENABLED", "1") != "1":
+        raise PipelineIntegrityError("m4_v2_disabled")
     return configured_m4_pipeline_v2()
 
 
@@ -253,7 +253,7 @@ def dependency_artifacts():
 
 
 def require_current_pipeline(analysis):
-    """An explicit deployment pin applies to ADMIN and signed approvals alike."""
+    """Match analyzed version to the current local source/model identity."""
     pipeline = configured_pipeline()
     if pipeline is not None and analysis.model_versions != pipeline.model_versions:
         raise PipelineIntegrityError("analysis_pipeline_not_current")
@@ -281,7 +281,6 @@ def check_revision_transition(previous, current):
 # Historical V1 approvals remain persisted evidence, but have no inference
 # authority or execution path in this V19 online application.
 M4_V2_SCHEMA = "verified_m4_analyzer_pipeline_v2"
-M4_V2_DOMAIN = b"mcp-security-framework/analyzer-deployment/v2\x00"
 M4_V2_MODELS = {"GLINER": "GLINER2.5_BASE_PASS10",
                 "DEBERTA": "DEBERTA_V3_SMALL_V2"}
 M4_V2_DRIFT_NAME = "intfloat/multilingual-e5-small"
@@ -330,11 +329,11 @@ def execution_configuration_v2():
 
 
 def build_m4_pipeline_v2_manifest(repo_root, model_root):
-    """Unsigned owner-review proposal; creating a digest grants no authority."""
+    """Describe current installed model, analyzer and M6/E5 closure."""
     from app.services.tda_application.m4_pipeline_integrity import configured_m4_identity
     model = configured_m4_identity(Path(repo_root), Path(model_root))
-    # E5 belongs to M6, but its exact local bytes must remain part of the
-    # signed pipeline closure when V2 calls M6 drift analysis.
+    # E5 belongs to M6. Its installed bytes are fingerprinted separately;
+    # this identity does not grant any MCP tool permission.
     from app.core.runtime_paths import MODEL_CACHE_DIR
     from app.services.tda.models.artifacts import _local_snapshot_path
     from app.services.tda.configuration import EMBEDDING_MODEL_NAME
@@ -351,7 +350,7 @@ def build_m4_pipeline_v2_manifest(repo_root, model_root):
         "schema": M4_V2_SCHEMA,
         "purpose": "EN_ONLY_ANALYZER_SEMANTICS_ADVISORY",
         "model_names": dict(M4_V2_MODELS),
-        "m4_signed_identity_sha256": model.identity,
+        "m4_model_identity_sha256": model.identity,
         "policy_authority": "NONE",
         "embedding_role": M4_V2_DRIFT_NAME,
         "m6_embedding": m6_binding,
@@ -360,23 +359,21 @@ def build_m4_pipeline_v2_manifest(repo_root, model_root):
 
 
 class VerifiedM4PipelineV2:
-    """Signed analyzer generation; model claims remain non-authoritative.
+    """Fingerprint the installed analyzer closure; M4 remains advisory.
 
-    This authorizes a *code/model identity*, not a tool, policy or runtime call.
-    A new source closure or revision requires an independently signed manifest.
+    No owner approval or signature is involved. PostgreSQL generation
+    fencing still invalidates analyses from previous installed versions.
     """
     m4_v2 = True
 
-    def __init__(self, manifest, approved_sha256, m4_identity):
+    def __init__(self, manifest, m4_identity):
         if not isinstance(manifest, dict) or manifest.get("schema") != M4_V2_SCHEMA:
             raise PipelineIntegrityError("m4_v2_invalid_schema")
-        if digest(manifest) != approved_sha256:
-            raise PipelineIntegrityError("m4_v2_unapproved_manifest")
         if (manifest.get("purpose") != "EN_ONLY_ANALYZER_SEMANTICS_ADVISORY"
                 or manifest.get("policy_authority") != "NONE"
                 or manifest.get("model_names") != M4_V2_MODELS
                 or manifest.get("embedding_role") != M4_V2_DRIFT_NAME
-                or manifest.get("m4_signed_identity_sha256") != m4_identity.identity):
+                or manifest.get("m4_model_identity_sha256") != m4_identity.identity):
             raise PipelineIntegrityError("m4_v2_incorrect_semantic_authority")
         # Role separation: this is NOT a third M4 model. This is the
         # independently owned M6 drift model already used by the framework.
@@ -395,7 +392,7 @@ class VerifiedM4PipelineV2:
         self._m6_root = Path(m6["root"])
         self._manifest = deepcopy(manifest)
         self._m4_identity = m4_identity
-        self.identity = approved_sha256
+        self.identity = digest(manifest)
         self.verify()
 
     @property
@@ -414,9 +411,9 @@ class VerifiedM4PipelineV2:
             raise PipelineIntegrityError("m4_v2_execution_mismatch")
 
     def _verify_analyzer_and_m6_after_m4(self):
-        """Check all signed analyzer, GLiNER source and E5 bytes.
+        """Check the current analyzer/GLiNER dependency and E5 bytes.
 
-        Caller must have just verified the signed M4 identity. This split
+        Caller must have just verified local M4 model/source bytes. This split
         avoids verifying the *same M4 files* a second time inside one
         configured_pipeline() request. execution_configuration_v2() builds
         a live source SHA inventory, so repeating verify_source_closure()
@@ -437,7 +434,7 @@ class VerifiedM4PipelineV2:
         return self.identity
 
     def verify(self):
-        """Full direct verification: signed M4 + live analyzer + E5."""
+        """Full local integrity/fingerprint check: M4, analyzer and E5."""
         self._m4_identity.verify()
         return self._verify_analyzer_and_m6_after_m4()
 
@@ -461,54 +458,34 @@ _m4_v2_lock = RLock()
 
 
 def configured_m4_pipeline_v2():
-    """Separate signed V2 identity; a V1 MiniLM/E5 manifest cannot activate it."""
+    """Build an identity from the installed bundle and source, with no keys.
+
+    We keep the source/weight/dependency verification and fail on missing
+    models. Existing PostgreSQL authority bindings ensure that upgrading
+    an analyzer cannot reuse prior tool analysis/approval evidence.
+    """
     import os
-    import base64
-    from cryptography.hazmat.primitives.serialization import load_pem_public_key
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from app.core.runtime_paths import RUNTIME_MODELS_DIR
     from app.services.tda_application.m4_pipeline_integrity import configured_m4_identity
 
-    if os.environ.get("ANALYZER_M4_V2_ENABLED") != "1":
-        raise PipelineIntegrityError("m4_v2_neural_semantics_required")
+    if os.environ.get("ANALYZER_M4_V2_ENABLED", "1") != "1":
+        raise PipelineIntegrityError("m4_v2_neural_semantics_disabled")
     if os.environ.get("ANALYZER_PIPELINE_BINDINGS"):
         raise PipelineIntegrityError("m4_v2_old_minilm_bindings_refused")
-    names = ("ANALYZER_PIPELINE_MANIFEST", "ANALYZER_PIPELINE_APPROVED_SHA256",
-             "ANALYZER_PIPELINE_SIGNATURE", "ANALYZER_PIPELINE_TRUST_KEY")
-    values = tuple(os.environ.get(k, "") for k in names)
-    if not all(values):
-        raise PipelineIntegrityError("m4_v2_signed_deployment_configuration_required")
     repo = Path(__file__).resolve().parents[4]
-    model_root = os.environ.get("M4_SEMANTICS_MODEL_ROOT", "")
-    if not model_root:
-        raise PipelineIntegrityError("m4_v2_model_bundle_required")
-    m4_identity = configured_m4_identity(repo, Path(model_root))
+    model_root = Path(os.environ.get(
+        "M4_SEMANTICS_MODEL_ROOT", str(RUNTIME_MODELS_DIR / "m4_semantics")
+    )).resolve(strict=True)
+    # Always check the currently installed frozen weights and source bytes.
+    m4_identity = configured_m4_identity(repo, model_root)
+    key = (str(repo), str(model_root), m4_identity.identity)
     with _m4_v2_lock:
-        try:
-            manifest = json.loads(Path(values[0]).read_text(encoding="utf8"))
-            if digest(manifest) != values[1]:
-                raise PipelineIntegrityError("m4_v2_unapproved_manifest")
-            pub = load_pem_public_key(Path(values[3]).read_bytes())
-            if not isinstance(pub, Ed25519PublicKey):
-                raise ValueError("m4_v2_wrong_signature_key")
-            pub.verify(
-                base64.b64decode(values[2], validate=True),
-                M4_V2_DOMAIN + canonical(manifest),
-            )
-        except PipelineIntegrityError:
-            raise
-        except Exception as exc:
-            raise PipelineIntegrityError("m4_v2_deployment_signature_invalid") from exc
-        key = (values, m4_identity.identity)
-        if key not in _m4_v2_cache:
-            # Constructor verifies the entire M4/analyzer/E5 closure. Do
-            # not immediately perform that expensive verification again.
-            worker = VerifiedM4PipelineV2(manifest, values[1], m4_identity)
+        worker = _m4_v2_cache.get(key)
+        if worker is None:
+            manifest = build_m4_pipeline_v2_manifest(repo, model_root)
+            worker = VerifiedM4PipelineV2(manifest, m4_identity)
+            _m4_v2_cache.clear()
             _m4_v2_cache[key] = worker
         else:
-            # configured_m4_identity() above has already verified the
-            # signature and exact on-disk SHA-256 of every M4 source/model
-            # in THIS request. Recheck the live analyzer, GLiNER and M6/E5
-            # closure, but do not hash M4's identical bytes twice.
-            worker = _m4_v2_cache[key]
             worker._verify_analyzer_and_m6_after_m4()
         return worker

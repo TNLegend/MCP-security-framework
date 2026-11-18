@@ -1,4 +1,4 @@
-"""Shared signed M4 inference and a read-only ADMIN view.
+"""Shared locally verified M4 inference and a read-only ADMIN view.
 
 GLiNER/DeBERTa supply advisory text hypotheses only. M3/M6/M7 and
 Proxy/Runtime retain decision authority. No automatic approvals or writes
@@ -34,14 +34,15 @@ class M4Busy(RuntimeError):
  pass
 
 def is_enabled()->bool:
- return os.environ.get("ANALYZER_M4_V2_ENABLED","0")=="1"
+ return os.environ.get("ANALYZER_M4_V2_ENABLED","1")=="1"
 
 def _configured_paths():
  if any(name.startswith("M4_NEURAL_SHADOW_") for name in os.environ):
   raise M4NotConfigured("RETIRED_M4_ENVIRONMENT_VARIABLES_REFUSED")
  if not is_enabled():
   raise M4NotConfigured("M4_SEMANTICS_DISABLED")
- raw=os.environ.get("M4_SEMANTICS_MODEL_ROOT","").strip()
+ from app.core.runtime_paths import RUNTIME_MODELS_DIR
+ raw=os.environ.get("M4_SEMANTICS_MODEL_ROOT",str(RUNTIME_MODELS_DIR/"m4_semantics")).strip()
  if not raw:raise M4NotConfigured("MISSING_M4_SEMANTICS_MODEL_ROOT")
  root=Path(raw).expanduser().resolve(strict=True)
  if not root.is_dir():raise M4NotConfigured("INVALID_M4_NEURAL_MODEL_BUNDLE")
@@ -65,7 +66,7 @@ def _configured_paths():
 def _engine():
  global _ENGINE,_ENGINE_KEY
  paths=_configured_paths()
- # One signed M4 model identity. E5 stays in M6 and has its own binding.
+ # SHA-256 fingerprint of the local M4 bundle; not a signature or permission.
  gl,db,tok,cfg=paths
  repo_root=Path(__file__).resolve().parents[4]
  identity=configured_m4_identity(repo_root,gl.parent)
@@ -86,7 +87,7 @@ def _engine():
   _ENGINE=new;_ENGINE_KEY=key
   return _ENGINE
 
-def infer_m4_signed_description(text: str, *, require_signed_identity: bool = True):
+def infer_m4_description(text: str):
  """One shared, bounded GLiNER/DeBERTa inference for main and ADMIN paths.
 
  Protects runtime resources from concurrent independent model inference.
@@ -98,8 +99,8 @@ def infer_m4_signed_description(text: str, *, require_signed_identity: bool = Tr
  try:
   active_engine=_engine()
   identity=getattr(active_engine,"_m4_verified_identity",None)
-  if require_signed_identity and identity is None:
-   raise PipelineIntegrityError("M4_SIGNED_IDENTITY_REQUIRED")
+  if identity is None:
+   raise PipelineIntegrityError("M4_CONTENT_IDENTITY_REQUIRED")
   result=active_engine.analyze(text,source_path="/description")
   if identity is not None:
    identity.verify()
@@ -141,10 +142,8 @@ def analyze_observed_version_readonly(db:Session,tool_id:int)->dict[str,Any]:
  except M4SourceProvenanceUnverified as exc:
   provenance_issue=str(exc)
  # Both the controlling analyzer and the ADMIN read-only endpoint share
- # one bounded signed-model inference lock; no duplicate model worker.
- result,identity=infer_m4_signed_description(
-  snapshot["description"],require_signed_identity=False
- )
+ # one bounded model inference lock; no duplicate model worker.
+ result,identity=infer_m4_description(snapshot["description"])
  # Fail closed if an ADMIN or scanner replaced the current tool version
  # while the CPU model was running. A stale result must not be displayed
  # as analysis of the current fingerprint.
@@ -175,7 +174,7 @@ def analyze_observed_version_readonly(db:Session,tool_id:int)->dict[str,Any]:
   "provenance_limitation":provenance_issue,
   "m1_parsed_source_proof":proof,
   "effects_on_approval_or_dispatch":"NONE",
-  "m4_signed_pipeline_sha256":(getattr(identity,"identity",None)),
+  "m4_model_identity_sha256":(getattr(identity,"identity",None)),
   "model_output":result,
   "m4_advisory_module_views":consumer_views,
   "m4_downstream_advisory":downstream_views,

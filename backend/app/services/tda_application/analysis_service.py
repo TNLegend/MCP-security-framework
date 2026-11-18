@@ -47,18 +47,18 @@ from datetime import datetime
 
 
 class ToolAnalysisService:
-    """One signed GLiNER/DeBERTa M4. M6 owns E5 drift.
+    """One locally fingerprinted GLiNER/DeBERTa M4. M6 owns E5 drift.
 
     V1 is NOT supported for new observations. Historical signed reports
     remain evidence in the database but are never implicitly approved.
     """
     def __init__(self, *, pipeline=None) -> None:
         import os
-        if os.environ.get("ANALYZER_M4_V2_ENABLED") != "1":
-            raise ValueError("SIGNED_M4_V2_ANALYZER_REQUIRED")
+        if os.environ.get("ANALYZER_M4_V2_ENABLED","1") != "1":
+            raise ValueError("M4_V2_ANALYZER_REQUIRED")
         pipeline = configured_pipeline() if pipeline is None else pipeline
         if not getattr(pipeline, "m4_v2", False):
-            raise ValueError("SIGNED_M4_V2_ANALYZER_REQUIRED")
+            raise ValueError("M4_V2_ANALYZER_REQUIRED")
         from app.services.tda_application.pipeline import execution_configuration_v2
         pipeline.assert_execution(execution_configuration_v2())
         self.pipeline = pipeline
@@ -94,9 +94,9 @@ class ToolAnalysisService:
         from hashlib import sha256
 
         # Disallow runtime mode flips that could change the analyzer without
-        # a new signed generation and explicit migration.
+        # a new local generation and explicit migration.
         import os
-        if self._m4_mode != (os.environ.get("ANALYZER_M4_V2_ENABLED") == "1"):
+        if self._m4_mode != (os.environ.get("ANALYZER_M4_V2_ENABLED","1") == "1"):
             raise ValueError("M4_ANALYZER_MODE_CHANGED_AFTER_SERVICE_STARTUP")
         # Capture the worker generation before inference; commit rechecks it.
         fence_session(db, purpose="ANALYSIS")
@@ -361,12 +361,12 @@ class ToolAnalysisService:
             bound = (result.get("semantic_scores") or {}).get("m4_structured_semantics")
             if (
                 not isinstance(bound, dict)
-                or bound.get("signed_analyzer_pipeline_identity") != self.pipeline.identity
-                or not isinstance(bound.get("signed_model_and_source_identity"), str)
-                or len(bound["signed_model_and_source_identity"]) != 64
+                or bound.get("analyzer_pipeline_sha256") != self.pipeline.identity
+                or bound.get("m4_model_identity_sha256")
+                   != self.pipeline._manifest.get("m4_model_identity_sha256")
                 or result.get("model_versions") != self.pipeline.model_versions
             ):
-                raise ValueError("discovery_staged_signed_v2_m4_evidence_required")
+                raise ValueError("discovery_staged_m4_content_identity_required")
             if result.get("analysis_status") in {
                 STATUS_APPROVED,
                 STATUS_ADMIN_ALLOWED,
@@ -378,10 +378,10 @@ class ToolAnalysisService:
                 m4_report = None
                 m4_identity = None
                 if self._m4_mode:
-                    # Signed identity is mandatory; the same bounded worker
+                    # Local content identity is mandatory; the same bounded worker
                     # handles both this controlling route and ADMIN read-only M4.
-                    m4_report, proof = m4_service.infer_m4_signed_description(
-                        snapshot["description"], require_signed_identity=True
+                    m4_report, proof = m4_service.infer_m4_description(
+                        snapshot["description"]
                     )
                     m4_identity = proof.identity
                 result = analyze_tool_version(

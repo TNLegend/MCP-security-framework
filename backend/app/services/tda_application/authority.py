@@ -42,16 +42,59 @@ def _token_from_verified_pipeline(p):
 
 
 def worker_token():
-    # Preserve the independently checked token for all other callers.
+    # This is local PostgreSQL generation fencing, not a cryptographic signer.
     return _token_from_verified_pipeline(configured_pipeline())
 
 
-def verified_observation_token(analysis):
-    """One full signed-file verification per observation authorization decision.
+def initialize_local_analyzer_generation(db, pipeline):
+    """Initialize/rotate a LOCAL code+model identity, without signing.
 
-    The signed M4/analyzer/E5 closure and the exact analysis revision are
-    checked by require_current_pipeline. No unverified identity may be passed
-    by an HTTP handler; PostgreSQL generation fencing remains in assert_current.
+    Rotation is serialized in PostgreSQL. Previous analyses retain their old
+    identity/generation and cannot be reused to admit a tool. This operation
+    does not approve any tool, observation, contract or user.
+    """
+    from sqlalchemy import text
+    from app.models.analyzer_authority import AnalyzerAuthority
+
+    if db.bind is None or db.bind.dialect.name != "postgresql":
+        raise PipelineIntegrityError("analyzer_authority_postgresql_required")
+    if not getattr(pipeline, "m4_v2", False):
+        raise PipelineIntegrityError("local_analyzer_m4_v2_required")
+    db.execute(text("SELECT pg_advisory_xact_lock(678304172)"))
+    row = db.get(AnalyzerAuthority, 1, populate_existing=True)
+    closure = digest(pipeline._manifest["execution"]["source_sha256"])
+    execution = digest(pipeline._manifest["execution"])
+    revision = pipeline._manifest["execution"]["analyzer_revision"]
+    if row is None or row.pipeline_identity != pipeline.identity:
+        values = dict(
+            generation=1 if row is None else row.generation + 1,
+            pipeline_identity=pipeline.identity,
+            closure_digest=closure,
+            execution_digest=execution,
+            analyzer_revision=revision,
+            manifest_approval_ref="LOCAL_SHA256_INSTALL",
+            activated_by="LOCAL_INSTALL",
+            activated_at=datetime.utcnow(),
+        )
+        if row is None:
+            row = AnalyzerAuthority(id=1, **values)
+            db.add(row)
+        else:
+            for name, value in values.items():
+                setattr(row, name, value)
+        db.flush()
+    # Even unchanged installations need a locally usable generation token.
+    os.environ["ANALYZER_AUTHORITY_GENERATION"] = str(row.generation)
+    return AuthorityToken(row.generation, row.pipeline_identity)
+
+
+
+def verified_observation_token(analysis):
+    """One current-content verification per observation dispatch decision.
+
+    Local SHA-256 model/analyzer/E5 identity and analysis revision are
+    checked by require_current_pipeline. PostgreSQL generation fencing,
+    approval evidence and admin revocation remain in assert_current.
     """
     from app.services.tda_application.pipeline import require_current_pipeline
 

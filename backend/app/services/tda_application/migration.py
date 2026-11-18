@@ -191,7 +191,7 @@ def _source(db, approval):
 
 
 def prepare_migration(db, *, admin_id):
-    """Reanalyse every currently signed approval using verified candidate models.
+    """Reanalyse current ADMIN-approved observations using verified local models.
 
     The current observation pointers, approvals and pipeline authority stay
     unchanged. Stale preparation is allowed to exist but cannot activate.
@@ -227,11 +227,11 @@ def prepare_migration(db, *, admin_id):
             "execution": definition.get("execution") or {},
         }
         # Historical V1 evidence is read for comparison only. Fresh
-        # observations are inferred exclusively through signed neural M4;
+        # observations are inferred exclusively through locally pinned M4;
         # no prior approval is inherited as a runtime permission.
         from app.services.tda_application import m4_service as m4_service
-        m4_report, proof = m4_service.infer_m4_signed_description(
-            snapshot["description"], require_signed_identity=True
+        m4_report, proof = m4_service.infer_m4_description(
+            snapshot["description"]
         )
         result = analyze_tool_version(
             tool_snapshot=snapshot,

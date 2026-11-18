@@ -1,23 +1,21 @@
-"""Signed identity for the EN-only GLiNER/DeBERTa semantic M4.
+"""Locally computed SHA-256 identity for the EN-only GLiNER/DeBERTa M4.
 
-The M4 identity covers frozen weights, tokenizer, source code and
-inference configuration. Signing the model does not approve an MCP tool.
-M6's E5 drift binding is verified separately by the analyzer V2 manifest.
+The pinned checkpoint and bundled-file SHA checks remain strict; a digest
+identifies bytes but does not authenticate a publisher or authorize a tool.
+No owner signing keys, signature files or approval ceremony are required.
+M6 E5 drift remains a separate dependency.
 """
 from __future__ import annotations
 
-import base64
-from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.services.tda_application._integrity import (
-    PipelineIntegrityError, canonical, digest, file_digest,
+    PipelineIntegrityError, digest, file_digest,
 )
 
 SCHEMA="m4_semantic_model_identity_v2"
-DOMAIN=b"mcp-security-framework/m4-semantic-model-deployment/v2\x00"
 MODEL_FILES=frozenset({
  "GLINER/model.safetensors",
  "GLINER/config.json",
@@ -128,15 +126,13 @@ def artifact_inventory(model_root: Path) -> dict[str,dict[str,Any]]:
 
 
 def build_research_candidate(repo_root:Path,model_root:Path)->dict[str,Any]:
-    """Create an unsigned proposal; a hash here is NOT an approval."""
+    """Fingerprint installed M4 files and sources; no signing/approval implied."""
     assets=artifact_inventory(model_root)
     for file,expected in FROZEN_WEIGHTS_SHA256.items():
         if assets[file]["sha256"]!=expected:
             raise PipelineIntegrityError("m4_selected_checkpoint_sha_changed")
     recorded=json.loads((Path(model_root)/"M4_BUNDLE_SHA256_MANIFEST.json").read_text(encoding="utf8"))
-    if (recorded.get("production_approved") is not False or
-        recorded.get("signature")!="NOT_SIGNED" or
-        set(recorded.get("files",{}))!=MODEL_FILES-{"M4_BUNDLE_SHA256_MANIFEST.json"}):
+    if set(recorded.get("files",{}))!=MODEL_FILES-{"M4_BUNDLE_SHA256_MANIFEST.json"}:
         raise PipelineIntegrityError("m4_frozen_research_bundle_invalid")
     for name,entry in recorded["files"].items():
         if assets[name]["sha256"]!=entry.get("sha256") or assets[name]["bytes"]!=entry.get("bytes"):
@@ -158,83 +154,44 @@ def build_research_candidate(repo_root:Path,model_root:Path)->dict[str,Any]:
 
 
 class VerifiedM4SemanticIdentity:
-    """A separate, explicitly approved manifest with signed source/artifact closure."""
+    """Local content fingerprint; never authorization or publisher attestation."""
 
-    def __init__(self,manifest:dict,approved_sha256:str,signature_b64:str,
-                 public_key_path:Path,repo_root:Path,model_root:Path):
-        from cryptography.hazmat.primitives.serialization import load_pem_public_key
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
+    def __init__(self, manifest:dict, repo_root:Path, model_root:Path):
         if not isinstance(manifest,dict) or manifest.get("schema")!=SCHEMA:
             raise PipelineIntegrityError("m4_invalid_identity_schema")
-        if not isinstance(approved_sha256,str) or len(approved_sha256)!=64:
-            raise PipelineIntegrityError("m4_approved_digest_missing_or_invalid")
-        if digest(manifest)!=approved_sha256:
-            raise PipelineIntegrityError("m4_unapproved_manifest")
         if (manifest.get("purpose")!="EN_ONLY_STRUCTURED_M4_SEMANTICS_ADVISORY"
-             or manifest.get("model_names")!=MODELS
-             or manifest.get("policy_authority")!="NONE"
-             or manifest.get("primary_semantic_engine")!="GLINER2.5_PASS10_PLUS_DEBERTA_V2_ONLY"):
-            raise PipelineIntegrityError("m4_unsafe_deployment_contract")
+                or manifest.get("model_names")!=MODELS
+                or manifest.get("policy_authority")!="NONE"
+                or manifest.get("primary_semantic_engine")!="GLINER2.5_PASS10_PLUS_DEBERTA_V2_ONLY"):
+            raise PipelineIntegrityError("m4_unsafe_semantic_contract")
         if manifest.get("source_roots")!=list(SOURCE_ROOTS):
             raise PipelineIntegrityError("m4_source_roots_changed")
-        if (manifest.get("decoder")!={
+        if manifest.get("decoder")!={
             "GLINER_relations":RELATION_PARAMETERS,
             "GLINER_entity_threshold":0.5,
             "DeBERTa_heads":HEADS,
-        }):
+        }:
             raise PipelineIntegrityError("m4_decoder_settings_changed")
-        if (not isinstance(signature_b64,str) or not signature_b64 or
-            not isinstance(public_key_path,(Path,str))):
-            raise PipelineIntegrityError("m4_deployment_signature_missing")
-        try:
-            key=load_pem_public_key(Path(public_key_path).read_bytes())
-            if not isinstance(key,Ed25519PublicKey):
-                raise TypeError("wrong trust key algorithm")
-            key.verify(base64.b64decode(signature_b64,validate=True),
-                       DOMAIN+canonical(manifest))
-        except Exception as exc:
-            raise PipelineIntegrityError("m4_deployment_signature_invalid") from exc
         self.repo_root=Path(repo_root)
         self.model_root=Path(model_root)
         self.manifest=manifest
-        self.identity=approved_sha256
+        self.identity=digest(manifest)
         self.verify()
 
     def verify(self)->str:
-        model=self.manifest.get("model_artifacts")
-        source=self.manifest.get("source_artifacts")
-        if (not isinstance(model,dict) or set(model)!=MODEL_FILES or
-            not isinstance(source,dict) or not source):
-            raise PipelineIntegrityError("m4_invalid_inventory")
-        for file,expected in FROZEN_WEIGHTS_SHA256.items():
-            if model[file].get("sha256")!=expected:
-                raise PipelineIntegrityError("m4_selected_checkpoint_sha_changed")
-        if artifact_inventory(self.model_root)!=model:
-            raise PipelineIntegrityError("m4_model_artifact_digest_changed")
-        if source_inventory(self.repo_root)!=source:
-            raise PipelineIntegrityError("m4_source_closure_changed")
+        # The public bundle contains frozen per-file hashes; known checkpoint
+        # weights also match the independent pins in this module. Other
+        # sources are fingerprinted to detect changes in one process.
+        observed=build_research_candidate(self.repo_root,self.model_root)
+        if observed!=self.manifest:
+            raise PipelineIntegrityError("m4_local_source_or_artifact_changed")
         return self.identity
 
 
 def configured_m4_identity(repo_root:Path,model_root:Path)->VerifiedM4SemanticIdentity:
+    """Use installed model/source bytes, never owner keys or signature env."""
     import os
-    settings={
-        "manifest":os.environ.get("M4_SEMANTICS_IDENTITY_MANIFEST",""),
-        "approved":os.environ.get("M4_SEMANTICS_APPROVED_SHA256",""),
-        "signature":os.environ.get("M4_SEMANTICS_SIGNATURE",""),
-        "trust_key":os.environ.get("M4_SEMANTICS_TRUST_KEY",""),
-    }
     if any(name.startswith("M4_NEURAL_SHADOW_") for name in os.environ):
         raise PipelineIntegrityError("retired_m4_environment_variables_refused")
-    if not all(settings.values()):
-        raise PipelineIntegrityError("m4_signed_identity_required")
-    try:
-        manifest=json.loads(Path(settings["manifest"]).read_text(encoding="utf8"))
-    except (ValueError,OSError) as exc:
-        raise PipelineIntegrityError("m4_manifest_not_available") from exc
-    return VerifiedM4SemanticIdentity(
-        manifest=manifest,approved_sha256=settings["approved"],
-        signature_b64=settings["signature"],public_key_path=Path(settings["trust_key"]),
-        repo_root=repo_root,model_root=model_root,
-    )
+    manifest=build_research_candidate(repo_root,model_root)
+    return VerifiedM4SemanticIdentity(manifest,repo_root,model_root)

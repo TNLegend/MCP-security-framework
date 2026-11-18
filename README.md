@@ -95,23 +95,23 @@ unchanged. No pretrained or fine-tuned model may authorize or block MCP calls.
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.
 
-**Security release boundary and installation-specific signatures:** public
-model weights do **not** grant an executable-pipeline approval. The V19.3
-analyzer signature currently binds exact executable/source hashes **and
-absolute interpreter, dependency, and M6 cache paths**. Consequently an
-identity prepared in one virtual environment cannot be copied to another
-machine/path, even if GLiNER source bytes are identical. This is intentional
-fail-closed integrity behavior, not a reason to disable verification. For a
-new installation, the deployment owner must prepare the unsigned manifests
-in the **exact installed Python environment**, independently review both
-manifest hashes and grant/sign the owner approval for that installation.
-Use `scripts/sign_tda_m4_v193.py prepare` only for preparation; owner-controlled
-`sign` and `verify` are separate final release steps. The installer never
-generates owner keys or signs/activates an analyzer automatically. **The code
-and models are publicly installable; unattended owner-signed startup on an
-arbitrary machine is not yet certified.** This release boundary is separate
-from M3, which remains SHADOW-only. The launcher does not waive historical
-Gate3B limitations or bypass M4 checks.
+**M4 model integrity without owner signatures:** the installer downloads
+GLiNER PASS10 and DeBERTa V2 from pinned public Hugging Face revisions,
+verifies their published file SHA-256 values, and computes a **local**
+source/model/analyzer fingerprint when the backend starts. There is no
+Ed25519 owner key, certificate, approval manifest, or manual signature
+step. The same code can be installed under different Python/venv paths;
+each installation computes its own fingerprint.
+
+A local fingerprint is **not** cryptographic publisher authentication:
+an attacker who controls the installed code and the expected hashes can
+modify both. Run trusted, pinned source and dependencies. If the installed
+analyzer changes, PostgreSQL advances its local generation and **old
+analysis/approval evidence must not silently authorize dispatch**.
+M4 remains English-only and advisory; no model result alone ALLOWs or
+BLOCKs an MCP operation. Independent ADMIN tool approvals, policy checks,
+M1/M2/M3/M5/M6/M7 checks, and Gateway enforcement remain required.
+The retired signed V19 launch/sign tools are not part of normal setup.
 
 **Source publication:** GitHub contains source and mandatory declarative
 configuration plus this README. Models and trained weights remain on the dedicated **public Hugging Face**
