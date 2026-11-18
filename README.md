@@ -79,9 +79,13 @@ are lost on restart. Existing authenticated control-plane ADMIN-only
 read-only endpoints expose SHADOW health, an ephemeral job list, and a source-
 SHA-bound result lookup under `/control-plane/tool-analysis/shadow/`.
 Queue overflow, unknown language, deadlines and worker failures stay
-incomplete/unknown, never benign. An IPC timeout kills the inference child,
-but a hard RAM cap, privilege sandbox and live Gateway tests are still missing.
-Normal startup downloads the frozen public V3 assets but leaves inference disabled unless explicitly enabled.
+incomplete/unknown, never benign. An IPC timeout kills the inference child. This build intentionally does not
+impose an additional OS RAM cap or privilege sandbox on the research worker;
+the existing input-size, queue, and timeout safety checks remain in place.
+Live Gateway/M3 integration has been exercised in disposable QA environments
+with temporary authority and fixture-based approvals, **not** approved
+production authority. Normal startup downloads the frozen public V3 assets
+but leaves inference disabled unless explicitly enabled.
 Do not enable this experimental queue in a production Gateway.
 Existing deterministic decisions and M1/M2/M4/M6/M7 authority boundaries remain
 unchanged. No pretrained or fine-tuned model may authorize or block MCP calls.
@@ -91,13 +95,23 @@ unchanged. No pretrained or fine-tuned model may authorize or block MCP calls.
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.
 
-**Security release boundary:** downloading an approved checkpoint does not
-approve a new executable pipeline. V19.3's owner signature covered its exact
-earlier source inventory. Changes to launch/bootstrap or other signed source
-require a new owner-approved source identity before enabling the signed
-M4 pipeline. The installer does not silently activate production or waive
-historical Gate3B verification limitations. By default M4 remains advisory
-and signed activation stays fail-closed until its release identity is updated.
+**Security release boundary and installation-specific signatures:** public
+model weights do **not** grant an executable-pipeline approval. The V19.3
+analyzer signature currently binds exact executable/source hashes **and
+absolute interpreter, dependency, and M6 cache paths**. Consequently an
+identity prepared in one virtual environment cannot be copied to another
+machine/path, even if GLiNER source bytes are identical. This is intentional
+fail-closed integrity behavior, not a reason to disable verification. For a
+new installation, the deployment owner must prepare the unsigned manifests
+in the **exact installed Python environment**, independently review both
+manifest hashes and grant/sign the owner approval for that installation.
+Use `scripts/sign_tda_m4_v193.py prepare` only for preparation; owner-controlled
+`sign` and `verify` are separate final release steps. The installer never
+generates owner keys or signs/activates an analyzer automatically. **The code
+and models are publicly installable; unattended owner-signed startup on an
+arbitrary machine is not yet certified.** This release boundary is separate
+from M3, which remains SHADOW-only. The launcher does not waive historical
+Gate3B limitations or bypass M4 checks.
 
 **Source publication:** GitHub contains source and mandatory declarative
 configuration plus this README. Models and trained weights remain on the dedicated **public Hugging Face**
