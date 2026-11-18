@@ -153,6 +153,34 @@ a fully green backend regression: the original B11 environment-specific
 failures and unresolved tests require separate QA qualification, and
 the production Gateway latency limitation has not been waived.
 
+**B13 obsolete-code and portable source-closure cleanup (2026-11-18):**
+The old experimental M3 design-envelope adapter and the unused V1-style M7
+semantic-score corroboration module were removed. M4 hypothesis projection now
+lives directly in M7 (no M3 compatibility alias), while the explicit M3
+instruction-review entrypoint no longer lives under M7. Unused legacy
+semantic-score threshold and category-label constants were retired; active
+M3/M4/M6/E5/M7 analysis and deterministic BLOCK/REVIEW protections remain.
+
+A previous execution fingerprint named the Git-ignored
+`scripts/replay_tda_engineering.py` research helper, which does not exist on
+a fresh clone. The executable source closure no longer requires it. Both M4
+source inventories now exclude **only** explicitly Git-ignored local QA
+scripts, frontend test files and OPA `*_test.rego` files while preserving
+hashing of production source modules, runtime scripts and policy files.
+Unreviewed source files outside those narrow QA patterns remain inventoried,
+and source symlinks remain rejected. This fixes identity differences caused
+solely by private research files on a developer workstation.
+
+The analyzer revision is now
+`tool-description-analyzer-v19.4-local-sha256-runtime-closure`. As with
+any analyzer source change, restart the framework and let PostgreSQL establish
+the new local generation; previous tool analyses and approvals must not be
+silently reused. No M4 owner-signature ceremony is reintroduced, and
+Control Plane revision signing, service identities, OPA and Gateway admission
+checks are unchanged. Private archive evidence and updated regression tests
+are stored only in the separate QA repository; production readiness is
+**not** inferred from this maintenance pass.
+
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.

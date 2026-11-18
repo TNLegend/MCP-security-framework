@@ -161,11 +161,3 @@ def _schema_findings(
         # The parameter-name exemption applies only to the structural finding.
         findings.extend(_text_findings(source, field_text))
     return findings
-
-
-def explicit_instruction_review(snapshot: dict) -> list[dict]:
-    """Historical M7 entrypoint; M3 owns instruction review from Lot 2 onward."""
-    from app.services.tda.m3_instructions.review import (
-        explicit_instruction_review as m3_explicit_instruction_review,
-    )
-    return m3_explicit_instruction_review(snapshot)

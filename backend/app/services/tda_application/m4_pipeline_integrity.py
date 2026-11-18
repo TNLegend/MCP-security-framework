@@ -14,6 +14,7 @@ from typing import Any
 from app.services.tda_application._integrity import (
     PipelineIntegrityError, digest, file_digest,
 )
+from common.source_closure import is_private_qa_source
 
 SCHEMA="m4_semantic_model_identity_v2"
 MODEL_FILES=frozenset({
@@ -101,6 +102,10 @@ def source_inventory(repo_root: Path) -> dict[str,dict[str,Any]]:
             if p.is_symlink() or getattr(p,"is_junction",lambda:False)():
                 raise PipelineIntegrityError("m4_linked_source_rejected")
             if not p.is_file() or p.suffix.lower() not in SOURCE_SUFFIXES:
+                continue
+            # Developer-only QA files are ignored by Git and absent from
+            # portable installs; never bind runtime identity to their bytes.
+            if is_private_qa_source(p):
                 continue
             key=p.relative_to(repo_root).as_posix()
             secure_file(repo_root,key)

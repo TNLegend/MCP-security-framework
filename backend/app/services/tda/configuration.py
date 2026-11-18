@@ -1,10 +1,9 @@
 from __future__ import annotations
 import re
 
-ANALYZER_REVISION = "tool-description-analyzer-v19.3-signed-semantic-m4-replay-presence-fix"
+ANALYZER_REVISION = "tool-description-analyzer-v19.4-local-sha256-runtime-closure"
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
 EMBEDDING_MODEL_VERSION = "local-cache"
-SEMANTIC_REVIEW_THRESHOLD = 0.74
 MIN_REVIEW_JUSTIFICATION_LENGTH = 8
 FINDING_DECISION_BLOCK = "block"
 FINDING_DECISION_REVIEW = "review"
@@ -44,25 +43,6 @@ SEMANTIC_CATEGORIES = [
     "shell_injection",
     "unauthorized_financial_transaction",
 ]
-SEMANTIC_CATEGORY_LABELS = {
-    "normal_tool_description": "a normal and transparent tool description",
-    "prompt_injection": "instructions that override or manipulate platform instructions",
-    "security_bypass": "instructions to bypass safeguards, policy, or authorization",
-    "secret_collection": "collection of passwords, tokens, credentials, or secrets",
-    "data_exfiltration": "sending or uploading data to an external destination",
-    "hidden_additional_action": "a concealed additional action beyond the stated purpose",
-    "command_execution": "execution of shell commands, scripts, or operating system processes",
-    "unauthorized_data_access": "access to data without permission or outside the authorized scope",
-    "user_deception": "misleading the user or concealing the tool's real behavior",
-    "privilege_escalation": "changing privileges or identity authority beyond the declared purpose",
-    "cross_tenant_access": "accessing another tenant, account, project, or organization without authorization",
-    "unexpected_destructive_operation": "deleting or irreversibly modifying data beyond the declared purpose",
-    "public_sharing": "making private data or resources publicly accessible",
-    "bulk_messaging": "sending messages to many recipients or performing unsolicited outreach",
-    "server_side_request_forgery": "requesting internal, local, metadata, or restricted network destinations",
-    "shell_injection": "allowing untrusted input to alter a command, shell, or executable invocation",
-    "unauthorized_financial_transaction": "an unauthorized payment, transfer, purchase, or refund",
-}
 SEMANTIC_CORROBORATION_PATTERNS = {
     "prompt_injection": (
         "\\b(ignore|override|disregard|forget).{0,50}\\b(instructions?|rules?|policy|safeguards?)\\b",

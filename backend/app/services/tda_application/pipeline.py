@@ -13,6 +13,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 
+from common.source_closure import is_private_qa_source
 
 from app.services.tda_application._integrity import (
     PipelineIntegrityError, digest, file_digest,
@@ -74,7 +75,6 @@ def execution_configuration():
             "policies",
             "backend/requirements.txt",
             "scripts/check_tda_pipeline_release.py",
-            "scripts/replay_tda_engineering.py",
             "scripts/migrations/20261102_step6_analyzer_authority.sql",
         )
     ]
@@ -132,7 +132,7 @@ def source_inventory(roots):
                 ".toml",
                 ".txt",
             }:
-                if "__pycache__" not in p.parts:
+                if "__pycache__" not in p.parts and not is_private_qa_source(p):
                     result[str(p)] = file_digest(p)
     return result
 
