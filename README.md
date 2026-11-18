@@ -252,7 +252,10 @@ Human holds, revocation, Emergency Deny, JWT, OPA and transaction-linearized
 admission remain mandatory. Model outputs remain advisory.
 
 A change of installed M4/M6 files or the active *analyzer generation* does
-not, by itself, revoke an unchanged previously approved tool. New TDA jobs
+not, by itself, revoke an unchanged previously approved tool. Signed
+successor configurations may inherit exactly the same active, origin-linked
+ADMIN approval without rerunning TDA; they must revalidate its historical
+binding, evidence digest, contract and approval lineage. New TDA jobs
 must still use the active, verified analyzer identity; old analysis bindings
 must never be silently retagged. Changed tool definitions, contracts, signed
 approval or evidence, or explicit ADMIN veto remain fail-closed.

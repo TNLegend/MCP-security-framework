@@ -284,9 +284,8 @@ def _copy_observation_approvals_to_draft(
         from app.models.tool_analysis import ToolAnalysis,ToolHumanReview
         from app.models.control_plane import EmergencyDeny
         from app.services.tda_application.queries import latest_protocol_observation
-        from app.services.tda.configuration import ANALYZER_REVISION
         from app.services.tda.m5_context.identity import compute_analysis_context_hash
-        from app.services.tda_application.pipeline import require_current_pipeline
+        from app.services.tda_application.authority import approved_analysis_provenance
         analysis=db.get(ToolAnalysis,observation.analysis_id,populate_existing=True)
         latest=latest_protocol_observation(db,tool_id=observation.tool_id,
             upstream_protocol_profile_id=observation.upstream_protocol_profile_id)
@@ -303,7 +302,7 @@ def _copy_observation_approvals_to_draft(
                        and c.tool_name==observation.tool_name),None)
         exact=(source_snapshot_current and latest is not None and latest.id==observation.id
                and source_review.admin_id==source_approval.admin_id
-               and analysis is not None and analysis.analyzer_revision==ANALYZER_REVISION
+               and analysis is not None
                and analysis.tool_id==observation.tool_id and analysis.fingerprint==observation.tool_fingerprint
                and observation.analysis_state in {'APPROVED','ADMIN_ALLOWED'}
                and analysis.analysis_status in {'APPROVED','ADMIN_ALLOWED'}
@@ -312,7 +311,7 @@ def _copy_observation_approvals_to_draft(
                and deny is None and contract is not None and contract.contract_hash==source_approval.contract_hash)
         exact=exact and analysis.analysis_context_hash==compute_analysis_context_hash({'contract_hash':source_approval.contract_hash})
         if exact:
-            try:require_current_pipeline(analysis)
+            try:approved_analysis_provenance(db,observation,analysis)
             except ValueError:exact=False
         from app.models.approval_lineage import ToolApprovalLineage
         lineage = db.get(ToolApprovalLineage,source_review.id) if source_review is not None else None
@@ -972,11 +971,11 @@ def _validate_v2_database_artifacts(
         ):
             raise ControlPlaneConfigError("approval_observation_mismatch")
         from app.models.tool_analysis import ToolAnalysis
-        from app.services.tda_application.pipeline import require_current_pipeline
+        from app.services.tda_application.authority import approved_analysis_provenance
         current_analysis=db.get(ToolAnalysis,observation.analysis_id,populate_existing=True) if observation.analysis_id else None
         if current_analysis is None:raise ControlPlaneConfigError('approval_analysis_missing')
-        try:require_current_pipeline(current_analysis)
-        except ValueError as exc:raise ControlPlaneConfigError('approval_pipeline_not_current') from exc
+        try:approved_analysis_provenance(db,observation,current_analysis)
+        except ValueError as exc:raise ControlPlaneConfigError('approval_origin_invalid') from exc
         contract = contracts.get((approval.server_ref, observation.tool_name))
         if contract is None or contract.contract_hash != approval.contract_hash:
             raise ControlPlaneConfigError("approval_contract_hash_mismatch")
