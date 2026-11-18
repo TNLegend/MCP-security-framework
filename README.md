@@ -181,6 +181,27 @@ checks are unchanged. Private archive evidence and updated regression tests
 are stored only in the separate QA repository; production readiness is
 **not** inferred from this maintenance pass.
 
+**B13 verification evidence (2026-11-18):** independent QA completed
+**430 PASS, 2 previously skipped**. Source-only smoke testing of a new
+Git clone at `6916714` confirmed its executable source closure constructs
+without the ignored replay helper; no model assets were present in that
+clone, so a clean model download and complete first-launch installation
+were **not** certified. The installed M4 and research M3 V3 model bundles
+passed frozen-file verification.
+
+A renewed end-to-end test at `6916714` succeeded using a disposable
+PostgreSQL QA database, real OPA, real service and agent identities, real
+M4 inference, a genuinely published ADMIN approval, and the local MCP
+HTTP server. The Gateway returned HTTP 200 for an approved read and HTTP
+403 for a denied read. The separate M3 V3 inference reached `SCORED`
+and remained advisory only (no permission or policy change). The QA
+Gateway allow request took **20.671 seconds**: this remains a production
+latency limitation, not an approved default-timeout guarantee.
+Backend-wide tests: **3,385 collected with zero collection errors**
+after obsolete local test retirement, but **no entirely green global
+backend execution** is claimed. These release limitations must be
+resolved separately before any production-readiness assertion.
+
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.
