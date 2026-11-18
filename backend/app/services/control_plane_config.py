@@ -732,16 +732,20 @@ def _next_revision_number(db: Session) -> int:
         database_max = int(
             db.scalar(select(func.max(ControlPlaneConfigRevision.revision_number))) or 0
         )
-        state = db.get(ControlPlaneState, 1)
-        persisted_high_water = int(state.last_revision_number or 0) if state is not None else 0
+        # Persist the monotonic high-water mark even when there is no
+        # published revision yet. Otherwise deleting the last DRAFT and
+        # restarting the process could reuse an old signed revision number.
+        # CONFIG lock is already held by create_revision; this also obtains
+        # the PostgreSQL row lock (or creates the singleton transactionally).
+        state = lock_control_plane_state_for_update(db)
+        persisted_high_water = int(state.last_revision_number or 0)
         next_number = max(
             database_max,
             persisted_high_water,
             _LAST_ALLOCATED_REVISION_NUMBER,
         ) + 1
-        if state is not None:
-            state.last_revision_number = next_number
-            db.flush()
+        state.last_revision_number = next_number
+        db.flush()
         _LAST_ALLOCATED_REVISION_NUMBER = next_number
         return next_number
 

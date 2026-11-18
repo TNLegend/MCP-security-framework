@@ -297,6 +297,17 @@ emergency denies, human BLOCK holds, revision locks and transaction ordering
 remain authoritative. Historical approval evidence is never re-signed or
 retagged to a new analyzer generation.
 
+**B20 / V19.11 — durable PostgreSQL revision numbering.** New local
+Control Plane databases now create and row-lock their persistent
+`ControlPlaneState` high-water mark before allocating even the first DRAFT
+revision. Deleting the highest-numbered draft must not allow that revision
+number to be reused (including after a process restart). The shared CONFIG
+advisory lock and the Ed25519 publication/rollback verification remain
+mandatory. This was qualified against a genuine isolated PostgreSQL database,
+not SQLite or a mocked revision allocator. As before, changing analyzer
+source code requires an updated TDA revision for new analytic evidence;
+approved historical MCP tool evidence is unchanged.
+
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.
