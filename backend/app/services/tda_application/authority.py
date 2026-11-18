@@ -25,8 +25,9 @@ _control_activation = ContextVar("control_plane_activation", default=None)
 
 
 def _token_from_verified_pipeline(p):
-    # p must have been freshly verified by configured_pipeline() or
-    # require_current_pipeline() in this same security decision.
+    # p must come either from a fresh complete SHA-256 verification in
+    # the current decision or from the post-verification Windows immutable
+    # OS lease acquired by this process at startup (never from an env flag).
     override = _control_activation.get()
     if override is not None:
         if override[1].pipeline_identity != p.identity:
@@ -42,8 +43,19 @@ def _token_from_verified_pipeline(p):
 
 
 def worker_token():
-    # This is local PostgreSQL generation fencing, not a cryptographic signer.
-    return _token_from_verified_pipeline(configured_pipeline())
+    """Bind a worker to its analyzer generation without I/O in sealed runtime.
+
+    The fully SHA-256-verified identity is pinned at startup under OS-enforced
+    read leases and read-only ACLs. Mutable/developer runtimes keep the
+    historical full integrity verification; changing the environment flag
+    alone does not authorize any shortcut.
+    """
+    from app.services.tda_application.runtime_immutable import runtime_immutable_pipeline
+
+    sealed = runtime_immutable_pipeline()
+    return _token_from_verified_pipeline(
+        sealed if sealed is not None else configured_pipeline()
+    )
 
 
 def initialize_local_analyzer_generation(db, pipeline):

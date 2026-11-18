@@ -315,6 +315,34 @@ the writable desktop continues to use full per-decision SHA-256 and
 a separate protected, non-elevated Windows installation must still be
 qualified to obtain O(1) analyzer identity checks.
 
+**B16 — eliminate full analyzer SHA-256 from protected MCP runtime calls.**
+The V19.8 analyzer revision
+`tool-description-analyzer-v19.8-sealed-worker-token-fast-path`
+also routes `worker_token()` through the already-verified, OS-leased
+startup identity. Both runtime admission and approved `tools/list`
+then avoid rehashing M4/M6 model weights, Python dependencies or analyzer
+source on every request. The runtime still checks the immutable
+observation's exact PostgreSQL analyzer generation and source identity,
+signed published configuration, fingerprint and exact ADMIN approval,
+OPA, emergency deny and transaction fencing. There is **no timer-based
+trust cache**, no new semantic authorization, and no live model inference
+on `tools/call`.
+
+For protection against modification between startup and dispatch, this
+no-SHA mode **requires** `ANALYZER_RUNTIME_IMMUTABLE_FAST_PATH=1` with
+a non-admin Windows backend account that cannot write, delete, change ACLs
+or insert files anywhere in the complete analyzer/model/Python closure.
+Startup verifies all SHA-256 files **while holding Windows read-sharing
+leases** and checks every source/import directory, including empty
+packages. Invalid/unprovable protection aborts startup, not security
+checks. Workers must be restarted and analyses requalified on controlled
+upgrades or revocations; do not enable fast mode in the writable
+desktop checkout. Local mutable development intentionally retains
+full SHA-256 on requests and therefore remains slower. An actual
+protected-service deployment and its end-to-end performance are still
+pending qualification; this distinction is not evidence of a completed
+Phase 3 release.
+
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.

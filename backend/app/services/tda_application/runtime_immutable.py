@@ -72,8 +72,15 @@ def _declared_directory_closure(pipeline: Any) -> set[Path]:
         Path(sys.base_prefix) / "Lib",
         Path(sys.prefix) / "Lib",
     ] + [Path(p) for p in site.getsitepackages()]
+    # Avoid scanning the same site-packages tree twice: Python can list
+    # both the virtualenv root AND its nested Lib/site-packages.
+    unique = sorted(set(roots), key=lambda p: (len(p.parts), str(p)))
+    minimal: list[Path] = []
+    for root in unique:
+        if not any(root == parent or root.is_relative_to(parent) for parent in minimal):
+            minimal.append(root)
     directories: set[Path] = set()
-    for root in roots:
+    for root in minimal:
         if not root.exists():
             raise PipelineIntegrityError("runtime_immutable_declared_root_missing")
         if root.is_symlink() or getattr(root, "is_junction", lambda: False)():
@@ -82,12 +89,16 @@ def _declared_directory_closure(pipeline: Any) -> set[Path]:
             continue
         if not root.is_dir() or root == root.parent:
             raise PipelineIntegrityError("runtime_immutable_invalid_directory_root")
-        directories.add(root)
-        for candidate in root.rglob("*"):
-            if candidate.is_symlink() or getattr(candidate,"is_junction",lambda:False)():
-                raise PipelineIntegrityError("runtime_immutable_linked_directory_tree")
-            if candidate.is_dir():
-                directories.add(candidate)
+        # Scandir/os.walk is much faster on Windows than Path.rglob followed
+        # by a separate stat on every regular file. Never follow reparse
+        # points; a linked source/import path invalidates the entire lease.
+        for current, names, filenames in os.walk(root, topdown=True, followlinks=False):
+            directory = Path(current)
+            directories.add(directory)
+            for name in names + filenames:
+                candidate = directory / name
+                if candidate.is_symlink() or getattr(candidate, "is_junction", lambda: False)():
+                    raise PipelineIntegrityError("runtime_immutable_linked_directory_tree")
     return directories
 
 
