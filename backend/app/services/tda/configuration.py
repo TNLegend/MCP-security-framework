@@ -1,7 +1,7 @@
 from __future__ import annotations
 import re
 
-ANALYZER_REVISION = "tool-description-analyzer-v19.8-sealed-worker-token-fast-path"
+ANALYZER_REVISION = "tool-description-analyzer-v19.9-decoupled-evidence-runtime"
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
 EMBEDDING_MODEL_VERSION = "local-cache"
 MIN_REVIEW_JUSTIFICATION_LENGTH = 8

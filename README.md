@@ -240,109 +240,41 @@ PostgreSQL, and passed 16/16 installation self-checks; this is not
 a separate full clean-install certification of every future revision.
 See the separately maintained private B14 QA report for exact receipts.
 
-**B15: separate TDA discovery integrity from live MCP call admission**
-(2026-11-18, guarded architecture work; release qualification pending):
-TDA inference remains on MCP discovery, re-discovery and approved reanalysis,
-**not** inside `tools/call`. The backend still checks persisted observation
-fingerprints, revision-specific ADMIN approvals, signed publication,
-PostgreSQL analyzer generation, Emergency Deny and OPA at runtime.
+**B18 / V19.9 — current architecture: TDA evidence decoupled from MCP runtime**
+(2026-11-18). The heavy SHA-256 source/model inventories belong to TDA
+installation, startup, new analysis, staging and controlled upgrades. They
+must **not** be invoked by approved Gateway `tools/list` or `tools/call`.
+The runtime instead checks the exact current MCP observation fingerprint,
+the analysis' historical immutable PostgreSQL provenance (generation and
+pipeline identity), the active ADMIN approval, signed published revision
+and contract, and a freshly reconstructed small evidence-bundle digest.
+Human holds, revocation, Emergency Deny, JWT, OPA and transaction-linearized
+admission remain mandatory. Model outputs remain advisory.
 
-For **OS-verified immutable Windows deployments only**, setting
-`ANALYZER_RUNTIME_IMMUTABLE_FAST_PATH=1` before launching the backend opts
-in to a faster authorization-time analyzer identity check. At startup, the
-backend constructs a complete SHA-256-verified M4/M6/analyzer source and
-dependency manifest, checks that the unprivileged service account cannot
-write, delete, retag or add files in the declared artifact directories,
-holds Win32 read-sharing leases on the exact files and their ancestor
-directories, and **reverifies all bytes after obtaining those leases**.
-Only then can live admission use the pinned in-process identity and the
-active PostgreSQL authority generation without reading model checkpoints
-again. A changed or revoked generation, analysis revision, tool fingerprint,
-approval, contract, OPA decision or Emergency Deny still fails closed.
-Cross-process leases do not transfer across forks: each worker must pass its
-own startup attestation. This is NOT an M4 owner signature.
+A change of installed M4/M6 files or the active *analyzer generation* does
+not, by itself, revoke an unchanged previously approved tool. New TDA jobs
+must still use the active, verified analyzer identity; old analysis bindings
+must never be silently retagged. Changed tool definitions, contracts, signed
+approval or evidence, or explicit ADMIN veto remain fail-closed.
 
-**Do not enable this mode in a writable checkout, writable virtualenv or
-writable model cache.** It intentionally fails startup with
-`runtime_immutable_...` rather than weakening file-integrity guarantees.
-A dedicated non-elevated backend identity, administrator-protected
-installation directories and trusted OS/ACL administration are deployment
-requirements; a local machine administrator is outside the protection of
-these per-process leases. The existing mutable Windows development checkout
-continues to perform SHA-256 checks on each runtime decision (slower but
-safe). This guarded fast path has not yet been end-to-end benchmarked on
-a completely protected installation, and multi-host or non-Windows sealed
-deployments are not qualified. Its analyst revision is now
-`tool-description-analyzer-v19.7-observation-generation-fenced`:
-restart workers, initialize a new PostgreSQL analyzer generation, and
-requalify/reapprove existing observations as needed. Existing approvals
-must never silently migrate across different analyzer identities.
+The obsolete Windows-only `runtime_immutable.py` module and
+`ANALYZER_RUNTIME_IMMUTABLE_FAST_PATH` gate were removed. No Windows
+service account, ACL attestation, file leases or timer-based model cache
+is required for this separation. This does change the threat boundary:
+a local analyzer-file mutation occurring *after* verification cannot be
+detected by ordinary MCP dispatch. It is detected when that artifact is
+next checked by a TDA verification. Deployment still must protect the
+actual runtime code, secrets and database against untrusted modification.
 
-**B15 qualification state:** independent QA and targeted backend regression
-are reported in the private qualification repository. The old 3,385-case
-global backend suite was not green; Phase 3 must **not** be declared closed
-until failed/obsolete tests and real security regressions are arbitrated,
-the final global run is complete, and the immutable-deployment path is
-qualified if chosen for production. No HTTP timeout was raised.
-
-**B15.1 — bind runtime decisions to the analysis' original generation**
-(2026-11-18): real QA discovered that an explicit PostgreSQL generation
-rotation while model/source files were identical could leave an old
-analysis executable: the runtime compared the **worker** generation to the
-live database but did not verify the original immutable
-`AnalysisAuthorityBinding` attached to the analyzed observation.
-This was a genuine security failure (HTTP 200 after a rotation), not a
-historical test mismatch. Final dispatch and approved `tools/list`
-exposure now require the analysis binding's exact generation **and**
-pipeline identity to equal the current, PostgreSQL-verified authority;
-missing, stale or mismatched bindings fail closed, with no auto-rebinding.
-The analyzer revision becomes
-`tool-description-analyzer-v19.7-observation-generation-fenced`.
-
-A replay with real Gateway, signed ADMIN publication, real PostgreSQL and
-M4 inference / M3 research SHADOW confirmed: valid approved MCP read
-HTTP 200 and correct file bytes; disallowed read HTTP 403; an actual ADMIN
-HTTP Emergency Deny creation blocked a previously approved read (HTTP 403),
-its HTTP revocation restored it (HTTP 200), and an explicitly rotated
-analyzer generation then **refused the old approved analysis (HTTP 403)**.
-The original unpatched source had wrongly returned HTTP 200 at the last
-step. Testing used disposable QA credentials/database and did not grant
-the model any policy authority.
-
-**This security fix does not constitute completion of the entire historical
-backend regression** or a qualified fast-path production deployment:
-the writable desktop continues to use full per-decision SHA-256 and
-a separate protected, non-elevated Windows installation must still be
-qualified to obtain O(1) analyzer identity checks.
-
-**B16 — eliminate full analyzer SHA-256 from protected MCP runtime calls.**
-The V19.8 analyzer revision
-`tool-description-analyzer-v19.8-sealed-worker-token-fast-path`
-also routes `worker_token()` through the already-verified, OS-leased
-startup identity. Both runtime admission and approved `tools/list`
-then avoid rehashing M4/M6 model weights, Python dependencies or analyzer
-source on every request. The runtime still checks the immutable
-observation's exact PostgreSQL analyzer generation and source identity,
-signed published configuration, fingerprint and exact ADMIN approval,
-OPA, emergency deny and transaction fencing. There is **no timer-based
-trust cache**, no new semantic authorization, and no live model inference
-on `tools/call`.
-
-For protection against modification between startup and dispatch, this
-no-SHA mode **requires** `ANALYZER_RUNTIME_IMMUTABLE_FAST_PATH=1` with
-a non-admin Windows backend account that cannot write, delete, change ACLs
-or insert files anywhere in the complete analyzer/model/Python closure.
-Startup verifies all SHA-256 files **while holding Windows read-sharing
-leases** and checks every source/import directory, including empty
-packages. Invalid/unprovable protection aborts startup, not security
-checks. Workers must be restarted and analyses requalified on controlled
-upgrades or revocations; do not enable fast mode in the writable
-desktop checkout. Local mutable development intentionally retains
-full SHA-256 on requests and therefore remains slower. An actual
-protected-service deployment and its end-to-end performance are still
-pending qualification; this distinction is not evidence of a completed
-Phase 3 release.
-
+An earlier V19.7 security fix prevented a stale analyzer-generation
+binding from authorizing an MCP call. V19.9 intentionally separates
+*historical approval validity* from the active analyzer used to produce
+**new** evidence. Approval provenance is read-only and must be present,
+well-formed and linked to the exact observation; it is never synthesized.
+The historical B15/B16 test receipts remain in the independent QA repo.
+The backend's 3,385-case legacy regression has not yet been certified
+fully green; Phase 3 must not be declared formally closed on the basis of
+this performance improvement alone.
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.
@@ -358,8 +290,9 @@ each installation computes its own fingerprint.
 A local fingerprint is **not** cryptographic publisher authentication:
 an attacker who controls the installed code and the expected hashes can
 modify both. Run trusted, pinned source and dependencies. If the installed
-analyzer changes, PostgreSQL advances its local generation and **old
-analysis/approval evidence must not silently authorize dispatch**.
+analyzer changes, PostgreSQL advances its local generation for **new TDA
+work**; unchanged earlier tool approvals remain eligible only while their
+exact signed observation, evidence and live ADMIN authorization still hold.
 M4 remains English-only and advisory; no model result alone ALLOWs or
 BLOCKs an MCP operation. Independent ADMIN tool approvals, policy checks,
 M1/M2/M3/M5/M6/M7 checks, and Gateway enforcement remain required.

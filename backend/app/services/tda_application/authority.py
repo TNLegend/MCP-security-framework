@@ -25,9 +25,8 @@ _control_activation = ContextVar("control_plane_activation", default=None)
 
 
 def _token_from_verified_pipeline(p):
-    # p must come either from a fresh complete SHA-256 verification in
-    # the current decision or from the post-verification Windows immutable
-    # OS lease acquired by this process at startup (never from an env flag).
+    # Only TDA analysis/staging/approval/upgrade callers use this function.
+    # MCP runtime consumes historical bound evidence, never local model bytes.
     override = _control_activation.get()
     if override is not None:
         if override[1].pipeline_identity != p.identity:
@@ -43,19 +42,12 @@ def _token_from_verified_pipeline(p):
 
 
 def worker_token():
-    """Bind a worker to its analyzer generation without I/O in sealed runtime.
+    """Verify installed TDA files when capturing an ANALYSIS/STAGING token.
 
-    The fully SHA-256-verified identity is pinned at startup under OS-enforced
-    read leases and read-only ACLs. Mutable/developer runtimes keep the
-    historical full integrity verification; changing the environment flag
-    alone does not authorize any shortcut.
+    Runtime MCP admission never calls this: it validates the historical
+    bound evidence from the approved observation in PostgreSQL instead.
     """
-    from app.services.tda_application.runtime_immutable import runtime_immutable_pipeline
-
-    sealed = runtime_immutable_pipeline()
-    return _token_from_verified_pipeline(
-        sealed if sealed is not None else configured_pipeline()
-    )
+    return _token_from_verified_pipeline(configured_pipeline())
 
 
 def initialize_local_analyzer_generation(db, pipeline):
@@ -102,28 +94,15 @@ def initialize_local_analyzer_generation(db, pipeline):
 
 
 def verified_observation_token(analysis):
-    """Bind a runtime decision to the current approved analyzer generation.
+    """Current TDA identity for analysis/approval only, NOT MCP runtime.
 
-    On a strictly OS-immutable deployment, reuse the locally SHA-256 verified
-    boot identity while kernel sharing leases prevent byte modifications and
-    ACLs prohibit inserting or replacing runtime source files. Mutable local
-    installations ALWAYS retain a fresh full-file SHA-256 check per decision.
-    This never substitutes for PostgreSQL generation or ADMIN revocation.
+    Keep strict content SHA-256 for newly produced evidence. A historical
+    ADMIN-approved observation remains tied to its original immutable
+    provenance instead of whatever models happen to be installed today.
     """
     from app.services.tda_application.pipeline import require_current_pipeline
-    from app.services.tda_application.runtime_immutable import runtime_immutable_pipeline
 
-    verified = runtime_immutable_pipeline()
-    if verified is None:
-        verified = require_current_pipeline(analysis)
-    else:
-        if analysis.model_versions != verified.model_versions:
-            raise PipelineIntegrityError("analysis_pipeline_not_current")
-        if getattr(analysis, "analyzer_revision", None) != (
-            verified._manifest["execution"]["analyzer_revision"]
-        ):
-            raise PipelineIntegrityError("analysis_revision_not_current")
-    return _token_from_verified_pipeline(verified)
+    return _token_from_verified_pipeline(require_current_pipeline(analysis))
 
 
 def assert_current(db, token):
@@ -158,6 +137,46 @@ def assert_analysis_generation_current(db, analysis_id, token):
         token.generation, token.pipeline_identity
     ):
         raise PipelineIntegrityError("analysis_authority_generation_stale")
+    return bound
+
+
+def approved_analysis_provenance(db, observation, analysis):
+    """Read historical TDA provenance without touching installed model bytes.
+
+    Runtime authority comes from an exact signed, live observation approval
+    (checked by callers), not from the analyzer currently installed. This
+    check is intentionally read-only: never rebind historical evidence to
+    the current generation or silently synthesize missing provenance.
+    """
+    from app.models.analysis_authority_binding import AnalysisAuthorityBinding
+    from app.models.tool_analysis import ToolObservedVersion
+
+    if (
+        analysis is None
+        or observation.analysis_id != analysis.id
+        or observation.tool_id != analysis.tool_id
+        or observation.tool_fingerprint != analysis.fingerprint
+    ):
+        raise PipelineIntegrityError("approved_analysis_identity_mismatch")
+    source = db.get(ToolObservedVersion, analysis.version_id, populate_existing=True)
+    if (
+        source is None
+        or source.tool_id != observation.tool_id
+        or source.fingerprint != observation.tool_fingerprint
+        or source.server_ref != observation.server_ref
+        or source.tool_name != observation.tool_name
+    ):
+        raise PipelineIntegrityError("approved_analysis_source_mismatch")
+    bound = db.get(AnalysisAuthorityBinding, analysis.id, populate_existing=True)
+    if (
+        bound is None
+        or not isinstance(bound.generation, int)
+        or bound.generation < 1
+        or not isinstance(bound.pipeline_identity, str)
+        or len(bound.pipeline_identity) != 64
+        or any(ch not in "0123456789abcdef" for ch in bound.pipeline_identity)
+    ):
+        raise PipelineIntegrityError("approved_analysis_origin_missing_or_invalid")
     return bound
 
 

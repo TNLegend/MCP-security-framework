@@ -178,20 +178,13 @@ def admit_mcp_dispatch(
     ):
         return {"admitted": False, "reason": "dispatch_observation_not_approved"}
 
-    from app.services.tda_application.authority import (
-        verified_observation_token, assert_current, fence_session,
-    )
+    from app.services.tda_application.authority import approved_analysis_provenance
     from app.services.published_configuration import PublishedConfigurationProvider
     try:
-        # Recheck the current model/source identity (not owner-signed) and
-        # analyzer generation at this locked dispatch boundary.
-        # fence_session and assert_current keep DB-generation fencing intact.
-        authority_token = fence_session(db, verified_observation_token(analysis))
-        assert_current(db,authority_token)
-        from app.services.tda_application.authority import (
-            assert_analysis_generation_current,
-        )
-        assert_analysis_generation_current(db,analysis.id,authority_token)
+        # Final dispatch checks the exact signed approval and the historical
+        # PostgreSQL origin of its analysis, not the current TDA model files.
+        # Keep the CONFIG/DISPATCH transaction locks and fresh signed snapshot.
+        analysis_origin = approved_analysis_provenance(db, observation, analysis)
         snapshot=PublishedConfigurationProvider(db).load_active_snapshot(fresh=True)
         # These are configuration revision coordinates, not a tool fingerprint
         # or the hash of one contract. An unchanged contract/approval in C2
@@ -242,8 +235,8 @@ def admit_mcp_dispatch(
             "control_plane_revision_number": snapshot.revision_number,
             "control_plane_content_hash": snapshot.content_hash,
             "contract_hash": contract.contract_hash,
-            "analyzer_generation": authority_token.generation,
-            "pipeline_identity": authority_token.pipeline_identity,
+            "analyzer_generation": analysis_origin.generation,
+            "pipeline_identity": analysis_origin.pipeline_identity,
         },
     ))
     db.flush()

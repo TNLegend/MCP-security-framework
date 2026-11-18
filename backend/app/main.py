@@ -106,13 +106,8 @@ def initialize_analyzer_local_identity():
             assert_current(db,source)
             db.rollback()
         return
-    # Perform immutable-deployment attestation BEFORE rotating PostgreSQL.
-    # An invalid fast-path deployment must not invalidate running workers.
-    # Developer installations remain on the strict per-call SHA-256 path.
-    from app.services.tda_application.runtime_immutable import (
-        enable_immutable_runtime_pipeline,
-    )
-    enable_immutable_runtime_pipeline(pipeline)
+    # Analyzer generation is initialized from freshly verified TDA bytes.
+    # MCP runtime admission uses signed persisted evidence, not file scans.
     with SessionLocal.begin() as db:
         token=initialize_local_analyzer_generation(db,pipeline)
     with SessionLocal() as db:

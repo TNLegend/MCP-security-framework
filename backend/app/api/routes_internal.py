@@ -134,18 +134,11 @@ def get_internal_inventory_tool_observation(
         and not tool_wide_review_hold
     )
     if approved_match:
-        from app.services.tda_application.authority import (
-            assert_current, verified_observation_token,
-        )
+        from app.services.tda_application.authority import approved_analysis_provenance
         try:
-            # One current SHA-256 identity check for this decision.
-            # Preserve active-generation fencing and exact evidence checks.
-            token = verified_observation_token(analysis)
-            assert_current(db, token)
-            from app.services.tda_application.authority import (
-                assert_analysis_generation_current,
-            )
-            assert_analysis_generation_current(db, analysis.id, token)
+            # Compare immutable historical analysis provenance in PostgreSQL.
+            # No analyzer models or source files are read during MCP inventory.
+            approved_analysis_provenance(db, observation, analysis)
             from app.services.published_configuration import PublishedConfigurationProvider
             from app.models.tool_analysis import ToolObservationReviewApproval
             from app.services.tda_application.observation_approval import evidence_bundle_for_observation
@@ -165,8 +158,8 @@ def get_internal_inventory_tool_observation(
             if live is None or sha256_canonical_json(evidence_bundle_for_observation(db,observation))!=approval.evidence_bundle_hash:
                 return None
         except (ValueError, PipelineIntegrityError):
-            # Changed analyzer source invalidates previous observation approval.
-            # Reject exposure rather than returning HTTP 500 or trusting old data.
+            # Missing or contradictory approved evidence is never exposed.
+            # A later advisory analyzer upgrade alone is not revocation.
             return None
     return {
         "id": tool.id,
