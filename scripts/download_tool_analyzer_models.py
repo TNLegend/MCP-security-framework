@@ -54,7 +54,7 @@ def portable_snapshot_directory(cache_dir: Path, repo_id: str, revision: str) ->
 def main() -> int:
     configure_runtime_environment()
     parser = argparse.ArgumentParser(
-        description="Download the M6 E5 drift model only. Signed M4 weights must be provisioned from the frozen bundle."
+        description="Download the M6 E5 drift model only. M4 GLiNER/DeBERTa weights are separately installed from pinned public revisions and SHA-256 verified; no owner signature is needed."
     )
     parser.add_argument(
         "--cache-dir",

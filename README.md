@@ -127,6 +127,32 @@ security certification. See the separate QA repository's B10/B11
 qualification records; private fixtures, results and logs stay out of
 the framework source repository.
 
+**B12 obsolete-code and historical-test cleanup (2026-11-18):**
+The never-imported V13 `tda/shadow/effects.py` and
+`tda/shadow/instruction_hierarchy.py` prototypes, their package stub,
+and the unused disabled `tda/sidecar.py` shim were removed after an
+import-reference audit. Existing M3 V3 SHADOW, M4, M6/E5 and M7 paths
+remain intact. The obsolete local V2 priority bridge and legacy suites
+that exercised removed experiments/signature ceremony were archived
+outside the collected test tree, not marked xfail/skip. Applicable
+deterministic extraction, analyzer/E5 and administrative security tests
+were updated to current SHA-256/local-generation contracts.
+
+The backend's `backend/tests/` directory is intentionally ignored in
+this source repository; the old test originals and local QA environment
+remain outside public source Git. Portable replacement regression tests
+live in the separate QA repository. **3,421 backend tests collected
+without collection errors** after B12 cleanup; security-focused targeted
+tests also passed. The complete separate QA suite reported **419 passed,
+2 skipped, 4 warnings, 0 failures**. Three previously failing archival
+source-pin tests now check their **original, unchanged commit objects**
+instead of requiring today's checkout to equal an obsolete commit; the
+research source metrics and their pinned SHAs are not republished as new
+results. This verifies the updated test inventory and QA scope, **not**
+a fully green backend regression: the original B11 environment-specific
+failures and unresolved tests require separate QA qualification, and
+the production Gateway latency limitation has not been waived.
+
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.
