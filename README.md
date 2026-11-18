@@ -240,6 +240,51 @@ PostgreSQL, and passed 16/16 installation self-checks; this is not
 a separate full clean-install certification of every future revision.
 See the separately maintained private B14 QA report for exact receipts.
 
+**B15: separate TDA discovery integrity from live MCP call admission**
+(2026-11-18, guarded architecture work; release qualification pending):
+TDA inference remains on MCP discovery, re-discovery and approved reanalysis,
+**not** inside `tools/call`. The backend still checks persisted observation
+fingerprints, revision-specific ADMIN approvals, signed publication,
+PostgreSQL analyzer generation, Emergency Deny and OPA at runtime.
+
+For **OS-verified immutable Windows deployments only**, setting
+`ANALYZER_RUNTIME_IMMUTABLE_FAST_PATH=1` before launching the backend opts
+in to a faster authorization-time analyzer identity check. At startup, the
+backend constructs a complete SHA-256-verified M4/M6/analyzer source and
+dependency manifest, checks that the unprivileged service account cannot
+write, delete, retag or add files in the declared artifact directories,
+holds Win32 read-sharing leases on the exact files and their ancestor
+directories, and **reverifies all bytes after obtaining those leases**.
+Only then can live admission use the pinned in-process identity and the
+active PostgreSQL authority generation without reading model checkpoints
+again. A changed or revoked generation, analysis revision, tool fingerprint,
+approval, contract, OPA decision or Emergency Deny still fails closed.
+Cross-process leases do not transfer across forks: each worker must pass its
+own startup attestation. This is NOT an M4 owner signature.
+
+**Do not enable this mode in a writable checkout, writable virtualenv or
+writable model cache.** It intentionally fails startup with
+`runtime_immutable_...` rather than weakening file-integrity guarantees.
+A dedicated non-elevated backend identity, administrator-protected
+installation directories and trusted OS/ACL administration are deployment
+requirements; a local machine administrator is outside the protection of
+these per-process leases. The existing mutable Windows development checkout
+continues to perform SHA-256 checks on each runtime decision (slower but
+safe). This guarded fast path has not yet been end-to-end benchmarked on
+a completely protected installation, and multi-host or non-Windows sealed
+deployments are not qualified. Its analyst revision is now
+`tool-description-analyzer-v19.6-immutable-runtime-fence-gated`:
+restart workers, initialize a new PostgreSQL analyzer generation, and
+requalify/reapprove existing observations as needed. Existing approvals
+must never silently migrate across different analyzer identities.
+
+**B15 qualification state:** independent QA and targeted backend regression
+are reported in the private qualification repository. The old 3,385-case
+global backend suite was not green; Phase 3 must **not** be declared closed
+until failed/obsolete tests and real security regressions are arbitrated,
+the final global run is complete, and the immutable-deployment path is
+qualified if chosen for production. No HTTP timeout was raised.
+
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.

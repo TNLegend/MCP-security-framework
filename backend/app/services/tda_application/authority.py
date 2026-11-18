@@ -90,15 +90,27 @@ def initialize_local_analyzer_generation(db, pipeline):
 
 
 def verified_observation_token(analysis):
-    """One current-content verification per observation dispatch decision.
+    """Bind a runtime decision to the current approved analyzer generation.
 
-    Local SHA-256 model/analyzer/E5 identity and analysis revision are
-    checked by require_current_pipeline. PostgreSQL generation fencing,
-    approval evidence and admin revocation remain in assert_current.
+    On a strictly OS-immutable deployment, reuse the locally SHA-256 verified
+    boot identity while kernel sharing leases prevent byte modifications and
+    ACLs prohibit inserting or replacing runtime source files. Mutable local
+    installations ALWAYS retain a fresh full-file SHA-256 check per decision.
+    This never substitutes for PostgreSQL generation or ADMIN revocation.
     """
     from app.services.tda_application.pipeline import require_current_pipeline
+    from app.services.tda_application.runtime_immutable import runtime_immutable_pipeline
 
-    verified = require_current_pipeline(analysis)
+    verified = runtime_immutable_pipeline()
+    if verified is None:
+        verified = require_current_pipeline(analysis)
+    else:
+        if analysis.model_versions != verified.model_versions:
+            raise PipelineIntegrityError("analysis_pipeline_not_current")
+        if getattr(analysis, "analyzer_revision", None) != (
+            verified._manifest["execution"]["analyzer_revision"]
+        ):
+            raise PipelineIntegrityError("analysis_revision_not_current")
     return _token_from_verified_pipeline(verified)
 
 
