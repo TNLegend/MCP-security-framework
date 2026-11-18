@@ -8,6 +8,7 @@ M6 E5 drift remains a separate dependency.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -125,9 +126,17 @@ def artifact_inventory(model_root: Path) -> dict[str,dict[str,Any]]:
             files.append(p.relative_to(root).as_posix())
     if set(files)!=MODEL_FILES or len(files)!=len(MODEL_FILES):
         raise PipelineIntegrityError("m4_model_bundle_files_changed")
-    return {name:{"bytes":(root/name).stat().st_size,
-                  "sha256":file_digest(secure_file(root,name))}
-            for name in files}
+    # Every artifact is still fully SHA-256 checked, including the frozen
+    # checkpoint files. Independent hashes can run concurrently; this does
+    # not trust timestamps, byte counts or a previous request's cache.
+    validated = [(name, secure_file(root,name)) for name in files]
+
+    def _hash_entry(entry):
+        name, path = entry
+        return name, {"bytes": path.stat().st_size, "sha256": file_digest(path)}
+
+    with ThreadPoolExecutor(max_workers=min(3, len(validated))) as pool:
+        return dict(pool.map(_hash_entry, validated))
 
 
 def build_research_candidate(repo_root:Path,model_root:Path)->dict[str,Any]:
@@ -162,6 +171,24 @@ class VerifiedM4SemanticIdentity:
     """Local content fingerprint; never authorization or publisher attestation."""
 
     def __init__(self, manifest:dict, repo_root:Path, model_root:Path):
+        self._bind_contract(manifest,repo_root,model_root)
+        self.verify()
+
+    @classmethod
+    def from_fresh_local_inventory(cls,repo_root:Path,model_root:Path):
+        """Compute one complete SHA-256 snapshot before binding this identity.
+
+        build_research_candidate already checks every frozen artifact hash,
+        manifest entry, and eligible source file. A second immediate read of
+        those identical files adds latency without an independent trust anchor.
+        Direct construction and explicit verify() still check current bytes.
+        """
+        manifest=build_research_candidate(repo_root,model_root)
+        identity=cls.__new__(cls)
+        identity._bind_contract(manifest,repo_root,model_root)
+        return identity
+
+    def _bind_contract(self,manifest:dict,repo_root:Path,model_root:Path):
         if not isinstance(manifest,dict) or manifest.get("schema")!=SCHEMA:
             raise PipelineIntegrityError("m4_invalid_identity_schema")
         if (manifest.get("purpose")!="EN_ONLY_STRUCTURED_M4_SEMANTICS_ADVISORY"
@@ -181,7 +208,6 @@ class VerifiedM4SemanticIdentity:
         self.model_root=Path(model_root)
         self.manifest=manifest
         self.identity=digest(manifest)
-        self.verify()
 
     def verify(self)->str:
         # The public bundle contains frozen per-file hashes; known checkpoint
@@ -198,5 +224,4 @@ def configured_m4_identity(repo_root:Path,model_root:Path)->VerifiedM4SemanticId
     import os
     if any(name.startswith("M4_NEURAL_SHADOW_") for name in os.environ):
         raise PipelineIntegrityError("retired_m4_environment_variables_refused")
-    manifest=build_research_candidate(repo_root,model_root)
-    return VerifiedM4SemanticIdentity(manifest,repo_root,model_root)
+    return VerifiedM4SemanticIdentity.from_fresh_local_inventory(repo_root,model_root)

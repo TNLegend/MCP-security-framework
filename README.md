@@ -202,6 +202,44 @@ after obsolete local test retirement, but **no entirely green global
 backend execution** is claimed. These release limitations must be
 resolved separately before any production-readiness assertion.
 
+**B14 Gateway performance and full SHA-256 verification (2026-11-18):**
+Diagnosis of a genuine local approved MCP call found that most of its
+20.69-second duration came from two **independent, mandatory M4 source
+and checkpoint integrity verifications**, about 10 seconds each. The
+updated M4 identity factory avoids immediately repeating the *same full
+SHA-256 manifest computation* within a single identity acquisition, and
+per-file cryptographic checks run in a bounded three-thread executor.
+Every model byte and eligible source file is still hashed; frozen weight
+pins, explicit re-verification, linked-file rejection, PostgreSQL
+generation fencing, service signatures, OPA, Emergency Deny and Gateway
+policy checks remain mandatory. No model gains policy authority.
+The analyzer revision is now
+`tool-description-analyzer-v19.5-parallel-verified-sha256`;
+a controlled restart/local-generation rotation is required after upgrade.
+
+On a genuine Gateway/MCP/backend/PostgreSQL/M4/M3 SHADOW QA
+scenario with the current V19.5 analyzer and an actual successful file
+read, local times were: `tools/list` **10.713 → 4.871 s**; approved
+`tools/call` **20.691 → 9.432 s**; blocked `tools/call`
+**10.656 → 4.764 s**. The approved MCP payload had
+`isError=false` and correct file contents; the disallowed call
+returned HTTP 403 before execution. M3 V3 reached `SCORED` without
+changing any security decision. This local test is below 10 seconds for
+the approved call, but another B14 QA run under different system load
+took 10.836 seconds: **the default 10-second production deadline
+cannot yet be guaranteed under load**. These are measured local QA
+results, not production throughput guarantees. No timeout was
+increased to conceal this limitation.
+
+The independent QA suite passed **433 tests** (2 previously skipped).
+A complete historical backend invocation collected 3,385 cases
+but was **not green**: it reached about 85% with recorded failures
+and errors before a 2,700-second timeout. A first remote GitHub fresh
+clone of the B13 baseline installed pinned models, toolchain and local
+PostgreSQL, and passed 16/16 installation self-checks; this is not
+a separate full clean-install certification of every future revision.
+See the separately maintained private B14 QA report for exact receipts.
+
 **On Linux/macOS:** `./start_framework.sh` uses Python and the same source
 bootstrap, but the system prerequisites (Git, Node/npm, PostgreSQL server
 binaries) must first be installed with the operating system's package manager.
