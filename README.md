@@ -1,5 +1,29 @@
 # MCP Security Framework
 
+## M1-M7 integration and security maintenance (November 2026)
+
+The production Analyzer uses deterministic M1/M2/M5 checks, M3 SHADOW
+injection evidence, English-only M4 advisory model hypotheses, M6 deterministic
+contract/version drift plus local E5 similarity, and M7 deterministic MAX risk
+attribution with source-bound drivers. Model output alone cannot authorize or
+block MCP tool calls. Existing Control Plane ADMIN approvals, signed
+configuration revisions, PostgreSQL observations, OPA and Gateway enforcement
+remain mandatory. Unknown analysis coverage is not evidence of safety.
+
+The Phase 5 M7 change introduced an explanatory m7_risk_evidence ledger and
+removed a latent model-only risk inflation path. Phase 6 refreshes three pinned
+Python dependencies to versions with published security fixes:
+certifi 2026.10.18, pillow 13.0.0, and filelock 4.2.1.
+These dependency updates require normal analyzer source/dependency
+requalification and controlled local-generation transition before activation.
+No model weight or explicit policy authority is changed.
+
+Security regression receipts, real Gateway/PostgreSQL QA logs, clean-clone
+qualification and scanner triage belong in the separate private/local QA
+workflow. A successful GitHub commit and local checksum verification do not
+imply production deployment or owner approval.
+
+
 ## Portable installation — single launch
 
 **Windows:** clone the source repository and double-click `start_framework.bat`
