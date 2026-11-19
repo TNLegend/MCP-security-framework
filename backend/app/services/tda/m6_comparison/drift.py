@@ -276,10 +276,22 @@ def drift_result(
                     "severity": severity_by_value.get(value, "medium"),
                 }
             )
+    previous_description = baseline_snapshot.get("description") or ""
+    current_description = current_snapshot.get("description") or ""
     similarity = embedding_model.similarity(
-        baseline_snapshot.get("description") or "",
-        current_snapshot.get("description") or "",
+        previous_description,
+        current_description,
     )
+    if previous_description != current_description:
+        # E5 measures semantic proximity, not verified behavioral equivalence.
+        # Every text mutation remains visible as an unresolved comparison;
+        # this does not assert a new capability or create an authorization.
+        changes.append({
+            "type": "description_change_unverified",
+            "severity": "medium",
+            "origin": "EXACT_TEXT_CHANGE",
+            "equivalence": "UNVERIFIED",
+        })
     if similarity < 0.72:
         changes.append({"type": "semantic_description_shift", "severity": "medium"})
     status = _drift_status(changes, similarity)
