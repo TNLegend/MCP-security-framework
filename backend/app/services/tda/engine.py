@@ -38,7 +38,7 @@ from app.services.tda.m6_comparison.drift import (
     drift_result, _drift_findings,
 )
 from app.services.tda.m7_assessment.reduction import (
-    summarize_m4_evidence_advisory, _risk_level, _risk_score,
+    summarize_m4_evidence_advisory, explain_risk,
 )
 from app.services.tda.security_guards.extraction import extract_tool_semantic_facts as extract_deterministic_safety_facts
 
@@ -181,8 +181,11 @@ def analyze_tool_version(
         model_version=version, flagged=False,
         coverage=coverage["token_budget"],
     )
-    risk_score = _risk_score(findings, model_result, drift)
-    risk_level = _risk_level(risk_score)
+    risk_evidence = explain_risk(
+        findings, model_result, drift, coverage, m4_views["m7"]
+    )
+    risk_score = risk_evidence["risk_score"]
+    risk_level = risk_evidence["risk_level"]
     shadow_effects = {
         "revision": "m4-structured-events-v19",
         "status": "MODEL_HYPOTHESES_UNVERIFIED",
@@ -248,6 +251,7 @@ def analyze_tool_version(
             "shadow_effects": shadow_effects,
             "proposition_shadow": proposition_shadow,
             "m4_structured_semantics": m4_views,
+            "m7_risk_evidence": risk_evidence,
             "m4_asserted_authority": "NONE",
             "historic_deterministic_guard_still_active": True,
         },
