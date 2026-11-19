@@ -3299,3 +3299,37 @@ code {
   .operator-changes,
   .operator-next-step { padding: 13px; }
 }
+
+
+/* Mobile fix: containment of nested scan editor grids.
+   Keep horizontal scrolling inside tables, not on the whole page. */
+.build-security-page .build-new-scan,
+.build-security-page .build-target-form,
+.build-security-page .build-inventory-flow,
+.build-security-page .build-native-picker {
+  min-width: 0;
+  max-width: 100%;
+  grid-template-columns: minmax(0, 1fr);
+}
+.build-security-page .build-new-scan > *,
+.build-security-page .build-target-form > *,
+.build-security-page .build-inventory-flow > *,
+.build-security-page .build-native-picker > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.build-security-page .build-mode-tabs {
+  min-width: 0;
+  max-width: 100%;
+}
+
+
+/* Native source-binding selectors can inherit a very long MCP server label.
+   Constrain the select box, while its options keep the complete server identity. */
+.build-security-page .build-target-form select,
+.build-security-page .build-inventory-flow select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}

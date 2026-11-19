@@ -440,7 +440,7 @@ function BuildSecurity({
         <section className="detail-panel build-new-scan">
           <div className="operations-section-heading">
             <h3>New scan</h3>
-            <small>ADMIN only · Semgrep + Gitleaks + Trivy</small>
+            <small>Administrator only ? Checks code, secrets and dependencies</small>
           </div>
 
           <div className="build-mode-tabs" role="tablist" aria-label="Build target type">
