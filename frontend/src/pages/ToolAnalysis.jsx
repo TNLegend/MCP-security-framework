@@ -482,7 +482,15 @@ function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onCompl
         ))}
       </div>
       <div className="tab-content" role="tabpanel">
-        {activeTab === "overview" && <AnalysisOverview bundle={bundle} latestAnalysis={latestAnalysis} tool={tool} />}
+        {activeTab === "overview" && (
+          <AnalysisOverview
+            bundle={bundle}
+            isAdmin={isAdmin}
+            latestAnalysis={latestAnalysis}
+            onAskAI={() => onSelectTab("ai")}
+            tool={tool}
+          />
+        )}
         {activeTab === "findings" && <FindingsView error={bundle?.errors?.findings} findings={findings} />}
         {activeTab === "m4-neural" && isAdmin && (
           <M4SemanticsPanel key={String(tool?.id) + ":" + String(tool?.current_fingerprint || "")} latestAnalysis={latestAnalysis} tool={tool} />
@@ -500,7 +508,7 @@ function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onCompl
   );
 }
 
-function AnalysisOverview({ bundle, latestAnalysis, tool }) {
+function AnalysisOverview({ bundle, isAdmin, latestAnalysis, onAskAI, tool }) {
   const isCurrent = Boolean(bundle && tool?.current_fingerprint
     && bundle?.analyses?.[0]?.id === latestAnalysis?.id
     && !bundle?.errors?.analyses
@@ -521,6 +529,11 @@ function AnalysisOverview({ bundle, latestAnalysis, tool }) {
         <h4>What should I do next?</h4>
         <p>{nextAnalysisAction(tool, latestAnalysis, moduleDisplay.current)}</p>
         <p className="hint-text">Review status and runtime authorization are separate. An approved analysis never by itself permits execution.</p>
+        {isAdmin && isCurrent && (
+          <button className="secondary-action" type="button" onClick={onAskAI}>
+            Ask AI to explain this analysis (advisory only)
+          </button>
+        )}
       </section>
       <div className="analysis-stat-grid">
         <AnalysisStat label="Current tool state" value={tool.analysis_status} badge />
