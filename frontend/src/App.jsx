@@ -54,6 +54,8 @@ const EMPTY_RUNTIME_LOG_PAGE = {
 
 function App() {
   const [activePage, setActivePage] = useState("dashboard");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const mobileNavButtonRef = useRef(null);
   const [analysisEntryToolId, setAnalysisEntryToolId] = useState(null);
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -97,6 +99,7 @@ function App() {
   );
 
   function navigateToPage(pageId, toolId = null) {
+    setMobileNavOpen(false);
     setAnalysisEntryToolId(pageId === "analysis" ? toolId : null);
     setActivePage(pageId);
   }
@@ -391,7 +394,20 @@ function App() {
         </div>
       </header>
 
-      <nav className="app-nav" aria-label="Main navigation">
+      <button
+        ref={mobileNavButtonRef}
+        className="mobile-nav-toggle secondary-action"
+        aria-controls="primary-navigation"
+        aria-expanded={mobileNavOpen}
+        aria-label={mobileNavOpen ? "Close navigation menu" : "Open navigation menu"}
+        onClick={() => setMobileNavOpen((previous) => !previous)}
+        type="button"
+      >
+        <span>{mobileNavOpen ? "Close menu" : "Menu"}</span>
+        <strong>{pages.find((page) => page.id === activePage)?.label || "Home"}</strong>
+      </button>
+      <nav id="primary-navigation" className={"app-nav" + (mobileNavOpen ? " mobile-open" : "")}
+        aria-label="Main navigation">
         {navigationGroups.map((group) => {
           const items = pages.filter((page) => page.group === group && (!page.adminOnly || isAdmin));
           if (items.length === 0) return null;
@@ -404,7 +420,12 @@ function App() {
                     aria-current={activePage === page.id ? "page" : undefined}
                     className={activePage === page.id ? "active" : ""}
                     key={page.id}
-                    onClick={() => navigateToPage(page.id)}
+                    onClick={() => {
+                      navigateToPage(page.id);
+                      if (window.matchMedia("(max-width: 600px)").matches) {
+                        mobileNavButtonRef.current?.focus();
+                      }
+                    }}
                     type="button"
                   >
                     {page.label}

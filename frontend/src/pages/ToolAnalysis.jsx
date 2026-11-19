@@ -336,7 +336,7 @@ function ToolAnalysis({
               {bundleLoading && <p>Loading selected tool evidence...</p>}
               <div className="analysis-quick-summary" aria-label="Tool security status">
                 <div><span>Risk</span><strong>{humanize(selectedTool.risk_level || "Unknown")}</strong></div>
-                <div><span>Review</span><strong>{humanize(selectedTool.review_status || "Unknown")}</strong></div>
+                <div><span>Review</span><strong>{displayReviewStatus(selectedTool.review_status)}</strong></div>
                 <div><span>Can it run?</span><strong>Check runtime policy</strong></div>
               </div>
               <details className="analysis-technical-identity">
@@ -390,7 +390,13 @@ function ToolAnalysis({
                 </div>
               )}
               {approveDisabledReason && isAdmin && (
-                <p className="hint-text">{approveDisabledReason}</p>
+                <div className="hint-text" role="status">
+                  Review approval is unavailable for this tool.
+                  <details className="operator-technical-details">
+                    <summary>Why is approval unavailable?</summary>
+                    <p>{approveDisabledReason}</p>
+                  </details>
+                </div>
               )}
 
               <AnalysisWorkspace
@@ -784,6 +790,17 @@ function formatConfidence(value) {
 
 function humanize(value) {
   return String(value || "").replace(/_/g, " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function displayReviewStatus(value) {
+  const key = String(value || "UNKNOWN").toUpperCase();
+  return {
+    REVIEW_REQUIRED: "Needs review",
+    PENDING: "Pending",
+    APPROVED: "Review approved",
+    ADMIN_ALLOWED: "Review approved",
+    BLOCKED: "Blocked",
+  }[key] || humanize(value || "Unknown");
 }
 
 function formatDate(value) {

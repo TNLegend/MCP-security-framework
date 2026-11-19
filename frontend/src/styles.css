@@ -3333,3 +3333,73 @@ code {
   max-width: 100%;
   box-sizing: border-box;
 }
+
+
+/* Mobile navigation: keep actual security content above the fold. */
+.mobile-nav-toggle {
+  display: none;
+}
+@media (max-width: 600px) {
+  .app-shell { padding-top: 14px; }
+  .app-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+    margin-bottom: 12px;
+  }
+  .app-header h1 { font-size: 1.75rem; line-height: 1.25; }
+  .app-header .eyebrow { font-size: .72rem; }
+  .session-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 6px;
+  }
+  .session-user {
+    min-width: 0;
+    align-content: center;
+    justify-items: start;
+  }
+  .session-user strong {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: .85rem;
+  }
+  .session-actions button { padding: 7px 9px; white-space: nowrap; }
+  .mobile-nav-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    margin-bottom: 12px;
+    gap: 12px;
+    text-align: left;
+  }
+  .mobile-nav-toggle strong {
+    color: #174c93;
+    font-size: .9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .app-nav { display: none; }
+  .app-nav.mobile-open {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .app-nav-group { padding: 6px; gap: 4px; }
+  .app-nav-group-label { font-size: .7rem; }
+  .app-nav-group-links { gap: 5px; }
+  .app-nav-group-links button {
+    min-height: 30px;
+    padding: 6px 9px;
+    font-size: .83rem;
+    line-height: 1.25;
+  }
+}
