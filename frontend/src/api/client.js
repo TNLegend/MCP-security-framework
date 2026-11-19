@@ -195,13 +195,12 @@ export function formatApiErrorDetail(detail) {
 }
 
 export function safeErrorMessage(err) {
-  if (err instanceof ApiError) {
-    return err.message;
+  const message = err instanceof ApiError ? err.message : safeMessage(err?.message || "");
+  const code = String(err?.code || "");
+  if (/security_pack_ai_unavailable|controlled_ai_unavailable|Gemini API returned HTTP 503|Groq API returned HTTP 503/i.test(message + " " + code)) {
+    return "AI assistance is temporarily unavailable. You can continue manually or retry later; no security settings were changed.";
   }
-  if (err?.message) {
-    return safeMessage(err.message);
-  }
-  return "Request failed.";
+  return message || "Request failed.";
 }
 
 export async function settleNamedRequests(requests) {

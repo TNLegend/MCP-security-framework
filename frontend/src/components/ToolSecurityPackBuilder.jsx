@@ -53,6 +53,8 @@ function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool })
       setUncertainties(proposal.uncertainties || []);
     } catch (err) {
       setError(safeErrorMessage(err));
+      // Keep the blank editor available when AI suggestions fail.
+      setMode("blank");
     } finally {
       setBusy(false);
     }

@@ -172,7 +172,12 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
       setFixedResources({});
       setMessage(`Suggestion received from ${suggestion.provider}.`);
     } catch (err) {
-      setError(safeErrorMessage(err));
+      const message = safeErrorMessage(err);
+      setError(
+        /security_pack_ai_unavailable|Gemini API returned HTTP 503|controlled_ai_unavailable/i.test(message)
+          ? "AI suggestion is temporarily unavailable. Choose a template manually or try again later."
+          : message
+      );
     } finally {
       setBusy(false);
     }
@@ -348,20 +353,27 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
             </select>
           </label>
           {isAdmin && suggestions.length > 0 && !contractDraft && (
-            <button disabled={busy} onClick={askAi} type="button">
-              AI Suggest
+            <button className="secondary-action" disabled={busy} onClick={askAi}
+              title="Ask AI to suggest a template. You must review its result." type="button">
+              {busy ? "Checking..." : "Suggest with AI"}
             </button>
           )}
         </div>
 
         {selectedTemplate && (
           <>
-            <dl className="inline-metadata contract-metadata">
-              <div><dt>Pack</dt><dd>{selectedTemplate.pack.id} {selectedTemplate.pack.version}</dd></div>
-              <div><dt>Capabilities</dt><dd>{templateCapabilities(selectedTemplate).join(", ")}</dd></div>
-              <div><dt>Adapter</dt><dd>{adapterName(selectedTemplate, selectedTemplate.pack)}</dd></div>
-              <div><dt>Result</dt><dd>{resultControlLabel(selectedTemplate)}</dd></div>
-            </dl>
+            <p className="hint-text">
+              Choose which tool input points to a resource, then set any allowed limits.
+            </p>
+            <details className="operator-technical-details">
+              <summary>Template capabilities and technical details</summary>
+              <dl className="inline-metadata contract-metadata">
+                <div><dt>Pack</dt><dd>{selectedTemplate.pack.id} {selectedTemplate.pack.version}</dd></div>
+                <div><dt>Capabilities</dt><dd>{templateCapabilities(selectedTemplate).join(", ")}</dd></div>
+                <div><dt>Adapter</dt><dd>{adapterName(selectedTemplate, selectedTemplate.pack)}</dd></div>
+                <div><dt>Result</dt><dd>{resultControlLabel(selectedTemplate)}</dd></div>
+              </dl>
+            </details>
 
             {templateEffects(selectedTemplate).length > 1 && (
               <div className="contract-effect-summary">
@@ -377,7 +389,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
               return (
                 <div className="contract-binding-row" key={binding.key}>
                   <label>
-                    {binding.key}
+                    Tool input: {binding.key}
                     <select
                       disabled={!isAdmin || busy || Boolean(contractDraft)}
                       onChange={(event) => updateBinding(binding.key, event.target.value)}
@@ -389,14 +401,13 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
                       <option value="__fixed__">Fixed resource</option>
                     </select>
                   </label>
-                  <label>
-                    Resource type
-                    <input disabled readOnly value={binding.resource_type} />
-                  </label>
-                  <label>
-                    Role
-                    <input disabled readOnly value={binding.role || "RESOURCE"} />
-                  </label>
+                  <details className="contract-binding-metadata">
+                    <summary>About this input</summary>
+                    <dl>
+                      <div><dt>Resource type</dt><dd>{binding.resource_type}</dd></div>
+                      <div><dt>Role</dt><dd>{binding.role || "RESOURCE"}</dd></div>
+                    </dl>
+                  </details>
                   {usesFixed && (
                     <label className="wide-field">
                       Fixed resource
@@ -447,7 +458,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
               return (
                 <div className="contract-scope-row" key={`scope-${resourceType}`}>
                   <label>
-                    Authorized scope ({resourceType})
+                    Allowed resources ({resourceType})
                     <input
                       disabled={!isAdmin || busy || Boolean(contractDraft)}
                       onChange={(event) => updateScopeDraft(setScopeDrafts, resourceType, "value", event.target.value)}
@@ -481,14 +492,16 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
                       )}
                       type="checkbox"
                     />
-                    Broad scope acknowledged
+                    I understand this may cover more resources
                   </label>
                 </div>
               );
             })}
 
             {isAdmin && !contractDraft && (
-              <label className="wide-field">
+              <details className="operator-technical-details">
+                <summary>Advanced: input validation limits (optional)</summary>
+                <label className="wide-field">
                 Explicit input schema bounds (JSON array; optional)
                 <textarea
                   disabled={busy}
@@ -504,7 +517,8 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
                   ])}. The original tool schema and fingerprint stay unchanged.
                   Bounds that widen advertised limits or refer to unsupported paths are rejected.
                 </small>
-              </label>
+                </label>
+              </details>
             )}
 
             {isAdmin && !contractDraft && (
@@ -515,7 +529,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
                 </label>
                 <label className="checkbox-field">
                   <input checked={approveObservations} disabled={busy} onChange={(event) => setApproveObservations(event.target.checked)} type="checkbox" />
-                  Approve exact observed profiles
+                  Approve the reviewed tool definitions
                 </label>
                 <button className="secondary-action" disabled={busy} type="submit">
                   {busy ? "Creating..." : "Create Draft"}

@@ -3403,3 +3403,211 @@ code {
     line-height: 1.25;
   }
 }
+
+
+/* Visual QA 2026-11-19: flexible tool settings, legible tabs and fields. */
+.analysis-workspace,
+.analysis-workspace .tab-content,
+.analysis-workspace .contract-onboarding,
+.analysis-workspace .contract-editor {
+  min-width: 0;
+  max-width: 100%;
+}
+.analysis-workspace .tab-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 6px;
+  padding: 0 0 10px;
+  overflow: visible;
+  border-bottom: 1px solid #d7deea;
+}
+.analysis-workspace .tab-list [role="tab"] {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.3;
+  border: 1px solid #d5deea;
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: #f8fafc;
+}
+.analysis-workspace .tab-list [role="tab"].active-tab {
+  border-color: #1f6feb;
+  background: #eaf3ff;
+  color: #174ea6;
+  box-shadow: inset 0 -2px #1f6feb;
+}
+.analysis-workspace .tab-list [role="tab"]:focus-visible {
+  outline-offset: 2px;
+}
+.contract-onboarding {
+  container-type: inline-size;
+}
+.contract-toolbar,
+.contract-binding-row,
+.contract-scope-row,
+.contract-submit-row {
+  align-items: start;
+  min-width: 0;
+}
+.contract-toolbar > *,
+.contract-binding-row > *,
+.contract-scope-row > *,
+.contract-submit-row > *,
+.contract-onboarding label,
+.contract-onboarding select,
+.contract-onboarding input:not([type="checkbox"]),
+.contract-onboarding textarea {
+  min-width: 0;
+  max-width: 100%;
+}
+.contract-onboarding select,
+.contract-onboarding input:not([type="checkbox"]),
+.contract-onboarding textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 39px;
+  padding: 9px 10px;
+  border: 1px solid #bdc9d9;
+  border-radius: 8px;
+  background: #fff;
+  color: #243047;
+  font: inherit;
+}
+.contract-onboarding select:disabled,
+.contract-onboarding input:disabled {
+  background: #f4f6fa;
+  color: #526176;
+}
+.contract-onboarding textarea {
+  resize: vertical;
+  overflow-wrap: anywhere;
+}
+.contract-onboarding .inline-metadata dd,
+.contract-onboarding small,
+.contract-onboarding .hint-text {
+  overflow-wrap: anywhere;
+}
+.contract-toolbar {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+.contract-binding-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, .75fr);
+}
+.contract-binding-metadata {
+  min-width: 0;
+  align-self: center;
+  border: 1px solid #d5deea;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #f8fafc;
+}
+.contract-binding-metadata summary {
+  font-size: .82rem;
+  font-weight: 700;
+  color: #344969;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.contract-binding-metadata dl {
+  margin: 10px 0 0;
+  display: grid;
+  gap: 8px;
+}
+.contract-binding-metadata dt {
+  font-weight: 700;
+  color: #526176;
+  font-size: .76rem;
+}
+.contract-binding-metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.contract-scope-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.contract-scope-row > .checkbox-field {
+  grid-column: 1 / -1;
+  min-width: 0;
+  justify-content: flex-start;
+}
+.contract-submit-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+.contract-submit-row .wide-field {
+  grid-column: 1 / -1;
+}
+.contract-submit-row > .checkbox-field {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.contract-submit-row > button {
+  justify-self: end;
+  align-self: end;
+  white-space: nowrap;
+}
+.contract-onboarding .checkbox-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  line-height: 1.4;
+}
+.contract-onboarding .checkbox-field input {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  margin: 2px 0 0;
+}
+.contract-onboarding .operator-technical-details {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+}
+.contract-onboarding .operator-technical-details[open] {
+  padding-bottom: 14px;
+}
+/* A collapsed details panel must not expose its grid children into the next form row. */
+.contract-onboarding details:not([open]) > :not(summary) {
+  display: none;
+}
+.contract-onboarding .contract-metadata {
+  margin-top: 10px;
+}
+.contract-onboarding .contract-toolbar button {
+  min-height: 39px;
+  white-space: nowrap;
+}
+@container (max-width: 410px) {
+  .contract-toolbar,
+  .contract-binding-row,
+  .contract-scope-row,
+  .contract-submit-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .contract-submit-row > *,
+  .contract-scope-row > .checkbox-field {
+    grid-column: 1;
+  }
+  .contract-submit-row > button {
+    justify-self: stretch;
+  }
+}
+@media (max-width: 600px) {
+  .analysis-workspace .tab-list {
+    gap: 5px;
+  }
+  .analysis-workspace .tab-list [role="tab"] {
+    flex: 1 1 130px;
+    padding: 10px 8px;
+    font-size: .85rem;
+  }
+}

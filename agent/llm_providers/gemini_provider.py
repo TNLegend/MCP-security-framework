@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -51,6 +52,7 @@ class GeminiProvider(BaseLLMProvider):
             ],
             "generationConfig": {
                 "temperature": self.temperature,
+                "responseMimeType": "application/json",
             },
         }
         response = self._post_json(payload)
@@ -84,18 +86,32 @@ class GeminiProvider(BaseLLMProvider):
             method="POST",
         )
 
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                response_body = response.read().decode("utf-8")
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise LLMProviderError(
-                f"Gemini API returned HTTP {exc.code}: {_shorten(detail)}"
-            ) from exc
-        except URLError as exc:
-            raise LLMProviderError(f"Gemini API request failed: {exc.reason}") from exc
-        except TimeoutError as exc:
-            raise LLMProviderError("Gemini API request timed out.") from exc
+        started = time.monotonic()
+        for attempt in range(2):
+            try:
+                # Keep retries within the configured request budget, then let
+                # the advisory caller try its configured secondary provider.
+                remaining = self.timeout_seconds - (time.monotonic() - started)
+                if attempt and remaining < 2:
+                    raise LLMProviderError("Gemini API request timed out.")
+                timeout = self.timeout_seconds if not attempt else remaining
+                with urlopen(request, timeout=timeout) as response:
+                    response_body = response.read().decode("utf-8")
+                break
+            except HTTPError as exc:
+                if (exc.code == 503 and attempt == 0
+                        and time.monotonic() - started < self.timeout_seconds - 2):
+                    exc.close()
+                    time.sleep(0.35)
+                    continue
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise LLMProviderError(
+                    f"Gemini API returned HTTP {exc.code}: {_shorten(detail)}"
+                ) from exc
+            except URLError as exc:
+                raise LLMProviderError(f"Gemini API request failed: {exc.reason}") from exc
+            except TimeoutError as exc:
+                raise LLMProviderError("Gemini API request timed out.") from exc
 
         try:
             data = json.loads(response_body)

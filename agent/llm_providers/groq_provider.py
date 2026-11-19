@@ -40,6 +40,10 @@ class GroqProvider(BaseLLMProvider):
         payload = {
             "model": self.model,
             "temperature": self.temperature,
+            # JSON mode ensures the fallback returns a JSON object rather than
+            # prose/reasoning. Pydantic and exact schema-path guards still decide
+            # whether a suggestion is safe to display.
+            "response_format": {"type": "json_object"},
             "messages": [
                 {
                     "role": "system",
@@ -56,6 +60,9 @@ class GroqProvider(BaseLLMProvider):
                 },
             ],
         }
+        if self.model.startswith("openai/gpt-oss-"):
+            # GPT-OSS exposes separate reasoning; reasoning_format is unsupported.
+            payload["include_reasoning"] = False
         response = self._post_json(payload)
 
         try:

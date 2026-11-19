@@ -472,6 +472,19 @@ const ANALYSIS_TABS = [
 ];
 
 function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onComplete, onSelectTab, tool }) {
+  function handleTabKeyDown(event) {
+    if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+    const tabs = [...event.currentTarget.parentElement.querySelectorAll('[role="tab"]')];
+    const index = tabs.indexOf(event.currentTarget);
+    if (index < 0 || tabs.length === 0) return;
+    const next = event.key === "Home" ? 0
+      : event.key === "End" ? tabs.length - 1
+        : event.key === "ArrowRight" ? (index + 1) % tabs.length
+          : (index - 1 + tabs.length) % tabs.length;
+    event.preventDefault();
+    tabs[next].focus();
+    onSelectTab(tabs[next].dataset.tabId);
+  }
   const findings = (bundle?.findings || []).filter(
     (finding) => !latestAnalysis?.id || !finding.analysis_id || finding.analysis_id === latestAnalysis.id,
   );
@@ -480,18 +493,24 @@ function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onCompl
       <div aria-label="Analysis evidence" className="tab-list" role="tablist">
         {ANALYSIS_TABS.filter(([id]) => id !== "m4-neural" || isAdmin).map(([id, label]) => (
           <button
+            aria-controls="analysis-evidence-panel"
             aria-selected={activeTab === id}
             className={activeTab === id ? "active-tab" : ""}
+            data-tab-id={id}
+            id={"analysis-tab-" + id}
             key={id}
             onClick={() => onSelectTab(id)}
+            onKeyDown={handleTabKeyDown}
             role="tab"
+            tabIndex={activeTab === id ? 0 : -1}
             type="button"
           >
             {label}
           </button>
         ))}
       </div>
-      <div className="tab-content" role="tabpanel">
+      <div aria-labelledby={"analysis-tab-" + activeTab}
+        className="tab-content" id="analysis-evidence-panel" role="tabpanel" tabIndex={0}>
         {activeTab === "overview" && (
           <AnalysisOverview
             bundle={bundle}
