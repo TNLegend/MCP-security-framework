@@ -166,7 +166,7 @@ function SecurityConfiguration({
         <Summary label="Active revision" value={activeRevision?.revision_number ?? "-"} />
         <Summary label="Schema version" value={activeRevision?.schema_version ?? "-"} />
         <Summary label="Policy settings" value={Object.keys(activeRevision?.content?.policy_settings?.rules || {}).length} />
-        <Summary label="Security controls" value={Object.keys(activeRevision?.content?.policy_settings?.rules || {}).length} />
+        <Summary label="Active revision status" value={activeRevision?.status || "Not published"} />
       </div>
 
       <div className="configuration-layout">

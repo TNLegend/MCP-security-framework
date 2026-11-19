@@ -418,6 +418,13 @@ function BuildSecurity({
             <span>{scanner.scanner_id}</span>
             <strong>{scanner.available ? "READY" : "NOT READY"}</strong>
             <small>{scanner.version || scanner.reason_code || "Unavailable"}</small>
+            <p className="scanner-purpose">
+              {({
+                SEMGREP: "Scans source patterns for security issues.",
+                GITLEAKS: "Searches for possible exposed secrets.",
+                TRIVY: "Checks known vulnerabilities and unsafe configurations.",
+              })[String(scanner.scanner_id).toUpperCase()] || "Scanner details are available in the scan report."}
+            </p>
           </article>
         ))}
       </div>

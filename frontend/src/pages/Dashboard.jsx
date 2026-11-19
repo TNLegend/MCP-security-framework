@@ -46,6 +46,41 @@ function Dashboard({
         <p>{loading ? "Loading backend data..." : "Control Plane evidence loaded."}</p>
       </div>
 
+      <section className="dashboard-priority" aria-label="What needs attention">
+        <div className="section-heading compact-heading">
+          <h3>What needs attention?</h3>
+          <p>Counts from recorded Control Plane data, not a runtime permission check</p>
+        </div>
+        <div className="dashboard-priority-grid">
+          <article className="dashboard-priority-card">
+            <span>Tools awaiting analysis or review</span>
+            <strong>{reviewTools.length}</strong>
+            <p>Inspect the current findings before an administrator decides.</p>
+            <button type="button" className="secondary-action" onClick={() => onNavigate("analysis")}>
+              Review tools
+            </button>
+          </article>
+          <article className="dashboard-priority-card">
+            <span>Tools marked blocked</span>
+            <strong>{blockedTools.length}</strong>
+            <p>A previous analysis block does not establish the state of every runtime policy.</p>
+            <button type="button" className="secondary-action" onClick={() => onNavigate("analysis")}>
+              See analysis
+            </button>
+          </article>
+          <article className="dashboard-priority-card">
+            <span>Active emergency restrictions</span>
+            <strong>{activeDenies.length}</strong>
+            <p>Emergency Deny is an independent enforcement mechanism.</p>
+            <button type="button" className="secondary-action" onClick={() => onNavigate("emergency")}>
+              See restrictions
+            </button>
+          </article>
+        </div>
+      </section>
+
+      <h3 className="dashboard-section-heading">Service status</h3>
+      <p className="hint-text">Unavailable status information does not mean a service is healthy.</p>
       <div className="status-grid">
         <RuntimeStatusCard label="Backend" value={health?.status || "unavailable"} />
         <RuntimeStatusCard
@@ -65,13 +100,14 @@ function Dashboard({
         />
       </div>
 
+      <h3 className="dashboard-section-heading">Recorded activity</h3>
       <div className="stats-grid">
         <StatCard label="MCP servers" value={servers.length || 0} />
         <StatCard label="MCP tools" value={tools.length || 0} />
-        <StatCard label="Approved tools" value={approvedTools.length} tone="stat-good" />
+        <StatCard label="Analysis approved (not runtime access)" value={approvedTools.length} tone="stat-good" />
         <StatCard label="Tools requiring review" value={reviewTools.length} tone="stat-warn" />
         <StatCard label="Blocked tools" value={blockedTools.length} tone="stat-danger" />
-        <StatCard label="Recent ALLOW calls" value={recentAllows} tone="stat-good" />
+        <StatCard label="Recent ALLOW decisions (not proof of execution)" value={recentAllows} tone="stat-good" />
         <StatCard label="Recent BLOCK calls" value={recentBlocks} tone="stat-danger" />
         <StatCard label="Active Emergency Denies" value={activeDenies.length} tone="stat-warn" />
       </div>
@@ -86,12 +122,14 @@ function Dashboard({
                 <dd>{activeRevision.revision_number}</dd>
               </div>
               <div>
-                <dt>schema_version</dt>
-                <dd>{activeRevision.schema_version}</dd>
-              </div>
-              <div>
-                <dt>content_hash</dt>
-                <dd>{shorten(activeRevision.content_hash)}</dd>
+                <dt>Signed revision metadata</dt>
+                <dd>
+                  <details className="dashboard-technical-details">
+                    <summary>View technical identifiers</summary>
+                    <span>Schema: {activeRevision.schema_version}</span>
+                    <span>Content fingerprint: {shorten(activeRevision.content_hash)}</span>
+                  </details>
+                </dd>
               </div>
               <div>
                 <dt>status</dt>

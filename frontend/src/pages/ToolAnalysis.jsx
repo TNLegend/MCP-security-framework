@@ -4,6 +4,7 @@ import ControlledAIAssistant from "../components/ControlledAIAssistant";
 import M4SemanticsPanel from "../components/m4semanticspanel";
 import { Pagination, usePagination } from "../components/Pagination";
 import ToolContractOnboarding from "../components/ToolContractOnboarding";
+import { analysisModuleCards, driftChangeDescription, nextAnalysisAction, riskLedgerMatchesRecord } from "../utils/analysisPresentation";
 import {
   activateRowOnKeyboard,
   hasNonEmptyAnalysisEvidence,
@@ -28,7 +29,24 @@ function ToolAnalysis({
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
-  const toolPagination = usePagination(tools, String(tools.length));
+  const [toolSearch, setToolSearch] = useState("");
+  const [toolStateFilter, setToolStateFilter] = useState("ALL");
+  const serverLookup = useMemo(() => new Map(servers.map((server) => [server.id, server])), [servers]);
+  const filteredTools = useMemo(() => tools.filter((tool) => {
+    const query = toolSearch.trim().toLowerCase();
+    const state = String(tool.analysis_status || "").toUpperCase();
+    if (toolStateFilter === "REVIEW" &&
+      !["REVIEW_REQUIRED", "PENDING_ANALYSIS", "QUARANTINED", "ANALYSIS_FAILED", "STALE"].includes(state)) return false;
+    if (toolStateFilter === "BLOCKED" && state !== "BLOCKED") return false;
+    if (toolStateFilter === "APPROVED" &&
+      !["APPROVED", "ADMIN_ALLOWED"].includes(state)) return false;
+    if (!query) return true;
+    const server = serverLookup.get(tool.server_id);
+    return [tool.title, tool.name, server?.name, server?.server_info_title]
+      .some((value) => String(value || "").toLowerCase().includes(query));
+  }), [tools, serverLookup, toolSearch, toolStateFilter]);
+  const toolPagination = usePagination(filteredTools,
+    toolSearch + "|" + toolStateFilter + "|" + filteredTools.length);
 
   useEffect(() => {
     if (!reviewDialog) {
@@ -58,9 +76,15 @@ function ToolAnalysis({
     ? analyses.filter((analysis) => analysis.tool_id === selectedTool.id)
     : analyses;
   const latestAnalysis = activeBundle?.analyses?.[0] || relevantAnalyses[0] || null;
+  // Review actions require a fetched, current bundle, not cached list-only data.
+  const reviewAnalysis = activeBundle?.analyses?.[0] || null;
   const selectedServer = selectedTool ? serversById.get(selectedTool.server_id) : null;
-  const approveDisabledReason = approvalDisabledReason(selectedTool, latestAnalysis);
-  const blockDisabledReason = blockActionDisabledReason(selectedTool, latestAnalysis);
+  const approveDisabledReason = bundleLoading
+    ? "Cannot allow: current evidence is still loading."
+    : approvalDisabledReason(selectedTool, reviewAnalysis);
+  const blockDisabledReason = bundleLoading
+    ? "Cannot block: current evidence is still loading."
+    : blockActionDisabledReason(selectedTool, reviewAnalysis);
 
   useEffect(() => {
     if (tools.length === 0) {
@@ -71,8 +95,8 @@ function ToolAnalysis({
       const requested = tools.find((tool) => String(tool.id) === String(requestedToolId));
       setSelectedToolId(requested?.id ?? tools[0].id);
       if (requested) {
-        const index = tools.findIndex((tool) => tool.id === requested.id);
-        toolPagination.setPage(Math.floor(index / toolPagination.pageSize) + 1);
+        const index = filteredTools.findIndex((tool) => tool.id === requested.id);
+        if (index >= 0) toolPagination.setPage(Math.floor(index / toolPagination.pageSize) + 1);
       }
     }
   }, [selectedToolId, requestedToolId, tools]);
@@ -126,6 +150,9 @@ function ToolAnalysis({
     }
     setReviewDialog({
       action,
+      toolId: selectedTool.id,
+      fingerprint: selectedTool.current_fingerprint,
+      analysisContextHash: reviewAnalysis?.analysis_context_hash || null,
       justification: "",
       error: "",
     });
@@ -134,6 +161,13 @@ function ToolAnalysis({
   async function submitReview(event) {
     event.preventDefault();
     if (!reviewDialog || !selectedTool?.current_fingerprint) {
+      return;
+    }
+    if (reviewDialog.toolId !== selectedTool.id
+      || reviewDialog.fingerprint !== selectedTool.current_fingerprint
+      || reviewDialog.analysisContextHash !== (reviewAnalysis?.analysis_context_hash || null)) {
+      setReviewDialog(null);
+      setError("The tool or analysis changed. Reopen the review using current evidence.");
       return;
     }
     const justificationError = validateToolJustification(reviewDialog.justification);
@@ -201,8 +235,40 @@ function ToolAnalysis({
         <div className="inventory-section">
           <div className="section-heading compact-heading">
             <h3>Tools</h3>
-            <p>{tools.length} total</p>
+            <p>{filteredTools.length} displayed / {tools.length} total</p>
           </div>
+          <div className="analysis-tool-filters">
+            <label>
+              Search tools or servers
+              <input
+                maxLength={200}
+                onChange={(event) => setToolSearch(event.target.value)}
+                placeholder="Tool or server name"
+                type="search"
+                value={toolSearch}
+              />
+            </label>
+            <label>
+              Analysis status
+              <select value={toolStateFilter} onChange={(event) => setToolStateFilter(event.target.value)}>
+                <option value="ALL">All states</option>
+                <option value="REVIEW">Needs analysis / review</option>
+                <option value="BLOCKED">Blocked</option>
+                <option value="APPROVED">Analysis approved (not runtime permission)</option>
+              </select>
+            </label>
+            <button className="tiny-action" onClick={() => {
+              setToolSearch("");
+              setToolStateFilter("ALL");
+            }} type="button">
+              Clear filters
+            </button>
+          </div>
+          {selectedTool && !filteredTools.some((tool) => tool.id === selectedTool.id) && (
+            <p role="status" className="hint-text">
+              The selected tool is hidden by the current filters; its details remain visible on the right.
+            </p>
+          )}
           <p className="analysis-mobile-hint hint-text">Scroll sideways to view analysis, review and risk for every tool.</p>
           <div className="table-shell analysis-tool-table" tabIndex="0" aria-label="Tool list, horizontally scrollable on small screens">
             <table>
@@ -216,9 +282,9 @@ function ToolAnalysis({
                 </tr>
               </thead>
               <tbody>
-                {tools.length === 0 ? (
+                {filteredTools.length === 0 ? (
                   <tr>
-                    <td colSpan="5">No tools discovered.</td>
+                    <td colSpan="5">{tools.length ? "No tools match these filters." : "No tools discovered."}</td>
                   </tr>
                 ) : (
                   toolPagination.pageItems.map((tool) => {
@@ -336,12 +402,16 @@ function ToolAnalysis({
       </div>
       {reviewDialog && (
         <div className="modal-backdrop" role="presentation">
-          <section aria-modal="true" className="modal-panel" role="dialog">
-            <h3>{reviewDialog.action} Tool</h3>
+          <section aria-modal="true" aria-labelledby="analysis-review-dialog-title" className="modal-panel" role="dialog">
+            <h3 id="analysis-review-dialog-title">Record {reviewDialog.action} review</h3>
             <p>
               {selectedServer?.server_info_title || selectedServer?.name || selectedTool?.server_id}
               {" / "}
               {selectedTool?.title || selectedTool?.name}
+            </p>
+            <p className="hint-text">
+              This records an administrative analysis decision, not permission to execute an MCP tool.
+              Runtime execution still requires signed configuration and the applicable policies.
             </p>
             <form className="form-grid" onSubmit={submitReview}>
               <label className="wide-field">
@@ -432,14 +502,26 @@ function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onCompl
 
 function AnalysisOverview({ bundle, latestAnalysis, tool }) {
   const isCurrent = Boolean(bundle && tool?.current_fingerprint
+    && bundle?.analyses?.[0]?.id === latestAnalysis?.id
+    && !bundle?.errors?.analyses
     && latestAnalysis?.fingerprint === tool.current_fingerprint
     && latestAnalysis?.completed_at
     && tool.analysis_status !== "STALE"
     && latestAnalysis.analysis_status !== "STALE");
-  const riskEvidence = isCurrent ? latestAnalysis?.semantic_scores?.m7_risk_evidence : null;
+  const riskEvidence = isCurrent && riskLedgerMatchesRecord(latestAnalysis)
+    ? latestAnalysis?.semantic_scores?.m7_risk_evidence : null;
+  const moduleDisplay = analysisModuleCards(tool, latestAnalysis, bundle);
+  const changes = moduleDisplay.current && Array.isArray(latestAnalysis?.drift_result?.changes)
+    ? latestAnalysis.drift_result.changes : null;
+  const similarity = moduleDisplay.current ? latestAnalysis?.drift_result?.similarity : null;
   return (
     <>
       <SectionError error={bundle?.errors?.status} title="Analysis status" />
+      <section className="analysis-guidance" aria-label="Analysis next steps">
+        <h4>What should I do next?</h4>
+        <p>{nextAnalysisAction(tool, latestAnalysis, moduleDisplay.current)}</p>
+        <p className="hint-text">Review status and runtime authorization are separate. An approved analysis never by itself permits execution.</p>
+      </section>
       <div className="analysis-stat-grid">
         <AnalysisStat label="Current tool state" value={tool.analysis_status} badge />
         <AnalysisStat label="Latest analysis record" value={latestAnalysis?.analysis_status || tool.analysis_status} badge />
@@ -463,6 +545,55 @@ function AnalysisOverview({ bundle, latestAnalysis, tool }) {
         </p>
       )}
       <RiskEvidenceSummary evidence={riskEvidence} isCurrent={isCurrent} />
+      <section className="analysis-modules" aria-label="M1 through M7 explained">
+        <div className="section-heading compact-heading">
+          <h4>What the seven modules tell us</h4>
+          <p>Recorded evidence, not automatic permission</p>
+        </div>
+        <div className="analysis-module-grid">
+          {moduleDisplay.cards.map((card) => (
+            <article className="analysis-module-card" key={card.id}>
+              <div className="analysis-module-heading">
+                <span className="analysis-module-id">{card.id}</span>
+                <strong>{card.title}</strong>
+              </div>
+              <p className="analysis-module-status">{card.status}</p>
+              <p>{card.explanation}</p>
+              <small>{card.detail}</small>
+            </article>
+          ))}
+        </div>
+      </section>
+      <section className="analysis-drift-explainer" aria-label="M6 tool changes">
+        <h4>What changed since the previous tool observation?</h4>
+        {changes === null ? (
+          <p>Current version-change evidence is unavailable. Do not assume that no changes occurred.</p>
+        ) : changes.length === 0 ? (
+          <p>No changes are recorded in the current comparison. This is not a runtime safety certification.</p>
+        ) : (
+          <>
+            <p>{changes.length} recorded change(s). Exact details and provenance remain available in Raw evidence.</p>
+            <ul className="analysis-drift-list">
+              {changes.slice(0, 6).map((change, index) => {
+                const description = driftChangeDescription(change);
+                return (
+                  <li key={index}>
+                    <strong>{description.title}</strong>
+                    <span>{description.detail}</span>
+                    <Badge value={change?.severity || "unknown"} />
+                  </li>
+                );
+              })}
+            </ul>
+            {changes.length > 6 && <p>{changes.length - 6} more change(s) are recorded in Raw evidence.</p>}
+          </>
+        )}
+        {typeof similarity === "number" && Number.isFinite(similarity) && (
+          <p className="hint-text">
+            Recorded description similarity: {Math.round(similarity * 100)}% (exact comparison or E5 diagnostic, not a permission).
+          </p>
+        )}
+      </section>
       <dl className="compact-dl analysis-overview-list">
         <InfoRow label="Analyzer revision" value={latestAnalysis?.analyzer_revision || tool.analyzer_revision} />
         <InfoRow label="Completed" value={formatDate(latestAnalysis?.completed_at)} />
@@ -481,7 +612,7 @@ function RiskEvidenceSummary({ evidence, isCurrent }) {
       {!isCurrent ? (
         <p role="status">No completed, current bundle evidence is available. Historical or stale results must not be treated as current.</p>
       ) : evidence?.schema !== "m7_deterministic_risk_evidence_v1" ? (
-        <p role="status">A current M7 explanation is unavailable. A score alone does not establish safety or authorization.</p>
+        <p role="status">A consistent M7 explanation is unavailable for this current record. The score alone does not establish safety or authorization.</p>
       ) : (
         <>
           <p>

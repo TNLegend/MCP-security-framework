@@ -32,17 +32,18 @@ import Users from "./pages/Users";
 import { LIMITS, clearFieldError, validateLogin } from "./utils/validation";
 
 const pages = [
-  { id: "dashboard", label: "Dashboard" },
-  { id: "inventory", label: "MCP Inventory" },
-  { id: "build", label: "Build Security" },
-  { id: "analysis", label: "Tool Analysis" },
-  { id: "config", label: "Security Configuration" },
-  { id: "emergency", label: "Emergency Deny" },
-  { id: "runtime", label: "Runtime Calls" },
-  { id: "operations", label: "Operations" },
-  { id: "audit", label: "Audit" },
-  { id: "users", label: "Users", adminOnly: true },
+  { id: "dashboard", label: "Dashboard", group: "Overview" },
+  { id: "inventory", label: "MCP Inventory", group: "Tools" },
+  { id: "analysis", label: "Tool Analysis", group: "Tools" },
+  { id: "build", label: "Build Security", group: "Security" },
+  { id: "config", label: "Security Configuration", group: "Security" },
+  { id: "emergency", label: "Emergency Deny", group: "Security" },
+  { id: "runtime", label: "Runtime Calls", group: "Monitoring" },
+  { id: "operations", label: "Operations", group: "Monitoring" },
+  { id: "audit", label: "Audit", group: "Monitoring" },
+  { id: "users", label: "Users", group: "Administration", adminOnly: true },
 ];
+const navigationGroups = ["Overview", "Tools", "Security", "Monitoring", "Administration"];
 
 const EMPTY_RUNTIME_LOG_PAGE = {
   items: [],
@@ -385,16 +386,28 @@ function App() {
       </header>
 
       <nav className="app-nav" aria-label="Main navigation">
-        {pages.filter((page) => !page.adminOnly || isAdmin).map((page) => (
-          <button
-            className={activePage === page.id ? "active" : ""}
-            key={page.id}
-            onClick={() => navigateToPage(page.id)}
-            type="button"
-          >
-            {page.label}
-          </button>
-        ))}
+        {navigationGroups.map((group) => {
+          const items = pages.filter((page) => page.group === group && (!page.adminOnly || isAdmin));
+          if (items.length === 0) return null;
+          return (
+            <div aria-label={group} className="app-nav-group" key={group} role="group">
+              <span className="app-nav-group-label">{group}</span>
+              <div className="app-nav-group-links">
+                {items.map((page) => (
+                  <button
+                    aria-current={activePage === page.id ? "page" : undefined}
+                    className={activePage === page.id ? "active" : ""}
+                    key={page.id}
+                    onClick={() => navigateToPage(page.id)}
+                    type="button"
+                  >
+                    {page.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </nav>
 
       {error && <div className="error-banner">{error}</div>}

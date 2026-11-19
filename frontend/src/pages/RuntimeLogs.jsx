@@ -38,6 +38,7 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
   const [selectedLogId, setSelectedLogId] = useState(null);
 
   const entries = page.items;
+  const appliedFilterCount = Object.values(activeFilters).filter((value) => value !== null && value !== undefined && value !== "").length;
   const selectedLog = useMemo(
     () => entries.find((log) => log.id === selectedLogId) || null,
     [entries, selectedLogId],
@@ -119,7 +120,17 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
         <p>{page.summary.total} matching event(s)</p>
       </div>
       {error && <div className="error-banner">{error}</div>}
+      <p className="hint-text" role="note">
+        An ALLOW decision does not prove the upstream tool executed successfully.
+        An unknown upstream outcome may have already caused an effect; never retry it automatically.
+        The table distinguishes policy decisions from execution results.
+      </p>
 
+      {appliedFilterCount > 0 && (
+        <p className="hint-text" role="status">
+          {appliedFilterCount} filter(s) applied to the results below. Use Clear to reset all filters, including the advanced ones.
+        </p>
+      )}
       <form className="filter-bar runtime-filter-bar" onSubmit={applyFilters}>
         <FilterSelect
           label="Decision"
@@ -128,13 +139,18 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
           setFilters={setDraftFilters}
           value={draftFilters.decision}
         />
-        <FilterInput label="Server ID" name="server_id" setFilters={setDraftFilters} type="number" value={draftFilters.server_id} />
         <FilterInput label="Tool" name="tool_name" setFilters={setDraftFilters} value={draftFilters.tool_name} />
-        <FilterInput label="Agent" name="agent_id" setFilters={setDraftFilters} value={draftFilters.agent_id} />
-        <FilterInput label="Protocol profile" name="protocol_profile_id" setFilters={setDraftFilters} value={draftFilters.protocol_profile_id} />
-        <FilterInput label="From" name="from" setFilters={setDraftFilters} type="datetime-local" value={draftFilters.from} />
-        <FilterInput label="To" name="to" setFilters={setDraftFilters} type="datetime-local" value={draftFilters.to} />
         <FilterInput className="runtime-search-field" label="Search" name="search" setFilters={setDraftFilters} value={draftFilters.search} />
+        <details className="runtime-advanced-filters">
+          <summary>Advanced filters: server, agent, protocol and time range</summary>
+          <div className="runtime-advanced-fields">
+            <FilterInput label="Server ID" name="server_id" setFilters={setDraftFilters} type="number" value={draftFilters.server_id} />
+            <FilterInput label="Agent" name="agent_id" setFilters={setDraftFilters} value={draftFilters.agent_id} />
+            <FilterInput label="Protocol profile" name="protocol_profile_id" setFilters={setDraftFilters} value={draftFilters.protocol_profile_id} />
+            <FilterInput label="From" name="from" setFilters={setDraftFilters} type="datetime-local" value={draftFilters.from} />
+            <FilterInput label="To" name="to" setFilters={setDraftFilters} type="datetime-local" value={draftFilters.to} />
+          </div>
+        </details>
         <div className="button-row runtime-filter-actions">
           <button disabled={pageLoading} type="submit">Apply</button>
           <button disabled={pageLoading} onClick={clearFilters} type="button">Clear</button>
