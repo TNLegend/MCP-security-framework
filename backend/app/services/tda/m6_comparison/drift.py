@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 from app.services.tda.types import AnalysisFinding
 from app.services.tda.configuration import DRIFT_BENIGN
 from app.services.tda.configuration import DRIFT_CRITICAL
@@ -278,10 +279,15 @@ def drift_result(
             )
     previous_description = baseline_snapshot.get("description") or ""
     current_description = current_snapshot.get("description") or ""
-    similarity = embedding_model.similarity(
-        previous_description,
-        current_description,
-    )
+    if previous_description == current_description:
+        # Exact text equality proves that no description-level change
+        # occurred. Avoid costly E5 model loading for schema-only drift.
+        similarity = 1.0
+    else:
+        similarity = embedding_model.similarity(
+            previous_description,
+            current_description,
+        )
     if previous_description != current_description:
         # E5 measures semantic proximity, not verified behavioral equivalence.
         # Every text mutation remains visible as an unresolved comparison;
@@ -291,6 +297,13 @@ def drift_result(
             "severity": "medium",
             "origin": "EXACT_TEXT_CHANGE",
             "equivalence": "UNVERIFIED",
+            "source_path": "/description",
+            "previous_description_sha256": hashlib.sha256(
+                previous_description.encode("utf-8")
+            ).hexdigest(),
+            "current_description_sha256": hashlib.sha256(
+                current_description.encode("utf-8")
+            ).hexdigest(),
         })
     if similarity < 0.72:
         changes.append({"type": "semantic_description_shift", "severity": "medium"})
