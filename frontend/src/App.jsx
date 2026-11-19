@@ -32,18 +32,18 @@ import Users from "./pages/Users";
 import { LIMITS, clearFieldError, validateLogin } from "./utils/validation";
 
 const pages = [
-  { id: "dashboard", label: "Dashboard", group: "Overview" },
-  { id: "inventory", label: "MCP Inventory", group: "Tools" },
-  { id: "analysis", label: "Tool Analysis", group: "Tools" },
-  { id: "build", label: "Build Security", group: "Security" },
-  { id: "config", label: "Security Configuration", group: "Security" },
-  { id: "emergency", label: "Emergency Deny", group: "Security" },
-  { id: "runtime", label: "Runtime Calls", group: "Monitoring" },
-  { id: "operations", label: "Operations", group: "Monitoring" },
-  { id: "audit", label: "Audit", group: "Monitoring" },
-  { id: "users", label: "Users", group: "Administration", adminOnly: true },
+  { id: "dashboard", label: "Home", group: "Home" },
+  { id: "inventory", label: "MCP tools", group: "Tools" },
+  { id: "analysis", label: "Security review", group: "Tools" },
+  { id: "build", label: "Code scans", group: "Security" },
+  { id: "config", label: "Security rules", group: "Security" },
+  { id: "emergency", label: "Emergency block", group: "Security" },
+  { id: "runtime", label: "Tool activity", group: "Monitoring" },
+  { id: "operations", label: "System health", group: "Monitoring" },
+  { id: "audit", label: "Audit history", group: "Monitoring" },
+  { id: "users", label: "Users", group: "Settings", adminOnly: true },
 ];
-const navigationGroups = ["Overview", "Tools", "Security", "Monitoring", "Administration"];
+const navigationGroups = ["Home", "Tools", "Security", "Monitoring", "Settings"];
 
 const EMPTY_RUNTIME_LOG_PAGE = {
   items: [],
@@ -184,16 +184,22 @@ function App() {
       }
 
       const entries = Object.entries(requests);
-      const settled = await Promise.allSettled(entries.map(([, [, fetcher]]) => fetcher()));
+      // Display each completed read as it arrives. Slow/failed unrelated services
+      // must not keep the inventory or security review behind a global spinner.
+      // The generation fence prevents an older refresh from replacing newer data.
+      const settled = await Promise.allSettled(entries.map(async ([, [, fetcher, setter]]) => {
+        const result = await fetcher();
+        if (generation === loadDataGeneration.current) setter(result);
+        return result;
+      }));
       if (generation !== loadDataGeneration.current) {
         return;
       }
       const failed = [];
       let unauthorized = false;
       settled.forEach((result, index) => {
-        const [, [label, , setter]] = entries[index];
+        const [, [label]] = entries[index];
         if (result.status === "fulfilled") {
-          setter(result.value);
           return;
         }
         if (result.reason?.status === 401) {
@@ -364,7 +370,7 @@ function App() {
       <header className="app-header">
         <div>
           <p className="eyebrow">MCP Security Framework</p>
-          <h1>Security Operations</h1>
+          <h1>Security center</h1>
         </div>
         <div className="session-actions">
           <div className="session-user">

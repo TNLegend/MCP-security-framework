@@ -284,10 +284,7 @@ function Users({ users = [], loading = false, onRefresh }) {
       <div className="users-layout">
         <form className="action-panel user-create-panel" onSubmit={create}>
           <h3>Create user</h3>
-          <p className="hint-text">
-            VIEWER can inspect available security records. ADMIN can operate security controls
-            and manage users. Create an ADMIN only for a trusted operator.
-          </p>
+          <p className="hint-text">Viewer: read-only. Admin: can change security settings.</p>
           <label>
             Username
             <input

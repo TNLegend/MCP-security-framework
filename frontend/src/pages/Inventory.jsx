@@ -269,11 +269,11 @@ function Inventory({
     };
   }, [isAdmin]);
 
-  if (loading) {
+  if (loading && servers.length === 0 && tools.length === 0) {
     return (
       <section className="page-section">
         <div className="section-heading">
-          <h2>MCP Inventory</h2>
+          <h2>MCP tools</h2>
           <p>Loading inventory...</p>
         </div>
       </section>
@@ -283,14 +283,16 @@ function Inventory({
   return (
     <section className="page-section">
       <div className="section-heading">
-        <h2>MCP Inventory</h2>
+        <h2>MCP tools</h2>
         <p>{visibleServers.length} server(s), {visibleTools.length} tool(s)</p>
       </div>
 
       {isAdmin && (
-        <form className="action-panel inventory-discovery-form" onSubmit={handleDiscover}>
+        <details className="operator-technical-details inventory-add-server">
+          <summary>Add or connect an MCP server</summary>
+          <form className="action-panel inventory-discovery-form" onSubmit={handleDiscover}>
           <label>
-            MCP HTTP endpoint
+            Server address (URL)
             <input
               aria-describedby="discovery-endpoint-error"
               aria-invalid={Boolean(discoverFieldErrors.endpoint)}
@@ -308,7 +310,7 @@ function Inventory({
             <FieldError id="discovery-endpoint-error" message={discoverFieldErrors.endpoint} />
           </label>
           <label>
-            Upstream authentication
+            Authentication
             <select
               onChange={(event) => {
                 setAuthMode(event.target.value);
@@ -329,7 +331,7 @@ function Inventory({
           </label>
           {authMode === "BEARER" && (
             <label>
-              Credential secret reference
+              Saved credential reference
               <input
                 aria-describedby="discovery-credential-error"
                 aria-invalid={Boolean(discoverFieldErrors.credentialRef)}
@@ -436,20 +438,27 @@ function Inventory({
           <button className="secondary-action" disabled={discovering} type="submit">
             {discovering
               ? (authMode === "OAUTH" ? "Opening authorization..." : "Discovering...")
-              : (authMode === "OAUTH" ? "Register and connect OAuth" : "Register / Discover MCP")}
+              : (authMode === "OAUTH" ? "Register and connect OAuth" : "Connect server")}
           </button>
           {discoverResult && <span className="success-text">{discoverResult}</span>}
           {discoverError && <span className="error-text">{discoverError}</span>}
-        </form>
+          </form>
+        </details>
       )}
 
       <div className="summary-grid inventory-summary-grid">
-        <SummaryCard label="MCP Servers" value={visibleServers.length} />
-        <SummaryCard label="MCP Tools" value={visibleTools.length} />
-        <SummaryCard label="Sensitive Tools" value={sensitiveToolCount} />
-        <SummaryCard label="Analysis Pending" value={pendingCount} />
-        <SummaryCard label="Review Required" value={reviewRequiredCount} />
+        <SummaryCard label="Servers" value={visibleServers.length} />
+        <SummaryCard label="Tools" value={visibleTools.length} />
+        <SummaryCard label="Need review" value={reviewRequiredCount} />
       </div>
+
+      <details className="operator-technical-details inventory-extra-stats">
+        <summary>Additional inventory numbers</summary>
+        <div className="summary-grid">
+          <SummaryCard label="Sensitive tools" value={sensitiveToolCount} />
+          <SummaryCard label="Analysis pending" value={pendingCount} />
+        </div>
+      </details>
 
       <div className="inventory-layout">
         <div className="inventory-section">

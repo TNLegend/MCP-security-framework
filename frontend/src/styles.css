@@ -3125,3 +3125,177 @@ code {
 .configuration-technical-details dd {
   overflow-wrap: anywhere;
 }
+
+/* Browser-verified responsive grid containment: do not widen the whole page for wide tables. */
+.build-security-page,
+.operations-page {
+  grid-template-columns: minmax(0, 1fr);
+}
+.build-security-page > *,
+.operations-page > * {
+  min-width: 0;
+}
+.build-security-page .table-shell,
+.operations-page .table-shell {
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  overflow-x: auto;
+}
+
+/* Surface risk/review before implementation fingerprints in Tool Analysis. */
+.analysis-quick-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+.analysis-quick-summary > div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid #d7deea;
+  border-radius: 10px;
+}
+.analysis-quick-summary span {
+  color: #526174;
+  font-weight: 700;
+  font-size: .81rem;
+}
+.analysis-quick-summary strong {
+  overflow-wrap: anywhere;
+}
+.analysis-technical-identity {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #d7deea;
+  border-radius: 10px;
+}
+.analysis-technical-identity > summary {
+  cursor: pointer;
+  color: #174c93;
+  font-weight: 700;
+}
+.analysis-technical-identity .compact-dl {
+  margin-top: 12px;
+}
+@media(max-width: 700px) {
+  .analysis-quick-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Wide Build/Operations tables use table-wrap, not table-shell. */
+.build-security-page .table-wrap,
+.operations-page .table-wrap {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+/* Operator-facing security UI: short summaries first, evidence on demand. */
+.operator-summary,
+.operator-risk-reasons,
+.operator-changes,
+.operator-next-step {
+  margin: 14px 0;
+  padding: 14px 16px;
+  border: 1px solid #d7deea;
+  border-radius: 11px;
+  background: #fff;
+}
+.operator-summary { background: #f8fafc; }
+.operator-summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.operator-summary h4,
+.operator-risk-reasons h4,
+.operator-changes h4,
+.operator-next-step h4 { margin: 0 0 8px; }
+.operator-summary-head h4 { margin: 0; }
+.operator-summary-head > strong {
+  background: #e9eef6;
+  color: #29364b;
+  border-radius: 8px;
+  padding: 5px 10px;
+}
+.operator-checks {
+  display: grid;
+  gap: 0;
+  margin-top: 12px;
+}
+.operator-checks > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid #e1e6ef;
+}
+.operator-checks span { color: #4b5b70; }
+.operator-checks strong { font-size: .94rem; text-align: right; }
+.operator-caution { color: #834000; font-weight: 700; }
+.operator-risk-reasons ul,
+.operator-changes ul {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+.operator-changes li {
+  padding: 4px 0;
+}
+.operator-changes li span {
+  margin-left: 9px;
+  overflow-wrap: anywhere;
+  color: #536176;
+}
+.operator-next-step {
+  background: #f3f7fc;
+}
+.operator-next-step p { margin: 4px 0 12px; }
+.operator-technical-details,
+.operator-risk-technical {
+  margin: 12px 0;
+  border: 1px solid #d7deea;
+  border-radius: 10px;
+  padding: 11px 13px;
+  background: #f9fafb;
+}
+.operator-technical-details > summary,
+.operator-risk-technical > summary {
+  cursor: pointer;
+  font-weight: 650;
+  color: #294568;
+}
+.operator-technical-details[open] > summary,
+.operator-risk-technical[open] > summary { margin-bottom: 12px; }
+.operator-description-result {
+  margin: 12px 0;
+  padding: 14px;
+  background: #f3f7fc;
+  border-radius: 10px;
+}
+.operator-description-result p { margin: 5px 0 0; }
+.inventory-add-server > .inventory-discovery-form {
+  margin-top: 14px;
+}
+.inventory-extra-stats .summary-grid { margin-top: 12px; }
+@media(max-width: 700px) {
+  .operator-checks > div {
+    align-items: start;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .operator-checks strong { text-align: left; }
+  .operator-summary,
+  .operator-risk-reasons,
+  .operator-changes,
+  .operator-next-step { padding: 13px; }
+}

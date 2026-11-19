@@ -19,16 +19,16 @@ export function isCurrentAnalysis(tool, analysis, bundle) {
 }
 
 export function nextAnalysisAction(tool, analysis, current) {
-  if (!tool) return "Select an MCP tool to inspect its observations.";
-  if (!current) return "Refresh or run a current analysis before reviewing this tool.";
+  if (!tool) return "Choose a tool to see its security results.";
+  if (!current) return "Refresh the security check first.";
   if (["BLOCKED", "QUARANTINED"].includes(tool.analysis_status)) {
-    return "Review the security findings and administrative restrictions. An analysis does not lift a block.";
+    return "Review why this tool is blocked.";
   }
   if (["REVIEW_REQUIRED", "PENDING_ANALYSIS"].includes(tool.analysis_status) ||
       ["REVIEW_REQUIRED", "PENDING"].includes(analysis?.review_status)) {
-    return "Examine the findings and changes, then request an administrator review if appropriate.";
+    return "Review the issues before deciding.";
   }
-  return "Check the findings, version changes and policy prerequisites before any runtime operation.";
+  return "Review the results before allowing use.";
 }
 
 export function riskLedgerMatchesRecord(analysis) {

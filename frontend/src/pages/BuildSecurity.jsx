@@ -401,11 +401,8 @@ function BuildSecurity({
     <section className="page-section build-security-page">
       <div className="section-heading">
         <div>
-          <h2>Build Security</h2>
-          <p>
-            Scan MCP source without executing it. Evidence is bound to the validated source
-            fingerprint or immutable Git revision.
-          </p>
+          <h2>Code scans</h2>
+          <p>Scan code for security problems before using it.</p>
         </div>
         <button className="secondary-action" disabled={loading || busy} onClick={loadBuildData} type="button">
           {loading ? "Refreshing..." : "Refresh"}
@@ -415,9 +412,16 @@ function BuildSecurity({
       <div className="build-scanner-grid" aria-label="Build scanner readiness">
         {scanners.map((scanner) => (
           <article className="status-panel compact-status" key={scanner.scanner_id}>
-            <span>{scanner.scanner_id}</span>
-            <strong>{scanner.available ? "READY" : "NOT READY"}</strong>
-            <small>{scanner.version || scanner.reason_code || "Unavailable"}</small>
+            <span>{({
+              SEMGREP: "Code problems",
+              GITLEAKS: "Exposed secrets",
+              TRIVY: "Dependencies",
+            })[String(scanner.scanner_id).toUpperCase()] || "Security check"}</span>
+            <strong>{scanner.available ? "Ready" : "Unavailable"}</strong>
+            <details>
+              <summary>Scanner details</summary>
+              <small>{scanner.scanner_id}: {scanner.version || scanner.reason_code || "Unavailable"}</small>
+            </details>
             <p className="scanner-purpose">
               {({
                 SEMGREP: "Scans source patterns for security issues.",
@@ -435,7 +439,7 @@ function BuildSecurity({
       {isAdmin ? (
         <section className="detail-panel build-new-scan">
           <div className="operations-section-heading">
-            <h3>New Build scan</h3>
+            <h3>New scan</h3>
             <small>ADMIN only · Semgrep + Gitleaks + Trivy</small>
           </div>
 

@@ -5,7 +5,7 @@ import M4SemanticsPanel from "../components/m4semanticspanel";
 import { Pagination, usePagination } from "../components/Pagination";
 import ToolContractOnboarding from "../components/ToolContractOnboarding";
 import { useDialogFocus } from "../utils/useDialogFocus";
-import { analysisModuleCards, driftChangeDescription, nextAnalysisAction, riskLedgerMatchesRecord } from "../utils/analysisPresentation";
+import { driftChangeDescription, isCurrentAnalysis, nextAnalysisAction, riskLedgerMatchesRecord } from "../utils/analysisPresentation";
 import {
   activateRowOnKeyboard,
   hasNonEmptyAnalysisEvidence,
@@ -207,12 +207,12 @@ function ToolAnalysis({
     }
   }
 
-  if (loading) {
+  if (loading && tools.length === 0) {
     return (
       <section className="page-section">
         <div className="section-heading">
-          <h2>Tool Analysis</h2>
-          <p>Loading analyzer evidence...</p>
+          <h2>Security review</h2>
+          <p>Loading security results...</p>
         </div>
       </section>
     );
@@ -221,15 +221,10 @@ function ToolAnalysis({
   return (
     <section className="page-section">
       <div className="section-heading">
-        <h2>Tool Analysis</h2>
-        <p>{analyses.length} analysis record(s)</p>
+        <h2>Security review</h2>
+        <p>Check an MCP tool before making a decision.</p>
       </div>
-      <p className="hint-text" role="note">
-        Analyzer findings are advisory, not proof that a tool is safe or unsafe.
-        An approved analysis does not grant execution rights. Runtime access
-        still requires a valid signed configuration, explicit approval, and
-        applicable security contracts.
-      </p>
+      <p className="hint-text" role="note">An approved review does not automatically allow an MCP call.</p>
 
       {message && <div className="success-banner">{message}</div>}
       {error && <div className="error-banner">{error}</div>}
@@ -237,7 +232,7 @@ function ToolAnalysis({
       <div className="analysis-layout">
         <div className="inventory-section">
           <div className="section-heading compact-heading">
-            <h3>Tools</h3>
+            <h3>Select a tool</h3>
             <p>{filteredTools.length} displayed / {tools.length} total</p>
           </div>
           <div className="analysis-tool-filters">
@@ -339,7 +334,14 @@ function ToolAnalysis({
           {selectedTool && (
             <>
               {bundleLoading && <p>Loading selected tool evidence...</p>}
-              <dl className="compact-dl">
+              <div className="analysis-quick-summary" aria-label="Tool security status">
+                <div><span>Risk</span><strong>{humanize(selectedTool.risk_level || "Unknown")}</strong></div>
+                <div><span>Review</span><strong>{humanize(selectedTool.review_status || "Unknown")}</strong></div>
+                <div><span>Can it run?</span><strong>Check runtime policy</strong></div>
+              </div>
+              <details className="analysis-technical-identity">
+                <summary>Technical identifiers</summary>
+                <dl className="compact-dl">
                 <div>
                   <dt>Server</dt>
                   <dd>{selectedServer?.server_info_title || selectedServer?.name || selectedTool.server_id}</dd>
@@ -364,7 +366,8 @@ function ToolAnalysis({
                   <dt>Critical deterministic finding</dt>
                   <dd>{selectedTool.deterministic_critical_finding ? "true" : "false"}</dd>
                 </div>
-              </dl>
+                </dl>
+              </details>
 
               {isAdmin && (
                 <div className="button-row">
@@ -374,7 +377,7 @@ function ToolAnalysis({
                     title={approveDisabledReason}
                     type="button"
                   >
-                    Allow
+                    Approve review
                   </button>
                   <button
                     disabled={busy || Boolean(blockDisabledReason)}
@@ -382,7 +385,7 @@ function ToolAnalysis({
                     title={blockDisabledReason}
                     type="button"
                   >
-                    Block
+                    Block tool
                   </button>
                 </div>
               )}
@@ -407,16 +410,13 @@ function ToolAnalysis({
         <div className="modal-backdrop" role="presentation">
           <section aria-modal="true" aria-labelledby="analysis-review-dialog-title"
             className="modal-panel" ref={modalRef} role="dialog" tabIndex={-1}>
-            <h3 id="analysis-review-dialog-title">Record {reviewDialog.action} review</h3>
+            <h3 id="analysis-review-dialog-title">{reviewDialog.action === "Allow" ? "Approve review" : "Block tool"}</h3>
             <p>
               {selectedServer?.server_info_title || selectedServer?.name || selectedTool?.server_id}
               {" / "}
               {selectedTool?.title || selectedTool?.name}
             </p>
-            <p className="hint-text">
-              This records an administrative analysis decision, not permission to execute an MCP tool.
-              Runtime execution still requires signed configuration and the applicable policies.
-            </p>
+            <p className="hint-text">This records a review decision. Runtime access is checked separately.</p>
             <form className="form-grid" onSubmit={submitReview}>
               <label className="wide-field">
                 Justification
@@ -441,7 +441,7 @@ function ToolAnalysis({
               </label>
               <div className="button-row">
                 <button className="secondary-action" disabled={busy} type="submit">
-                  {busy ? "Submitting..." : reviewDialog.action}
+                  {busy ? "Saving..." : reviewDialog.action === "Allow" ? "Confirm review approval" : "Confirm block"}
                 </button>
                 <button disabled={busy} onClick={() => setReviewDialog(null)} type="button">
                   Cancel
@@ -456,13 +456,13 @@ function ToolAnalysis({
 }
 
 const ANALYSIS_TABS = [
-  ["m4-neural", "M4 analysis (SHADOW)"],
-  ["overview", "Overview"],
-  ["findings", "Findings"],
-  ["ai", "AI Assist"],
+  ["overview", "Summary"],
+  ["m4-neural", "Description check"],
+  ["findings", "Detected issues"],
+  ["ai", "Explain with AI"],
   ["history", "History"],
-  ["contract", "Contract"],
-  ["raw", "Raw evidence"],
+  ["contract", "Tool settings"],
+  ["raw", "Technical details"],
 ];
 
 function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onComplete, onSelectTab, tool }) {
@@ -513,150 +513,140 @@ function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onCompl
 }
 
 function AnalysisOverview({ bundle, isAdmin, latestAnalysis, onAskAI, tool }) {
-  const isCurrent = Boolean(bundle && tool?.current_fingerprint
-    && bundle?.analyses?.[0]?.id === latestAnalysis?.id
-    && !bundle?.errors?.analyses
-    && latestAnalysis?.fingerprint === tool.current_fingerprint
-    && latestAnalysis?.completed_at
-    && tool.analysis_status !== "STALE"
-    && latestAnalysis.analysis_status !== "STALE");
-  const riskEvidence = isCurrent && riskLedgerMatchesRecord(latestAnalysis)
+  const current = isCurrentAnalysis(tool, latestAnalysis, bundle);
+  const ledger = current && riskLedgerMatchesRecord(latestAnalysis)
     ? latestAnalysis?.semantic_scores?.m7_risk_evidence : null;
-  const moduleDisplay = analysisModuleCards(tool, latestAnalysis, bundle);
-  const changes = moduleDisplay.current && Array.isArray(latestAnalysis?.drift_result?.changes)
+  const findings = current && !bundle?.errors?.findings
+    ? (bundle?.findings || []).filter((finding) =>
+        !finding.analysis_id || finding.analysis_id === latestAnalysis.id)
+    : null;
+  const changes = current && Array.isArray(latestAnalysis?.drift_result?.changes)
     ? latestAnalysis.drift_result.changes : null;
-  const similarity = moduleDisplay.current ? latestAnalysis?.drift_result?.similarity : null;
+  const injectionFinding = findings?.find((finding) =>
+    /prompt.?injection|instruction.?override|injected.?instruction/i.test(
+      [finding.code, finding.title, finding.category].filter(Boolean).join(" ")));
   return (
     <>
-      <SectionError error={bundle?.errors?.status} title="Analysis status" />
-      <section className="analysis-guidance" aria-label="Analysis next steps">
-        <h4>What should I do next?</h4>
-        <p>{nextAnalysisAction(tool, latestAnalysis, moduleDisplay.current)}</p>
-        <p className="hint-text">Review status and runtime authorization are separate. An approved analysis never by itself permits execution.</p>
-        {isAdmin && isCurrent && (
+      <SectionError error={bundle?.errors?.status} title="Security results" />
+      <section className="operator-summary" aria-label="Security summary">
+        <div className="operator-summary-head">
+          <h4>Security summary</h4>
+          <strong>{current ? humanize(latestAnalysis?.risk_level || tool.risk_level) : "Not up to date"}</strong>
+        </div>
+        {!current ? (
+          <p role="status">A current security check is unavailable. Refresh before making a decision.</p>
+        ) : (
+          <>
+            <div className="operator-checks">
+              <div>
+                <span>Prompt injection</span>
+                <strong>{injectionFinding ? "Possible attempt found" : "No independent result available"}</strong>
+              </div>
+              <div>
+                <span>Tool changes</span>
+                <strong>{changes === null ? "Result unavailable"
+                  : changes.length === 0 ? "No changes recorded"
+                    : changes.length + " change(s) recorded"}</strong>
+              </div>
+              <div>
+                <span>Other security findings</span>
+                <strong>{findings === null ? "Result unavailable"
+                  : findings.length === 0 ? "No findings recorded"
+                    : findings.length + " finding(s) to review"}</strong>
+              </div>
+            </div>
+            {injectionFinding && (
+              <p className="operator-caution">A possible prompt injection indicator was recorded.
+                It requires verification; this is not a confirmed attack.</p>
+            )}
+          </>
+        )}
+      </section>
+
+      <RiskEvidenceSummary evidence={ledger} current={current} findings={findings} />
+
+      {current && changes?.length > 0 && (
+        <section className="operator-changes" aria-label="Tool changes">
+          <h4>What changed?</h4>
+          <ul>
+            {changes.slice(0, 3).map((change, index) => {
+              const item = driftChangeDescription(change);
+              return (
+                <li key={index}>
+                  <strong>{item.title}</strong>
+                  {item.detail && item.detail !== "Exact change recorded" && <span>{item.detail}</span>}
+                </li>
+              );
+            })}
+          </ul>
+          {changes.length > 3 && <p>{changes.length - 3} more in Technical details.</p>}
+        </section>
+      )}
+
+      <section className="operator-next-step" aria-label="Suggested next step">
+        <h4>Next step</h4>
+        <p>{nextAnalysisAction(tool, latestAnalysis, current)}</p>
+        {isAdmin && current && (
           <button className="secondary-action" type="button" onClick={onAskAI}>
-            Ask AI to explain this analysis (advisory only)
+            Explain with AI
           </button>
         )}
       </section>
-      <div className="analysis-stat-grid">
-        <AnalysisStat label="Current tool state" value={tool.analysis_status} badge />
-        <AnalysisStat label="Latest analysis record" value={latestAnalysis?.analysis_status || tool.analysis_status} badge />
-        <AnalysisStat label="Review" value={latestAnalysis?.review_status || tool.review_status} badge />
-        <AnalysisStat label="Risk level" value={latestAnalysis?.risk_level || tool.risk_level} badge />
-        <AnalysisStat label="Risk score" value={latestAnalysis?.risk_score ?? tool.risk_score ?? "-"} />
-        <AnalysisStat label="Consistency" value={latestAnalysis?.consistency_status || tool.consistency_status} badge />
-        <AnalysisStat label="Drift" value={latestAnalysis?.drift_status || tool.drift_status} badge />
-      </div>
-      {latestAnalysis?.analysis_status && latestAnalysis.analysis_status !== tool.analysis_status && (
-        <p className="hint-text" role="status">
-          This analysis record has a different status from the current tool state.
-          Historical approval evidence does not authorize runtime execution.
-        </p>
-      )}
-      {latestAnalysis?.evidence_provenance?.state === "REUSED" && (
-        <p className="hint-text" role="status">
-          Existing analysis evidence reused; no new semantic inference.
-          Original analysis status: {latestAnalysis.evidence_provenance.raw_analysis_status}.
-          Administrative acceptance preserves the original findings.
-        </p>
-      )}
-      <RiskEvidenceSummary evidence={riskEvidence} isCurrent={isCurrent} />
-      <section className="analysis-modules" aria-label="M1 through M7 explained">
-        <div className="section-heading compact-heading">
-          <h4>What the seven modules tell us</h4>
-          <p>Recorded evidence, not automatic permission</p>
-        </div>
-        <div className="analysis-module-grid">
-          {moduleDisplay.cards.map((card) => (
-            <article className="analysis-module-card" key={card.id}>
-              <div className="analysis-module-heading">
-                <span className="analysis-module-id">{card.id}</span>
-                <strong>{card.title}</strong>
-              </div>
-              <p className="analysis-module-status">{card.status}</p>
-              <p>{card.explanation}</p>
-              <small>{card.detail}</small>
-            </article>
-          ))}
-        </div>
-      </section>
-      <section className="analysis-drift-explainer" aria-label="M6 tool changes">
-        <h4>What changed since the previous tool observation?</h4>
-        {changes === null ? (
-          <p>Current version-change evidence is unavailable. Do not assume that no changes occurred.</p>
-        ) : changes.length === 0 ? (
-          <p>No changes are recorded in the current comparison. This is not a runtime safety certification.</p>
-        ) : (
-          <>
-            <p>{changes.length} recorded change(s). Exact details and provenance remain available in Raw evidence.</p>
-            <ul className="analysis-drift-list">
-              {changes.slice(0, 6).map((change, index) => {
-                const description = driftChangeDescription(change);
-                return (
-                  <li key={index}>
-                    <strong>{description.title}</strong>
-                    <span>{description.detail}</span>
-                    <Badge value={change?.severity || "unknown"} />
-                  </li>
-                );
-              })}
-            </ul>
-            {changes.length > 6 && <p>{changes.length - 6} more change(s) are recorded in Raw evidence.</p>}
-          </>
-        )}
-        {typeof similarity === "number" && Number.isFinite(similarity) && (
-          <p className="hint-text">
-            Recorded description similarity: {Math.round(similarity * 100)}% (exact comparison or E5 diagnostic, not a permission).
-          </p>
-        )}
-      </section>
-      <dl className="compact-dl analysis-overview-list">
-        <InfoRow label="Analyzer revision" value={latestAnalysis?.analyzer_revision || tool.analyzer_revision} />
-        <InfoRow label="Completed" value={formatDate(latestAnalysis?.completed_at)} />
-        <InfoRow label="Historical analyzer signal" value={formatSemanticDecision(latestAnalysis?.semantic_scores)} />
-        <InfoRow label="Deterministic critical finding" value={tool.deterministic_critical_finding ? "Yes" : "No"} />
-      </dl>
+
+      <details className="operator-technical-details">
+        <summary>Technical analysis details</summary>
+        <dl className="compact-dl analysis-overview-list">
+          <InfoRow label="Analysis status" value={latestAnalysis?.analysis_status || tool.analysis_status} />
+          <InfoRow label="Review status" value={latestAnalysis?.review_status || tool.review_status} />
+          <InfoRow label="Risk score" value={current ? latestAnalysis?.risk_score : "Not verified"} />
+          <InfoRow label="Consistency check" value={latestAnalysis?.consistency_status || tool.consistency_status} />
+          <InfoRow label="Drift check" value={latestAnalysis?.drift_status || tool.drift_status} />
+          <InfoRow label="Analyzer revision" value={latestAnalysis?.analyzer_revision || tool.analyzer_revision} />
+          <InfoRow label="Completed" value={formatDate(latestAnalysis?.completed_at)} />
+          <InfoRow label="Historical analyzer signal" value={formatSemanticDecision(latestAnalysis?.semantic_scores)} />
+        </dl>
+        <p>Some checks can be incomplete. This report does not authorize MCP execution.</p>
+      </details>
     </>
   );
 }
 
-function RiskEvidenceSummary({ evidence, isCurrent }) {
+function RiskEvidenceSummary({ evidence, current, findings }) {
   const drivers = Array.isArray(evidence?.risk_drivers) ? evidence.risk_drivers : [];
   return (
-    <section className="analysis-risk-explanation" aria-label="M7 risk explanation">
-      <h4>Why this risk level?</h4>
-      {!isCurrent ? (
-        <p role="status">No completed, current bundle evidence is available. Historical or stale results must not be treated as current.</p>
-      ) : evidence?.schema !== "m7_deterministic_risk_evidence_v1" ? (
-        <p role="status">A consistent M7 explanation is unavailable for this current record. The score alone does not establish safety or authorization.</p>
+    <section className="operator-risk-reasons" aria-label="Risk explanation">
+      <h4>Why this risk?</h4>
+      {!current ? (
+        <p>Current evidence is unavailable.</p>
+      ) : !evidence ? (
+        <p>Detailed reasons are unavailable for this analysis.</p>
+      ) : drivers.length === 0 ? (
+        <p>No specific risk drivers were recorded. This does not prove the tool is safe.</p>
       ) : (
         <>
-          <p>
-            M7 risk score: <strong>{evidence.risk_score} / 100</strong>.
-            The highest deterministic finding or M6 drift contribution determines this score;
-            advisory model predictions do not add to it.
-          </p>
-          {drivers.length === 0 ? (
-            <p>No deterministic risk drivers are recorded in this explanation. This does not prove the tool is safe.</p>
-          ) : (
-            <ul className="analysis-risk-drivers">
-              {drivers.slice(0, 5).map((driver, index) => (
-                <li key={driver.source_type + "-" + (driver.code || driver.status) + "-" + (driver.evidence_summary_sha256 || index)}>
-                  <strong>{driver.source_type === "DRIFT" ? "M6 drift: " + humanize(driver.status) : humanize(driver.code)}</strong>
-                  <span>Contribution {driver.contribution} / 100</span>
-                  {driver.source_path && <small>Evidence source: {driver.source_path}</small>}
-                </li>
-              ))}
+          <ul>
+            {drivers.slice(0, 3).map((driver, index) => (
+              <li key={driver.evidence_summary_sha256 || index}>
+                {driver.source_type === "DRIFT"
+                  ? "Tool description or contract changed"
+                  : friendlyFindingTitle((findings || []).find((finding) => finding.code === driver.code) || {})}
+              </li>
+            ))}
+          </ul>
+          {drivers.length > 3 && <p>More details are available in Technical details.</p>}
+          <details className="operator-risk-technical">
+            <summary>Evidence and coverage details</summary>
+            <p>Risk score: {evidence.risk_score} / 100.
+              Coverage: {humanize(evidence.coverage?.status || "UNKNOWN")}.
+              Independent corroboration: {humanize(evidence.corroboration_status || "UNKNOWN")}.
+              Authorization: not evaluated.</p>
+            <ul>
+              {drivers.map((driver,index) => <li key={index}>
+                {driver.source_type}: {driver.code || driver.status || "Unknown"} ?
+                contribution {driver.contribution ?? "?"}
+              </li>)}
             </ul>
-          )}
-          {drivers.length > 5 && <p>{drivers.length - 5} additional drivers are in the technical evidence.</p>}
-          <p className="hint-text">
-            Coverage: {humanize(evidence.coverage?.status || "UNKNOWN")}.
-            {evidence.coverage?.status !== "COMPLETE" && " Missing evidence is not proof of safety."}
-            {" "}Independent corroboration: {humanize(evidence.corroboration_status || "UNKNOWN")}.
-            {" "}Authorization: not evaluated by M7.
-          </p>
+          </details>
         </>
       )}
     </section>
@@ -671,6 +661,14 @@ function InfoRow({ label, value }) {
   return <div><dt>{label}</dt><dd>{value ?? "-"}</dd></div>;
 }
 
+function friendlyFindingTitle(finding) {
+  const label = [finding.code, finding.title, finding.category].filter(Boolean).join(" ");
+  if (/prompt.?injection|injected.?instruction|instruction.?override/i.test(label)) return "Possible prompt injection";
+  if (/exposed.?secret|credential.?leak|token.?leak/i.test(label)) return "Possible exposed secret";
+  if (/contract.?change|schema.?change|drift/i.test(label)) return "Tool definition changed";
+  if (finding.title && !/^[A-Z0-9_ -]+$/.test(finding.title)) return finding.title;
+  return "Security issue to review";
+}
 function FindingsView({ error, findings }) {
   const findingPagination = usePagination(findings, String(findings.length));
   if (error) return <SectionError error={error} title="Findings" />;
@@ -680,15 +678,19 @@ function FindingsView({ error, findings }) {
       {findingPagination.pageItems.map((finding, index) => (
         <article className="finding-card" key={finding.id || `${finding.code}-${index}`}>
           <div className="finding-heading">
-            <div><strong>{finding.title || finding.code || "Analysis finding"}</strong><span>{finding.code || finding.source || "Analyzer"}</span></div>
+            <div><strong>{friendlyFindingTitle(finding)}</strong></div>
             <Badge value={finding.severity} />
           </div>
           <p>{finding.summary || finding.message || finding.evidence?.summary || "No summary provided."}</p>
           {finding.recommendation && <div className="finding-recommendation"><strong>Recommendation</strong><span>{finding.recommendation}</span></div>}
-          <dl className="inline-metadata">
-            <div><dt>Source</dt><dd>{finding.source || "-"}</dd></div>
-            <div><dt>Confidence</dt><dd>{formatConfidence(finding.confidence)}</dd></div>
-          </dl>
+          <details className="operator-technical-details">
+            <summary>Finding evidence</summary>
+            <dl className="inline-metadata">
+              <div><dt>Code</dt><dd>{finding.code || "-"}</dd></div>
+              <div><dt>Source</dt><dd>{finding.source || "-"}</dd></div>
+              <div><dt>Confidence</dt><dd>{formatConfidence(finding.confidence)}</dd></div>
+            </dl>
+          </details>
         </article>
       ))}
       <Pagination
@@ -846,7 +848,17 @@ function blockActionDisabledReason(tool, latestAnalysis) {
 }
 
 function Badge({ value }) {
-  return <span className={`badge ${badgeClass(value)}`}>{value || "unknown"}</span>;
+  const key = String(value || "unknown").toUpperCase();
+  const labels = {
+    REVIEW_REQUIRED: "Needs review",
+    PENDING_ANALYSIS: "Not analyzed",
+    ANALYSIS_FAILED: "Check failed",
+    ADMIN_ALLOWED: "Review approved",
+    APPROVED: "Review approved",
+    QUARANTINED: "Restricted",
+  };
+  const label = labels[key] || key.replaceAll("_", " ").toLowerCase().replace(/^./, (x) => x.toUpperCase());
+  return <span className={"badge " + badgeClass(value)}>{label}</span>;
 }
 
 function badgeClass(value) {

@@ -47,11 +47,8 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
     <section className="page-section operations-page">
       <div className="section-heading">
         <div>
-          <h2>Runtime Operations</h2>
-          <p>
-            Live readiness, bounded storage, database pool state, and latency evidence from
-            persisted Runtime Calls.
-          </p>
+          <h2>System health</h2>
+          <p>Check service status and recent errors.</p>
         </div>
         <span className={"operations-ready " + (summary?.ready ? "ready" : "not-ready")}>
           {summary?.ready ? "READY" : "NOT READY"}
@@ -77,7 +74,7 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
 
       <section className="detail-panel">
         <div className="operations-section-heading">
-          <h3>Runtime window</h3>
+          <h3>Recent activity</h3>
           <small>Last {windowStats?.window_minutes || "-"} minute(s)</small>
         </div>
         <div className="stats-grid">

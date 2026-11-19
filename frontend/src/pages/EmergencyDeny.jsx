@@ -137,7 +137,7 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
     return (
       <section className="page-section">
         <div className="section-heading">
-          <h2>Emergency Deny</h2>
+          <h2>Emergency block</h2>
           <p>Loading deny list...</p>
         </div>
       </section>
@@ -147,16 +147,13 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
   return (
     <section className="page-section">
       <div className="section-heading">
-        <h2>Emergency Deny</h2>
+        <h2>Emergency block</h2>
         <p>{denies.length} record(s)</p>
       </div>
       {message && <div className="success-banner">{message}</div>}
       {error && <div className="error-banner">{error}</div>}
 
-      <p className="hint-text" role="note">
-        An emergency restriction can deny calls independently of analysis scores.
-        It does not change the signed configuration or permanently remove tool permissions.
-      </p>
+      <p className="hint-text" role="note">Temporarily block tools, servers or users from making MCP calls.</p>
       {isAdmin && (
         <form className="action-panel form-grid" onSubmit={submit}>
           <label>
@@ -255,7 +252,7 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
             <FieldError id="deny-reason-error" message={fieldErrors.reason} />
           </label>
           <button className="secondary-action" disabled={busy} type="submit">
-            {busy ? "Working..." : "Review restriction before creating"}
+            {busy ? "Working..." : "Review block"}
           </button>
         </form>
       )}
@@ -265,7 +262,7 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
           <section aria-modal="true" aria-labelledby="deny-confirm-title"
             aria-describedby="deny-confirm-description" className="modal-panel"
             ref={modalRef} role="dialog" tabIndex={-1}>
-            <h3 id="deny-confirm-title">Confirm emergency restriction</h3>
+            <h3 id="deny-confirm-title">Confirm emergency block</h3>
             <p id="deny-confirm-description">
               This will create an independent deny that affects future governed calls matching the scope below.
             </p>
@@ -281,7 +278,7 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
             )}
             <div className="button-row">
               <button className="danger-action" disabled={busy} onClick={confirmCreate} type="button">
-                {busy ? "Creating restriction..." : "Confirm and activate restriction"}
+                {busy ? "Creating restriction..." : "Activate block"}
               </button>
               <button className="secondary-action" disabled={busy}
                 onClick={() => setPendingCreate(null)} type="button">Cancel</button>

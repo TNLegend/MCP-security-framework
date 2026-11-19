@@ -48,13 +48,13 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
         return;
       }
       if (out?.mode !== "SHADOW" || out?.authority !== "NON_AUTHORITATIVE") {
-        setError("M4 did not return a consultative result.");
+        setError("A valid description report was not returned.");
         return;
       }
       setResult(out);
     } catch (err) {
       if (generation === requestGeneration.current) {
-        setError(err?.message || "M4 analysis unavailable");
+        setError(err?.message || "Description analysis unavailable");
       }
     } finally {
       if (generation === requestGeneration.current) setWaiting(false);
@@ -79,15 +79,11 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
   const evidence = envelope?.evidence || [];
 
   return (
-    <section className="m4-advisory-panel" aria-label="M4 neural informative findings">
-      <h4>M4 — AI description analysis (SHADOW)</h4>
-      <p className="hint-text" role="note">
-        Informative only. GLiNER PASS10 + DeBERTa V2 analyze advertised metadata,
-        not real execution permissions. The administrator remains responsible
-        for review and authorization. English descriptions only.
-      </p>
+    <section className="m4-advisory-panel" aria-label="Description analysis">
+      <h4>Description check</h4>
+      <p className="hint-text">Reviews what the tool claims it can do. Suggestions are not verified behavior.</p>
       {mainM4 && (
-        <section className="m4-main-analysis-evidence" aria-label="Current persisted main M4 evidence">
+        <details className="operator-technical-details"><summary>Previous description analysis</summary><section className="m4-main-analysis-evidence" aria-label="Current persisted main M4 evidence">
           <h5>M4 in the main analyzer — recorded evidence</h5>
           <p className="hint-text">
             This evidence is bound to the current tool fingerprint.
@@ -103,20 +99,26 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
           <p className="hint-text">Local M4 model/source SHA-256:
             <code>{mainM4?.m4_model_identity_sha256 || "NOT_VERIFIED"}</code>
           </p>
-        </section>
+        </section></details>
       )}
       <button type="button" className="secondary-action"
         disabled={!tool?.id || waiting} onClick={runM4}>
-        {waiting ? "Analyzing tool description…" : "Run advisory M4 analysis"}
+        {waiting ? "Analyzing tool description…" : "Analyze description"}
       </button>
       {requestKey && waiting && (
         <p role="status" className="hint-text">
-          Model inference is running locally. Tool approval remains unchanged.
+          Checking the description. This does not change approval.
         </p>
       )}
       {error && <p role="alert" className="error-banner">{error}</p>}
       {report && (
         <>
+          <div className="operator-description-result" role="status">
+            <strong>{events.length} possible action(s) found in the description.</strong>
+            <p>This is an AI interpretation, not a confirmed security finding.</p>
+          </div>
+          <details className="operator-technical-details">
+            <summary>Complete technical report</summary>
           <p className="hint-text m4-source-identity">
             Source fingerprint: <code>{result?.source_fingerprint}</code>
             {" · "}M4 status: <strong>SHADOW / NON_AUTHORITATIVE</strong>
@@ -246,6 +248,7 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
             This experimental report is not stored as an approval, risk decision,
             policy, finding or runtime permission.
           </p>
+          </details>
         </>
       )}
     </section>

@@ -73,7 +73,7 @@ function Audit({ events = [], loading = false }) {
     return (
       <section className="page-section">
         <div className="section-heading">
-          <h2>Audit</h2>
+          <h2>Audit history</h2>
           <p>Loading audit events...</p>
         </div>
       </section>
@@ -83,14 +83,11 @@ function Audit({ events = [], loading = false }) {
   return (
     <section className="page-section">
       <div className="section-heading">
-        <h2>Audit</h2>
+        <h2>Audit history</h2>
         <p>{pageData.total} event(s) · 20 per page</p>
       </div>
       {error && <div className="error-banner">{error}</div>}
-      <p className="hint-text" role="note">
-        Events show recorded actions and outcomes, not proof of every downstream effect.
-        Original field values and technical metadata remain available in Details.
-      </p>
+      <p className="hint-text" role="note">See who changed what. Original records remain available in Details.</p>
       <div className="action-panel inline-form">
         <label>
           Search events

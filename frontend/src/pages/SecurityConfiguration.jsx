@@ -152,7 +152,7 @@ function SecurityConfiguration({
     return (
       <section className="page-section">
         <div className="section-heading">
-          <h2>Security Configuration</h2>
+          <h2>Security rules</h2>
           <p>Loading revisions...</p>
         </div>
       </section>
@@ -162,19 +162,18 @@ function SecurityConfiguration({
   return (
     <section className="page-section">
       <div className="section-heading">
-        <h2>Security Configuration</h2>
-        <p>{revisions.length} recorded revision(s). Draft changes do not affect runtime policy until published.</p>
+        <h2>Security rules</h2>
+        <p>Review and publish security rules.</p>
       </div>
-      <p className="hint-text" role="note">
-        Configuration workflow: create a DRAFT, edit and save, validate, then publish a signed revision.
-        Publishing changes the active policy; a model recommendation cannot publish it.
-      </p>
+      <p className="hint-text" role="note">Edits do not take effect until an administrator publishes them.</p>
       {message && <div className="success-banner">{message}</div>}
       {error && <div className="error-banner">{error}</div>}
 
       <div className="summary-grid">
         <Summary label="Active revision" value={activeRevision?.revision_number ?? "-"} />
-        <Summary label="Schema version" value={activeRevision?.schema_version ?? "-"} />
+        <details className="operator-technical-details"><summary>Schema version</summary>
+          <Summary label="Schema version" value={activeRevision?.schema_version ?? "-"} />
+        </details>
         <Summary label="Policy settings" value={Object.keys(activeRevision?.content?.policy_settings?.rules || {}).length} />
         <Summary label="Active revision status" value={activeRevision?.status || "Not published"} />
       </div>

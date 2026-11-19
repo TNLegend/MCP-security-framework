@@ -42,20 +42,20 @@ function Dashboard({
   return (
     <section className="page-section">
       <div className="section-heading">
-        <h2>Dashboard</h2>
-        <p>{loading ? "Loading backend data..." : "Control Plane evidence loaded."}</p>
+        <h2>Security overview</h2>
+        <p>{loading ? "Loading security data..." : "Your security overview"}</p>
       </div>
 
       <section className="dashboard-priority" aria-label="What needs attention">
         <div className="section-heading compact-heading">
-          <h3>What needs attention?</h3>
-          <p>Counts from recorded Control Plane data, not a runtime permission check</p>
+          <h3>Needs attention</h3>
+          <p>Actions based on the latest recorded results</p>
         </div>
         <div className="dashboard-priority-grid">
           <article className="dashboard-priority-card">
-            <span>Tools awaiting analysis or review</span>
+            <span>Tools to review</span>
             <strong>{reviewTools.length}</strong>
-            <p>Inspect the current findings before an administrator decides.</p>
+            <p>See the latest security findings.</p>
             <button type="button" className="secondary-action" onClick={() => onNavigate("analysis")}>
               Review tools
             </button>
@@ -63,7 +63,7 @@ function Dashboard({
           <article className="dashboard-priority-card">
             <span>Tools marked blocked</span>
             <strong>{blockedTools.length}</strong>
-            <p>A previous analysis block does not establish the state of every runtime policy.</p>
+            <p>Open the tool to see why it was blocked.</p>
             <button type="button" className="secondary-action" onClick={() => onNavigate("analysis")}>
               See analysis
             </button>
@@ -71,7 +71,7 @@ function Dashboard({
           <article className="dashboard-priority-card">
             <span>Active emergency restrictions</span>
             <strong>{activeDenies.length}</strong>
-            <p>Emergency Deny is an independent enforcement mechanism.</p>
+            <p>Restrictions currently in effect.</p>
             <button type="button" className="secondary-action" onClick={() => onNavigate("emergency")}>
               See restrictions
             </button>
@@ -80,41 +80,43 @@ function Dashboard({
       </section>
 
       <h3 className="dashboard-section-heading">Service status</h3>
-      <p className="hint-text">Unavailable status information does not mean a service is healthy.</p>
+      <p className="hint-text">Some services may be unavailable.</p>
       <div className="status-grid">
-        <RuntimeStatusCard label="Backend" value={health?.status || "unavailable"} />
+        <RuntimeStatusCard label="API" value={health?.status || "unavailable"} />
         <RuntimeStatusCard
-          label="PostgreSQL"
+          label="Database"
           value={runtimeStatus?.database?.status || "unknown"}
           detail={runtimeStatus?.database?.detail}
         />
         <RuntimeStatusCard
-          label="OPA"
+          label="Policy checks"
           value={runtimeStatus?.opa?.status || "unknown"}
           detail={runtimeStatus?.opa?.endpoint}
         />
         <RuntimeStatusCard
-          label="MCP Gateway"
+          label="Gateway"
           value={runtimeStatus?.gateway?.status || "unknown"}
           detail={runtimeStatus?.gateway?.endpoint}
         />
       </div>
 
-      <h3 className="dashboard-section-heading">Recorded activity</h3>
+      <details className="operator-technical-details"><summary>More security numbers</summary><h3 className="dashboard-section-heading">Recorded activity</h3>
       <div className="stats-grid">
         <StatCard label="MCP servers" value={servers.length || 0} />
         <StatCard label="MCP tools" value={tools.length || 0} />
-        <StatCard label="Analysis approved (not runtime access)" value={approvedTools.length} tone="stat-good" />
+        <StatCard label="Reviews approved" value={approvedTools.length} tone="stat-good" />
         <StatCard label="Tools requiring review" value={reviewTools.length} tone="stat-warn" />
         <StatCard label="Blocked tools" value={blockedTools.length} tone="stat-danger" />
-        <StatCard label="Recent ALLOW decisions (not proof of execution)" value={recentAllows} tone="stat-good" />
-        <StatCard label="Recent BLOCK calls" value={recentBlocks} tone="stat-danger" />
-        <StatCard label="Active Emergency Denies" value={activeDenies.length} tone="stat-warn" />
+        <StatCard label="Recent allowed decisions" value={recentAllows} tone="stat-good" />
+        <StatCard label="Recent blocked decisions" value={recentBlocks} tone="stat-danger" />
+        <StatCard label="Active emergency blocks" value={activeDenies.length} tone="stat-warn" />
       </div>
+
+      </details>
 
       <div className="dashboard-layout">
         <section className="detail-panel">
-          <h3>Published Configuration</h3>
+          <h3>Active security rules</h3>
           {activeRevision ? (
             <dl className="compact-dl">
               <div>
@@ -144,14 +146,14 @@ function Dashboard({
         </section>
 
         <section className="detail-panel">
-          <h3>Recent Audit Events</h3>
+          <h3>Recent activity</h3>
           {auditEvents.length === 0 ? (
             <div className="empty-state">No audit events recorded yet.</div>
           ) : (
             <ul className="event-list">
               {auditEvents.slice(0, 6).map((event) => (
                 <li key={event.id}>
-                  <strong>{event.action}</strong>
+                  <strong title={event.action}>{String(event.action || "Unknown").replaceAll("_", " ").toLowerCase().replace(/^./, (c) => c.toUpperCase())}</strong>
                   <span>{event.actor_username_snapshot || "system"}</span>
                   <small>{formatDate(event.timestamp)}</small>
                 </li>
@@ -164,16 +166,16 @@ function Dashboard({
       {isAdmin && (
         <div className="quick-actions">
           <button type="button" onClick={() => onNavigate("inventory")}>
-            Register MCP
+            Add MCP server
           </button>
           <button type="button" onClick={() => onNavigate("analysis")}>
-            Review Tools
+            Review tools
           </button>
           <button type="button" onClick={() => onNavigate("emergency")}>
-            Create Emergency Deny
+            Emergency block
           </button>
           <button type="button" onClick={() => onNavigate("users")}>
-            Manage Users
+            Manage users
           </button>
         </div>
       )}
@@ -185,8 +187,11 @@ function RuntimeStatusCard({ label, value, detail }) {
   return (
     <div className="status-panel compact-status">
       <span>{label}</span>
-      <strong>{value}</strong>
-      {detail && <small>{detail}</small>}
+      <strong>{String(value || "unknown").toLowerCase().replace(/^./, (c) => c.toUpperCase())}</strong>
+      {detail && <details className="operator-technical-details">
+        <summary>Connection details</summary>
+        <small>{detail}</small>
+      </details>}
     </div>
   );
 }

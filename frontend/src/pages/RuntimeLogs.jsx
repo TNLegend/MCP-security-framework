@@ -106,7 +106,7 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
     return (
       <section className="page-section">
         <div className="section-heading">
-          <h2>Runtime Calls</h2>
+          <h2>Tool activity</h2>
           <p>Loading runtime calls...</p>
         </div>
       </section>
@@ -116,14 +116,12 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
   return (
     <section className="page-section">
       <div className="section-heading">
-        <h2>Runtime Calls</h2>
+        <h2>Tool activity</h2>
         <p>{page.summary.total} matching event(s)</p>
       </div>
       {error && <div className="error-banner">{error}</div>}
       <p className="hint-text" role="note">
-        An ALLOW decision does not prove the upstream tool executed successfully.
-        An unknown upstream outcome may have already caused an effect; never retry it automatically.
-        The table distinguishes policy decisions from execution results.
+        Allowed calls are not always completed calls. Do not automatically retry an unknown result.
       </p>
 
       {appliedFilterCount > 0 && (
