@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
   requestControlledAIAssistance,
   safeErrorMessage,
 } from "../api/client";
+import { createAdvisoryResponseGuard } from "../utils/advisoryResponseGuard";
 
 
 const MODES = [
@@ -29,13 +30,26 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
       && tool.current_fingerprint === currentAnalysis.fingerprint,
   );
   const canAsk = Boolean(isAdmin && tool?.id && contextFresh && !busy);
+  const guardRef = useRef(null);
+  if (guardRef.current === null) {
+    guardRef.current = createAdvisoryResponseGuard();
+  }
+  const contextKey = JSON.stringify([
+    tool?.id ?? null,
+    tool?.current_fingerprint ?? null,
+    currentAnalysis?.id ?? null,
+    isAdmin,
+  ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    guardRef.current.activate(contextKey);
+    setBusy(false);
     setResult(null);
     setError("");
     setQuestion("");
     setMode("EXPLAIN");
-  }, [tool?.id, tool?.current_fingerprint]);
+    return () => guardRef.current.invalidate();
+  }, [contextKey]);
 
   const evidenceSummary = useMemo(() => {
     if (!currentAnalysis) return "No completed analysis evidence is loaded.";
@@ -49,6 +63,8 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
   async function submit(event) {
     event.preventDefault();
     if (!canAsk) return;
+    const request = guardRef.current.begin(contextKey);
+    if (!request) return;
     setBusy(true);
     setError("");
     setResult(null);
@@ -57,11 +73,18 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
         mode,
         question: question.trim() || null,
       };
-      setResult(await requestControlledAIAssistance(tool.id, payload));
+      const response = await requestControlledAIAssistance(tool.id, payload);
+      if (guardRef.current.accepts(request, contextKey)) {
+        setResult(response);
+      }
     } catch (err) {
-      setError(safeErrorMessage(err));
+      if (guardRef.current.accepts(request, contextKey)) {
+        setError(safeErrorMessage(err));
+      }
     } finally {
-      setBusy(false);
+      if (guardRef.current.accepts(request, contextKey)) {
+        setBusy(false);
+      }
     }
   }
 
@@ -119,6 +142,25 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
               ))}
             </select>
           </label>
+          <p className="hint-text" role="note">
+            Analysis evidence may be sent to a configured external AI provider.
+            Avoid including passwords, tokens or personal secrets in your question.
+          </p>
+          <div className="controlled-ai-prompts" aria-label="Suggested questions">
+            {[
+              "Explain the main risk in simple language.",
+              "What should an administrator verify next?",
+              "Which findings are uncertain or incomplete?",
+            ].map((suggestion) => (
+              <button
+                className="tiny-action"
+                disabled={busy}
+                key={suggestion}
+                onClick={() => setQuestion(suggestion)}
+                type="button"
+              >{suggestion}</button>
+            ))}
+          </div>
           <label className="wide-field">
             Optional operator question
             <textarea

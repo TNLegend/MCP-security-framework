@@ -53,6 +53,7 @@ const EMPTY_RUNTIME_LOG_PAGE = {
 
 function App() {
   const [activePage, setActivePage] = useState("dashboard");
+  const [analysisEntryToolId, setAnalysisEntryToolId] = useState(null);
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [loginError, setLoginError] = useState("");
@@ -93,6 +94,11 @@ function App() {
     () => toolAnalyses.filter((analysis) => activeToolIds.has(analysis.tool_id)),
     [activeToolIds, toolAnalyses],
   );
+
+  function navigateToPage(pageId, toolId = null) {
+    setAnalysisEntryToolId(pageId === "analysis" ? toolId : null);
+    setActivePage(pageId);
+  }
 
   async function restoreSession() {
     if (!hasControlPlaneSession()) {
@@ -229,7 +235,7 @@ function App() {
           servers={servers}
           tools={tools}
           loading={loading}
-          onNavigate={setActivePage}
+          onNavigate={navigateToPage}
           onRefresh={loadData}
           runtimeStatus={runtimeStatus}
         />
@@ -251,6 +257,7 @@ function App() {
       return (
         <ToolAnalysis
           analyses={activeToolAnalyses}
+          requestedToolId={analysisEntryToolId}
           isAdmin={isAdmin}
           loading={loading}
           onRefresh={loadData}
@@ -320,11 +327,12 @@ function App() {
         runtimeLogs={runtimeLogPage.items}
         runtimeStatus={runtimeStatus}
         loading={loading}
-        onNavigate={setActivePage}
+        onNavigate={navigateToPage}
       />
     );
   }, [
     activePage,
+    analysisEntryToolId,
     activeServers,
     activeToolAnalyses,
     activeTools,
@@ -381,7 +389,7 @@ function App() {
           <button
             className={activePage === page.id ? "active" : ""}
             key={page.id}
-            onClick={() => setActivePage(page.id)}
+            onClick={() => navigateToPage(page.id)}
             type="button"
           >
             {page.label}

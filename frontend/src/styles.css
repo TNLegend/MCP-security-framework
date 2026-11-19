@@ -2012,28 +2012,18 @@ code {
 }
 
 @media (max-width: 600px) {
+  .analysis-tool-table {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
   .analysis-tool-table table {
-    width: 100%;
-    min-width: 0;
+    min-width: 650px;
   }
 
-  .analysis-tool-table th:nth-child(1) {
-    width: 44%;
-  }
-
-  .analysis-tool-table th:nth-child(2) {
-    width: 21%;
-  }
-
-  .analysis-tool-table th:nth-child(3) {
-    width: 35%;
-  }
-
-  .analysis-tool-table th:nth-child(4),
-  .analysis-tool-table td:nth-child(4),
-  .analysis-tool-table th:nth-child(5),
-  .analysis-tool-table td:nth-child(5) {
-    display: none;
+  .analysis-tool-table th,
+  .analysis-tool-table td {
+    width: auto;
   }
 
   .analysis-tool-table .badge {
@@ -2794,4 +2784,62 @@ code {
 .m4-advisory-panel .m4-event-card ul {
   margin: 8px 0;
   padding-left: 20px;
+}
+
+/* GUI UX Lot A: risk and review remain available at narrow widths. */
+.analysis-mobile-hint {
+  display: none;
+}
+
+.analysis-risk-explanation {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid #d7deea;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.analysis-risk-explanation h4 {
+  margin: 0 0 8px;
+}
+
+.analysis-risk-drivers {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.analysis-risk-drivers li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid #d7deea;
+  border-radius: 8px;
+  background: white;
+}
+
+.analysis-risk-drivers li small {
+  flex-basis: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .analysis-mobile-hint {
+    display: block;
+  }
+}
+
+.controlled-ai-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 12px;
+}
+
+.controlled-ai-prompts button {
+  text-align: left;
+  white-space: normal;
 }

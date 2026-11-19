@@ -558,7 +558,7 @@ function Inventory({
             analysis={selectedToolAnalysis}
             analysisError={toolAnalysisError}
             analysisLoading={toolAnalysisLoading}
-            onOpenAnalysis={() => onNavigate?.("analysis")}
+            onOpenAnalysis={() => onNavigate?.("analysis", selectedTool.id)}
           />
         )}
       </div>

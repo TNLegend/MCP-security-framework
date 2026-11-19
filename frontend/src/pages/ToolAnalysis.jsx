@@ -12,6 +12,7 @@ import {
 
 function ToolAnalysis({
   analyses = [],
+  requestedToolId = null,
   isAdmin = false,
   loading = false,
   onRefresh,
@@ -67,9 +68,14 @@ function ToolAnalysis({
       return;
     }
     if (!tools.some((tool) => tool.id === selectedToolId)) {
-      setSelectedToolId(tools[0].id);
+      const requested = tools.find((tool) => String(tool.id) === String(requestedToolId));
+      setSelectedToolId(requested?.id ?? tools[0].id);
+      if (requested) {
+        const index = tools.findIndex((tool) => tool.id === requested.id);
+        toolPagination.setPage(Math.floor(index / toolPagination.pageSize) + 1);
+      }
     }
-  }, [selectedToolId, tools]);
+  }, [selectedToolId, requestedToolId, tools]);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,10 +112,9 @@ function ToolAnalysis({
     };
   }, [selectedToolId, selectedToolFingerprint, selectedToolLastAnalyzedAt]);
 
-  // M4 is the primary informative semantic view for ADMIN.
-  // Historical decision evidence remains in the audit/overview, not a second M4 tab.
+  // Begin with the overall assessment. Advisory M4 remains available in its own tab.
   useEffect(() => {
-    setActiveTab(isAdmin ? "m4-neural" : "overview");
+    setActiveTab("overview");
   }, [selectedToolId, isAdmin]);
 
   function openReview(action) {
@@ -198,7 +203,8 @@ function ToolAnalysis({
             <h3>Tools</h3>
             <p>{tools.length} total</p>
           </div>
-          <div className="table-shell analysis-tool-table">
+          <p className="analysis-mobile-hint hint-text">Scroll sideways to view analysis, review and risk for every tool.</p>
+          <div className="table-shell analysis-tool-table" tabIndex="0" aria-label="Tool list, horizontally scrollable on small screens">
             <table>
               <thead>
                 <tr>
@@ -425,6 +431,12 @@ function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onCompl
 }
 
 function AnalysisOverview({ bundle, latestAnalysis, tool }) {
+  const isCurrent = Boolean(bundle && tool?.current_fingerprint
+    && latestAnalysis?.fingerprint === tool.current_fingerprint
+    && latestAnalysis?.completed_at
+    && tool.analysis_status !== "STALE"
+    && latestAnalysis.analysis_status !== "STALE");
+  const riskEvidence = isCurrent ? latestAnalysis?.semantic_scores?.m7_risk_evidence : null;
   return (
     <>
       <SectionError error={bundle?.errors?.status} title="Analysis status" />
@@ -450,6 +462,7 @@ function AnalysisOverview({ bundle, latestAnalysis, tool }) {
           Administrative acceptance preserves the original findings.
         </p>
       )}
+      <RiskEvidenceSummary evidence={riskEvidence} isCurrent={isCurrent} />
       <dl className="compact-dl analysis-overview-list">
         <InfoRow label="Analyzer revision" value={latestAnalysis?.analyzer_revision || tool.analyzer_revision} />
         <InfoRow label="Completed" value={formatDate(latestAnalysis?.completed_at)} />
@@ -457,6 +470,48 @@ function AnalysisOverview({ bundle, latestAnalysis, tool }) {
         <InfoRow label="Deterministic critical finding" value={tool.deterministic_critical_finding ? "Yes" : "No"} />
       </dl>
     </>
+  );
+}
+
+function RiskEvidenceSummary({ evidence, isCurrent }) {
+  const drivers = Array.isArray(evidence?.risk_drivers) ? evidence.risk_drivers : [];
+  return (
+    <section className="analysis-risk-explanation" aria-label="M7 risk explanation">
+      <h4>Why this risk level?</h4>
+      {!isCurrent ? (
+        <p role="status">No completed, current bundle evidence is available. Historical or stale results must not be treated as current.</p>
+      ) : evidence?.schema !== "m7_deterministic_risk_evidence_v1" ? (
+        <p role="status">A current M7 explanation is unavailable. A score alone does not establish safety or authorization.</p>
+      ) : (
+        <>
+          <p>
+            M7 risk score: <strong>{evidence.risk_score} / 100</strong>.
+            The highest deterministic finding or M6 drift contribution determines this score;
+            advisory model predictions do not add to it.
+          </p>
+          {drivers.length === 0 ? (
+            <p>No deterministic risk drivers are recorded in this explanation. This does not prove the tool is safe.</p>
+          ) : (
+            <ul className="analysis-risk-drivers">
+              {drivers.slice(0, 5).map((driver, index) => (
+                <li key={driver.source_type + "-" + (driver.code || driver.status) + "-" + (driver.evidence_summary_sha256 || index)}>
+                  <strong>{driver.source_type === "DRIFT" ? "M6 drift: " + humanize(driver.status) : humanize(driver.code)}</strong>
+                  <span>Contribution {driver.contribution} / 100</span>
+                  {driver.source_path && <small>Evidence source: {driver.source_path}</small>}
+                </li>
+              ))}
+            </ul>
+          )}
+          {drivers.length > 5 && <p>{drivers.length - 5} additional drivers are in the technical evidence.</p>}
+          <p className="hint-text">
+            Coverage: {humanize(evidence.coverage?.status || "UNKNOWN")}.
+            {evidence.coverage?.status !== "COMPLETE" && " Missing evidence is not proof of safety."}
+            {" "}Independent corroboration: {humanize(evidence.corroboration_status || "UNKNOWN")}.
+            {" "}Authorization: not evaluated by M7.
+          </p>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -648,13 +703,13 @@ function Badge({ value }) {
 
 function badgeClass(value) {
   const normalized = String(value || "").toLowerCase();
-  if (["approved", "admin_allowed", "consistent", "none", "low"].includes(normalized)) {
+  if (["approved", "admin_allowed", "consistent", "none"].includes(normalized)) {
     return "badge-success";
   }
   if (["blocked", "critical", "high"].includes(normalized)) {
     return "badge-danger";
   }
-  if (["review_required", "quarantined", "analysis_failed", "medium"].includes(normalized)) {
+  if (["review_required", "quarantined", "analysis_failed", "medium", "low"].includes(normalized)) {
     return "badge-warning";
   }
   return "badge-muted";
