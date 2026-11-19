@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { Pagination, usePagination } from "../components/Pagination";
+import { useDialogFocus } from "../utils/useDialogFocus";
 import {
   createUser,
   disableUser,
@@ -40,6 +41,8 @@ function Users({ users = [], loading = false, onRefresh }) {
   const [resetErrors, setResetErrors] = useState({});
   const [actionDialog, setActionDialog] = useState(null);
   const mutationLockRef = useRef(false);
+  const modalRef = useRef(null);
+  useDialogFocus(Boolean(resetTarget || actionDialog), modalRef);
   const userPagination = usePagination(users, String(users.length));
 
   useEffect(() => {
@@ -281,6 +284,10 @@ function Users({ users = [], loading = false, onRefresh }) {
       <div className="users-layout">
         <form className="action-panel user-create-panel" onSubmit={create}>
           <h3>Create user</h3>
+          <p className="hint-text">
+            VIEWER can inspect available security records. ADMIN can operate security controls
+            and manage users. Create an ADMIN only for a trusted operator.
+          </p>
           <label>
             Username
             <input
@@ -316,6 +323,11 @@ function Users({ users = [], loading = false, onRefresh }) {
               <option value="VIEWER">VIEWER</option>
               <option value="ADMIN">ADMIN</option>
             </select>
+            <small role="note">
+              {form.role === "ADMIN"
+                ? "High-privilege account: may change security configuration and manage other users."
+                : "Read-only user: cannot approve tools, publish security policies or manage users."}
+            </small>
             <FieldError id="create-role-error" message={fieldErrors.role} />
           </label>
           <label>
@@ -388,7 +400,9 @@ function Users({ users = [], loading = false, onRefresh }) {
                     <td>{user.enabled ? "yes" : "no"}</td>
                     <td>{formatDate(user.last_login_at)}</td>
                     <td>
-                      <div className="button-row compact-buttons">
+                      <details className="user-row-actions">
+                        <summary>Manage account</summary>
+                        <div className="button-row compact-buttons">
                         <button
                           disabled={Boolean(busyAction) || (user.role === "ADMIN" && finalAdmin)}
                           onClick={() => run("role", user)}
@@ -429,7 +443,8 @@ function Users({ users = [], loading = false, onRefresh }) {
                         >
                           Revoke Sessions
                         </button>
-                      </div>
+                        </div>
+                      </details>
                     </td>
                   </tr>
                 );
@@ -448,9 +463,11 @@ function Users({ users = [], loading = false, onRefresh }) {
       </div>
       {resetTarget && (
         <div className="modal-backdrop" role="presentation">
-          <section aria-modal="true" className="modal-panel" role="dialog">
-            <h3>Reset Password</h3>
+          <section aria-modal="true" aria-labelledby="user-reset-title"
+            className="modal-panel" ref={modalRef} role="dialog" tabIndex={-1}>
+            <h3 id="user-reset-title">Reset Password</h3>
             <p>{resetTarget.username}</p>
+            <p className="hint-text">Resetting this password also revokes the user's existing sessions.</p>
             <form className="form-grid" onSubmit={submitPasswordReset}>
               <label>
                 New temporary password
@@ -516,8 +533,14 @@ function Users({ users = [], loading = false, onRefresh }) {
       )}
       {actionDialog && (
         <div className="modal-backdrop" role="presentation">
-          <section aria-modal="true" className="modal-panel" role="dialog">
-            <h3>{actionDialog.title}</h3>
+          <section aria-modal="true" aria-labelledby="user-action-title"
+            className="modal-panel" ref={modalRef} role="dialog" tabIndex={-1}>
+            <h3 id="user-action-title">{actionDialog.title}</h3>
+            <p className="hint-text">
+              {actionDialog.action === "disable"
+                ? "Disabling this account also revokes its current sessions, as enforced by the backend."
+                : "Revoking sessions invalidates this user's current sessions. They may need to sign in again."}
+            </p>
             <form className="form-grid" onSubmit={submitReasonAction}>
               <label className="wide-field">
                 {actionDialog.label}

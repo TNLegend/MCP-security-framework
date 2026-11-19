@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createEmergencyDeny, revokeEmergencyDeny } from "../api/client";
 import { Pagination, usePagination } from "../components/Pagination";
+import { useDialogFocus } from "../utils/useDialogFocus";
 import {
   LIMITS,
   clearFieldError,
@@ -17,6 +18,21 @@ const TARGET_TYPES = [
   "server_tool",
 ];
 
+const TARGET_LABELS = {
+  global: "All governed MCP calls",
+  agent_id: "One agent",
+  framework_session_id: "One framework session",
+  server_ref: "One MCP server",
+  server_tool: "One tool on one MCP server",
+};
+
+function describedTarget(target) {
+  const name = TARGET_LABELS[target.target_type] || target.target_type;
+  if (target.target_type === "global") return name;
+  return name + ": " + (target.target_value || "not specified")
+    + (target.target_secondary_value ? " / " + target.target_secondary_value : "");
+}
+
 function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefresh }) {
   const [form, setForm] = useState({
     target_type: "global",
@@ -29,6 +45,21 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingCreate, setPendingCreate] = useState(null);
+  const mutationLockRef = useRef(false);
+  const modalRef = useRef(null);
+  useDialogFocus(Boolean(pendingCreate), modalRef);
+  useEffect(() => {
+    if (!pendingCreate) return undefined;
+    function handleEscape(event) {
+      if (event.key === "Escape" && !mutationLockRef.current) {
+        event.preventDefault();
+        setPendingCreate(null);
+      }
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [pendingCreate]);
   const denyPagination = usePagination(denies, String(denies.length));
 
   async function submit(event) {
@@ -44,38 +75,60 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
       return;
     }
     const { payload } = emergencyDenyPayload(form);
+    setPendingCreate({ payload, identity: JSON.stringify(payload) });
+  }
+
+  async function confirmCreate() {
+    if (!isAdmin || busy || mutationLockRef.current || !pendingCreate) return;
+    const errors = validateEmergencyDeny(form);
+    const current = Object.keys(errors).length === 0 ? emergencyDenyPayload(form).payload : null;
+    if (!current || JSON.stringify(current) !== pendingCreate.identity) {
+      setPendingCreate(null);
+      setError("Restriction details changed. Review the new target and expiry before confirming.");
+      return;
+    }
+    mutationLockRef.current = true;
     setBusy(true);
+    setError("");
     try {
-      await createEmergencyDeny(payload);
+      await createEmergencyDeny(current);
       setMessage("Emergency Deny created.");
+      setPendingCreate(null);
       setFieldErrors({});
       await onRefresh?.();
     } catch (err) {
       setError(err.message || "Emergency Deny creation failed");
     } finally {
       setBusy(false);
+      mutationLockRef.current = false;
     }
   }
 
-  async function revoke(denyId) {
-    if (busy || !window.confirm("Revoke this Emergency Deny?")) {
+  async function revoke(deny) {
+    if (!isAdmin || busy || mutationLockRef.current || !window.confirm(
+      "Revoke the restriction for " + describedTarget(deny)
+      + "? This may allow future calls if all other policies permit them."
+    )) {
       return;
     }
     setError("");
     setMessage("");
+    mutationLockRef.current = true;
     setBusy(true);
     try {
-      await revokeEmergencyDeny(denyId);
+      await revokeEmergencyDeny(deny.id);
       setMessage("Emergency Deny revoked.");
       await onRefresh?.();
     } catch (err) {
       setError(err.message || "Emergency Deny revocation failed");
     } finally {
       setBusy(false);
+      mutationLockRef.current = false;
     }
   }
 
   function updateField(field, value) {
+    setPendingCreate(null);
     setForm({ ...form, [field]: value });
     setFieldErrors((current) => clearFieldError(current, field));
   }
@@ -100,12 +153,17 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
       {message && <div className="success-banner">{message}</div>}
       {error && <div className="error-banner">{error}</div>}
 
+      <p className="hint-text" role="note">
+        An emergency restriction can deny calls independently of analysis scores.
+        It does not change the signed configuration or permanently remove tool permissions.
+      </p>
       {isAdmin && (
         <form className="action-panel form-grid" onSubmit={submit}>
           <label>
-            Target type
+            Restriction scope
             <select
               onChange={(event) => {
+                setPendingCreate(null);
                 setForm({
                   ...form,
                   target_type: event.target.value,
@@ -126,11 +184,17 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
             >
               {TARGET_TYPES.map((target) => (
                 <option key={target} value={target}>
-                  {target}
+                  {TARGET_LABELS[target] || target}
                 </option>
               ))}
             </select>
           </label>
+          {form.target_type === "global" && (
+            <p className="deny-global-warning wide-field" role="alert">
+              Global scope: this restriction affects all governed MCP calls until expiry or revocation.
+              Review this choice carefully.
+            </p>
+          )}
           {form.target_type !== "global" && (
             <label>
               Target value
@@ -191,9 +255,39 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
             <FieldError id="deny-reason-error" message={fieldErrors.reason} />
           </label>
           <button className="secondary-action" disabled={busy} type="submit">
-            {busy ? "Creating..." : "Create Emergency Deny"}
+            {busy ? "Working..." : "Review restriction before creating"}
           </button>
         </form>
+      )}
+
+      {pendingCreate && isAdmin && (
+        <div className="modal-backdrop" role="presentation">
+          <section aria-modal="true" aria-labelledby="deny-confirm-title"
+            aria-describedby="deny-confirm-description" className="modal-panel"
+            ref={modalRef} role="dialog" tabIndex={-1}>
+            <h3 id="deny-confirm-title">Confirm emergency restriction</h3>
+            <p id="deny-confirm-description">
+              This will create an independent deny that affects future governed calls matching the scope below.
+            </p>
+            <dl className="compact-dl">
+              <div><dt>Exact target</dt><dd>{describedTarget(pendingCreate.payload)}</dd></div>
+              <div><dt>Expiry</dt><dd>{formatDate(pendingCreate.payload.expires_at)}</dd></div>
+              <div><dt>Reason</dt><dd>{pendingCreate.payload.reason}</dd></div>
+            </dl>
+            {pendingCreate.payload.target_type === "global" && (
+              <p className="deny-global-warning" role="alert">
+                Global emergency restriction: all governed MCP calls will be denied while it is active.
+              </p>
+            )}
+            <div className="button-row">
+              <button className="danger-action" disabled={busy} onClick={confirmCreate} type="button">
+                {busy ? "Creating restriction..." : "Confirm and activate restriction"}
+              </button>
+              <button className="secondary-action" disabled={busy}
+                onClick={() => setPendingCreate(null)} type="button">Cancel</button>
+            </div>
+          </section>
+        </div>
       )}
 
       <div className="table-shell">
@@ -226,7 +320,7 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
                       <button
                         className="tiny-action"
                         disabled={busy}
-                        onClick={() => revoke(deny.id)}
+                        onClick={() => revoke(deny)}
                         type="button"
                       >
                         Revoke

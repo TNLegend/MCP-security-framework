@@ -83,6 +83,12 @@ function SecurityConfiguration({
     if (Object.keys(nextErrors).length > 0) {
       return;
     }
+    if (action === "publish" && !window.confirm(
+      "Publish configuration revision #" + selectedRevision.revision_number
+      + "? The signed active policy will change. Verify the rules, validation result and change summary first."
+    )) {
+      return;
+    }
     setError("");
     setMessage("");
     setBusy(true);
@@ -157,8 +163,12 @@ function SecurityConfiguration({
     <section className="page-section">
       <div className="section-heading">
         <h2>Security Configuration</h2>
-        <p>{revisions.length} revision(s)</p>
+        <p>{revisions.length} recorded revision(s). Draft changes do not affect runtime policy until published.</p>
       </div>
+      <p className="hint-text" role="note">
+        Configuration workflow: create a DRAFT, edit and save, validate, then publish a signed revision.
+        Publishing changes the active policy; a model recommendation cannot publish it.
+      </p>
       {message && <div className="success-banner">{message}</div>}
       {error && <div className="error-banner">{error}</div>}
 
@@ -221,24 +231,26 @@ function SecurityConfiguration({
           <h3>Revision Detail</h3>
           {selectedRevision ? (
             <>
-              <dl className="compact-dl">
-                <div>
-                  <dt>id</dt>
-                  <dd>{selectedRevision.id}</dd>
-                </div>
-                <div>
-                  <dt>content_hash</dt>
-                  <dd>{selectedRevision.content_hash}</dd>
-                </div>
-                <div>
-                  <dt>signature</dt>
-                  <dd>{shorten(selectedRevision.signature)}</dd>
-                </div>
-                <div>
-                  <dt>signature_key_id</dt>
-                  <dd>{selectedRevision.signature_key_id || "-"}</dd>
-                </div>
-              </dl>
+              <div className="configuration-selection-summary" role="status">
+                <strong>Selected revision #{selectedRevision.revision_number}</strong>
+                <Badge value={selectedRevision.status} />
+                <span>
+                  {selectedRevision.id === activeRevision?.id
+                    ? "This is the current published revision."
+                    : selectedRevision.status === "DRAFT"
+                      ? "This is a draft. No runtime policy has been changed by editing it."
+                      : "This is not the currently published revision."}
+                </span>
+              </div>
+              <details className="configuration-technical-details">
+                <summary>View revision IDs, content fingerprint and signature metadata</summary>
+                <dl className="compact-dl">
+                  <div><dt>id</dt><dd>{selectedRevision.id}</dd></div>
+                  <div><dt>content_hash</dt><dd>{selectedRevision.content_hash}</dd></div>
+                  <div><dt>signature</dt><dd>{shorten(selectedRevision.signature)}</dd></div>
+                  <div><dt>signature_key_id</dt><dd>{selectedRevision.signature_key_id || "-"}</dd></div>
+                </dl>
+              </details>
               <ConfigurationEditor
                 content={contentObject}
                 contentText={contentText}
@@ -255,6 +267,10 @@ function SecurityConfiguration({
               )}
               {isAdmin && (
                 <div className="action-panel">
+                  <p className="hint-text" role="note">
+                    Prepare a draft, save all edits, validate the draft, then publish it deliberately.
+                    Rollback creates a new signed revision; deleting is only allowed for DRAFT records.
+                  </p>
                   <label>
                     Change summary
                     <input

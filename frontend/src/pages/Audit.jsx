@@ -61,6 +61,12 @@ function Audit({ events = [], loading = false }) {
     }
   }, [events, page, pageData.items.length, query]);
 
+  useEffect(() => {
+    if (selectedEvent && !pageData.items.some((item) => item.id === selectedEvent.id)) {
+      setSelectedEvent(null);
+    }
+  }, [pageData.items, selectedEvent]);
+
   const pageCount = Math.max(1, Math.ceil(pageData.total / PAGE_SIZE));
 
   if (loading && pageData.items.length === 0 && !pageLoading) {
@@ -81,12 +87,17 @@ function Audit({ events = [], loading = false }) {
         <p>{pageData.total} event(s) · 20 per page</p>
       </div>
       {error && <div className="error-banner">{error}</div>}
+      <p className="hint-text" role="note">
+        Events show recorded actions and outcomes, not proof of every downstream effect.
+        Original field values and technical metadata remain available in Details.
+      </p>
       <div className="action-panel inline-form">
         <label>
-          Filter
+          Search events
           <input
             onChange={(event) => {
               setQuery(event.target.value);
+              setSelectedEvent(null);
               setPage(1);
             }}
             placeholder="action, actor, target..."
@@ -124,11 +135,11 @@ function Audit({ events = [], loading = false }) {
                   <tr key={event.id}>
                     <td>{formatDate(event.timestamp)}</td>
                     <td>{event.actor_username_snapshot || "system"}</td>
-                    <td>{event.action}</td>
+                    <td><strong>{humanizeAction(event.action)}</strong><small className="audit-action-code">{event.action}</small></td>
                     <td><span className="audit-target" title={target}>{shorten(target, 42)}</span></td>
                     <td>{shorten(event.revision_id)}</td>
                     <td>
-                      <span className={`badge ${event.result === "SUCCESS" ? "badge-success" : "badge-danger"}`}>
+                      <span className={`badge ${event.result === "SUCCESS" ? "badge-success" : event.result === "FAILED" ? "badge-danger" : "badge-muted"}`}>
                         {event.result}
                       </span>
                     </td>
@@ -147,7 +158,10 @@ function Audit({ events = [], loading = false }) {
       </div>
       <Pagination
         label="Audit events"
-        onPageChange={setPage}
+        onPageChange={(next) => {
+          setSelectedEvent(null);
+          setPage(next);
+        }}
         page={page}
         pageCount={pageCount}
         total={pageData.total}
@@ -155,7 +169,7 @@ function Audit({ events = [], loading = false }) {
       {selectedEvent && (
         <section className="audit-event-detail" aria-label="Audit event detail">
           <div className="section-heading compact-heading">
-            <h3>{selectedEvent.action}</h3>
+            <h3>{humanizeAction(selectedEvent.action)}</h3>
             <button onClick={() => setSelectedEvent(null)} type="button">Close</button>
           </div>
           <dl className="inline-metadata audit-event-metadata">
@@ -166,13 +180,52 @@ function Audit({ events = [], loading = false }) {
             <div><dt>Source IP</dt><dd>{selectedEvent.source_ip || "-"}</dd></div>
             <div><dt>Reason</dt><dd>{selectedEvent.reason || "-"}</dd></div>
           </dl>
-          <div className="audit-json-grid">
-            <AuditJson title="Before" value={selectedEvent.before_json} />
-            <AuditJson title="After" value={selectedEvent.after_json} />
-            <AuditJson title="Metadata" value={selectedEvent.metadata} />
-          </div>
+          <AuditChangedFields before={selectedEvent.before_json} after={selectedEvent.after_json} />
+          <details className="audit-technical-details">
+            <summary>View original Before / After / Metadata JSON</summary>
+            <div className="audit-json-grid">
+              <AuditJson title="Before" value={selectedEvent.before_json} />
+              <AuditJson title="After" value={selectedEvent.after_json} />
+              <AuditJson title="Metadata" value={selectedEvent.metadata} />
+            </div>
+          </details>
         </section>
       )}
+    </section>
+  );
+}
+
+function humanizeAction(action) {
+  if (!action) return "Unknown action";
+  return String(action).toLowerCase().replaceAll("_", " ")
+    .replace(/^./, (first) => first.toUpperCase());
+}
+
+function AuditChangedFields({ before, after }) {
+  const oldFields = before && typeof before === "object" && !Array.isArray(before) ? before : null;
+  const newFields = after && typeof after === "object" && !Array.isArray(after) ? after : null;
+  if (!oldFields || !newFields) {
+    return <p className="hint-text">A complete before/after comparison was not recorded for this event.</p>;
+  }
+  const changed = [...new Set([...Object.keys(oldFields), ...Object.keys(newFields)])]
+    .filter((key) => JSON.stringify(oldFields[key]) !== JSON.stringify(newFields[key]));
+  return (
+    <section className="audit-changed-fields" aria-label="Changed top-level fields">
+      <h4>Recorded changes (top-level fields)</h4>
+      {changed.length === 0 ? (
+        <p>No top-level field differences in the recorded before/after objects.</p>
+      ) : (
+        <ul>
+          {changed.map((key) => (
+            <li key={key}>
+              <strong>{key}</strong> ?
+              {!(key in oldFields) ? " field added"
+                : !(key in newFields) ? " field removed" : " field updated"}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="hint-text">Nested changes and original values remain in the raw JSON; this summary does not prove runtime effects.</p>
     </section>
   );
 }

@@ -3046,3 +3046,82 @@ code {
 @media (max-width: 700px) {
   .analysis-tool-filters { grid-template-columns: 1fr; }
 }
+
+
+/* GUI UX Lot D: readable privileged-user and emergency workflows. */
+.deny-global-warning {
+  grid-column: 1 / -1;
+  border: 1px solid #d99f38;
+  background: #fff5d8;
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: #5c3600;
+  font-weight: 700;
+}
+.user-row-actions {
+  min-width: 170px;
+}
+.user-row-actions > summary {
+  cursor: pointer;
+  border: 1px solid #cbd3df;
+  border-radius: 8px;
+  background: #fff;
+  padding: 9px 12px;
+  font-weight: 700;
+}
+.user-row-actions[open] > summary {
+  background: #eef4ff;
+}
+.user-row-actions .button-row {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  gap: 7px;
+}
+.audit-action-code {
+  display: block;
+  color: #536176;
+  font-size: .76rem;
+  overflow-wrap: anywhere;
+}
+.audit-technical-details,
+.configuration-technical-details {
+  margin: 14px 0;
+  border: 1px solid #d7deea;
+  border-radius: 10px;
+  padding: 12px;
+  background: #f8fafc;
+}
+.audit-technical-details > summary,
+.configuration-technical-details > summary {
+  cursor: pointer;
+  color: #174c93;
+  font-weight: 700;
+}
+.audit-changed-fields {
+  border: 1px solid #d7deea;
+  background: #fff;
+  border-radius: 10px;
+  padding: 14px;
+  margin: 12px 0;
+}
+.audit-changed-fields ul {
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+.configuration-selection-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: #eef4ff;
+  border-radius: 10px;
+}
+.configuration-selection-summary span:last-child {
+  flex-basis: 100%;
+}
+.configuration-technical-details dd {
+  overflow-wrap: anywhere;
+}

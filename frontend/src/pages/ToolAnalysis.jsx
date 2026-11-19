@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { approveTool, blockTool, fetchToolAnalysisBundle } from "../api/client";
 import ControlledAIAssistant from "../components/ControlledAIAssistant";
 import M4SemanticsPanel from "../components/m4semanticspanel";
 import { Pagination, usePagination } from "../components/Pagination";
 import ToolContractOnboarding from "../components/ToolContractOnboarding";
+import { useDialogFocus } from "../utils/useDialogFocus";
 import { analysisModuleCards, driftChangeDescription, nextAnalysisAction, riskLedgerMatchesRecord } from "../utils/analysisPresentation";
 import {
   activateRowOnKeyboard,
@@ -26,6 +27,8 @@ function ToolAnalysis({
   const [bundleLoading, setBundleLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [reviewDialog, setReviewDialog] = useState(null);
+  const modalRef = useRef(null);
+  useDialogFocus(Boolean(reviewDialog), modalRef);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
@@ -402,7 +405,8 @@ function ToolAnalysis({
       </div>
       {reviewDialog && (
         <div className="modal-backdrop" role="presentation">
-          <section aria-modal="true" aria-labelledby="analysis-review-dialog-title" className="modal-panel" role="dialog">
+          <section aria-modal="true" aria-labelledby="analysis-review-dialog-title"
+            className="modal-panel" ref={modalRef} role="dialog" tabIndex={-1}>
             <h3 id="analysis-review-dialog-title">Record {reviewDialog.action} review</h3>
             <p>
               {selectedServer?.server_info_title || selectedServer?.name || selectedTool?.server_id}
