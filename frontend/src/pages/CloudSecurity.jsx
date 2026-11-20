@@ -4,7 +4,8 @@ import {
   fetchCloudScanDetail, startCloudScan, testCloudEnvironment,
   updateCloudEnvironment,
   fetchIaCScannerAvailability, uploadTerraformZip,
-  safeErrorMessage,
+  fetchProwlerAvailability, startProwlerCloudScan,
+  fetchProwlerPermissionPreview, safeErrorMessage,
 } from "../api/client";
 
 function cloudError(err) {
@@ -19,6 +20,10 @@ function cloudError(err) {
     cloud_connection_not_verified: "Verify the AWS connection before starting an audit.",
     cloud_scan_already_active: "An audit is already running for this environment. Check its progress.",
     cloud_worker_busy: "All audit workers are busy. Try again after the running scans finish.",
+    prowler_not_installed: "Prowler is not installed on the backend. Ask the administrator to provision the isolated Prowler scanner.",
+    prowler_audit_role_required: "Configure a temporary read-only AWS role before an advanced audit.",
+    PROWLER_AUDIT_ROLE_REQUIRED: "A temporary AWS audit role is required.",
+    PROWLER_NOT_INSTALLED: "The advanced scanner is unavailable; no scan was performed.",
     IAC_ZIP_REQUIRED: "Select a ZIP archive containing Terraform files.",
     IAC_ARCHIVE_SIZE_INVALID: "The ZIP file must be smaller than 2 MB.",
     IAC_UNSAFE_ARCHIVE_PATH: "The ZIP contains unsafe file paths.",
@@ -52,6 +57,9 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [iacFile, setIacFile] = useState(null);
   const [iacStatus, setIacStatus] = useState([]);
   const [iacStatusError, setIacStatusError] = useState(false);
+  const [prowlerStatus, setProwlerStatus] = useState(null);
+  const [prowlerStatusError, setProwlerStatusError] = useState(false);
+  const [permissionPreview, setPermissionPreview] = useState(null);
 
   async function refresh() {
     setLoading(true);
@@ -71,6 +79,9 @@ export default function CloudSecurity({ isAdmin = false }) {
   useEffect(() => { refresh(); }, []);
   useEffect(() => {
     fetchIaCScannerAvailability().then(setIacStatus).catch(() => setIacStatusError(true));
+  }, []);
+  useEffect(() => {
+    fetchProwlerAvailability().then(setProwlerStatus).catch(() => setProwlerStatusError(true));
   }, []);
 
   // A queued scan progresses without requiring repeated manual Refresh clicks.
@@ -175,6 +186,7 @@ export default function CloudSecurity({ isAdmin = false }) {
 
   const current = environments.find((e) => e.id === selected);
   const currentScans = scans.filter((s) => s.kind === "AWS_BASELINE" && s.environment_id === selected);
+  const advancedScans = scans.filter((s) => s.kind === "AWS_ADVANCED" && s.environment_id === selected);
   const iacScans = scans.filter((s) => s.kind === "IAC_CONFIG");
 
   return (
@@ -236,7 +248,9 @@ export default function CloudSecurity({ isAdmin = false }) {
       <section className="detail-panel">
         <h3>Environments</h3>
         <label>Select AWS environment
-          <select disabled={loading || !environments.length} value={selected} onChange={(e) => { setSelected(e.target.value); setDetails(null); setEdit(null); }}>
+          <select disabled={loading || !environments.length} value={selected} onChange={(e) => {
+            setSelected(e.target.value); setDetails(null); setEdit(null); setPermissionPreview(null);
+          }}>
             {!environments.length && <option value="">No environments configured</option>}
             {environments.map((env) => (
               <option key={env.id} value={env.id}>{env.name} — {env.status}</option>
@@ -306,6 +320,81 @@ export default function CloudSecurity({ isAdmin = false }) {
                 </button>
               </form>
             )}
+          </div>
+        )}
+      </section>
+
+      <section className="detail-panel">
+        <h3>Advanced AWS audit with Prowler</h3>
+        <p>Read-only security checks for EC2, S3, IAM, CloudTrail and CloudWatch.
+          Prowler uses temporary AWS STS credentials from the selected audit role.
+          Missing IAM read permissions will be reported as unknown or partial, never passed.</p>
+        <p role="status">
+          Prowler: {prowlerStatus?.available ? "Ready" : "Unavailable"}
+          {prowlerStatus?.expected_version ? " | Expected version " + prowlerStatus.expected_version : ""}
+        </p>
+        {prowlerStatusError && <p>Cannot verify the advanced scanner installation.</p>}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
+        {isAdmin && current && (
+          <button className="secondary-action" type="button"
+            disabled={busy || !prowlerStatus?.available || current.status !== "CONNECTED" || !current.role_arn}
+            onClick={() => action(
+              () => startProwlerCloudScan(current.id),
+              (result) => "Advanced AWS audit queued (" + result.id + ").",
+            )}>
+            Start advanced read-only audit
+          </button>
+        )}
+        {!prowlerStatus?.available && <p>The Prowler engine must be installed and verified before an advanced scan can run.</p>}
+        {isAdmin && current && (
+          <button className="secondary-action" type="button"
+            disabled={busy || current.status !== "CONNECTED"}
+            onClick={() => action(
+              () => fetchProwlerPermissionPreview(current.id).then((data) => {
+                setPermissionPreview(data);
+                return data;
+              }),
+              () => "Read-only AWS permission probe completed.",
+            )}>
+            Check read-only AWS permissions
+          </button>
+        )}
+        </div>
+        {permissionPreview && (
+          <div>
+            <h4>AWS permission diagnostic</h4>
+            <p>These API probes identify missing permissions. They do not
+              certify complete Prowler security-check coverage.</p>
+            <div className="table-scroll">
+              <table>
+                <thead><tr><th>Service</th><th>AWS permission</th><th>Access</th></tr></thead>
+                <tbody>{permissionPreview.permission_checks.map((entry) => (
+                  <tr key={entry.action}>
+                    <td>{entry.service}</td><td>{entry.action}</td><td>{entry.status}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+          </div>
+        )}
+        <h4>Advanced AWS audit history</h4>
+        {advancedScans.length === 0 ? <p>No advanced AWS audits yet.</p> : (
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>Started</th><th>Status</th><th>Resources</th>
+                <th>Findings</th><th>Unknown</th><th>Details</th></tr></thead>
+              <tbody>
+                {advancedScans.map((scan) => (
+                  <tr key={scan.id}>
+                    <td>{new Date(scan.created_at).toLocaleString()}</td>
+                    <td>{scan.status}</td><td>{scan.resource_count}</td>
+                    <td>{scan.finding_count}</td><td>{scan.unknown_checks}</td>
+                    <td><button type="button" className="tiny-action"
+                      onClick={() => showScan(scan.id)}>View</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </section>
@@ -397,7 +486,7 @@ export default function CloudSecurity({ isAdmin = false }) {
               Source contents and scanner raw output are not stored.</p>
             {details.evidence.map((e) => (
               <article key={e.id} className="detail-panel">
-                <p><strong>{e.rule_id} - {e.rule_id.startsWith("IAC_") && e.outcome === "PASS" ? "SCANNER EXECUTED" : e.outcome}</strong></p>
+                <p><strong>{e.rule_id} - {(e.rule_id.startsWith("IAC_") || e.rule_id === "PROWLER_EXECUTION") && e.outcome === "PASS" ? "SCANNER EXECUTED" : e.outcome}</strong></p>
                 <p>SHA-256: <code>{e.evidence_sha256}</code></p>
                 {e.safe_summary?.scanner && <p>Scanner: {e.safe_summary.scanner}</p>}
                 {e.safe_summary?.file && <p>File: {e.safe_summary.file}

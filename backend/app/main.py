@@ -121,6 +121,8 @@ def initialize_analyzer_local_identity():
     mark_interrupted_scans()
     from app.services.cloud_iac_security import discard_interrupted_archives
     discard_interrupted_archives()
+    from app.services.cloud_prowler_security import clean_interrupted
+    clean_interrupted()
 
 
 @app.middleware('http')

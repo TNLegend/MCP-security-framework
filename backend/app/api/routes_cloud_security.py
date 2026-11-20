@@ -26,6 +26,11 @@ from app.services.cloud_iac_security import (
     IaCIntakeError, IAC_VERSION, MAX_ZIP_BYTES, discard_source,
     enqueue_iac, scanner_availability, stage_archive,
 )
+from app.services.cloud_prowler_security import (
+    PROWLER_SCAN_VERSION, availability as prowler_availability,
+    enqueue_advanced, engine_version as prowler_engine_version,
+    permission_preview,
+)
 from app.services.control_plane_audit import record_control_plane_audit
 from app.services.control_plane_auth import (
     AuthenticatedControlPlaneUser, require_admin, require_authenticated_user,
@@ -214,6 +219,81 @@ def start_scan(
                               message_code="WORKER_BUSY"))
         db.commit()
         raise HTTPException(status_code=503,detail="cloud_worker_busy")
+    db.refresh(scan)
+    return scan
+
+
+@router.get("/environments/{environment_id}/advanced/permissions")
+def advanced_permission_preview(
+    environment_id: str,
+    _: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    env = _env(db, environment_id)
+    if env.status != "CONNECTED" or not env.account_id:
+        raise HTTPException(status_code=409, detail="cloud_connection_not_verified")
+    try:
+        return permission_preview(env)
+    except CloudAuditError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=_safe_error(exc)) from exc
+
+
+@router.get("/advanced/scanner")
+def prowler_scanner_status(
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+):
+    return prowler_availability()
+
+
+@router.post(
+    "/environments/{environment_id}/advanced-scans",
+    response_model=ScanPublic, status_code=202,
+)
+def start_advanced_scan(
+    environment_id: str,
+    request: Request,
+    actor: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    env = db.scalar(select(CloudEnvironment)
+                    .where(CloudEnvironment.id == environment_id)
+                    .with_for_update())
+    if env is None:
+        raise HTTPException(status_code=404, detail="cloud_environment_not_found")
+    if env.status != "CONNECTED" or not env.account_id:
+        raise HTTPException(status_code=409, detail="cloud_connection_not_verified")
+    if not env.role_arn:
+        raise HTTPException(status_code=409, detail="prowler_audit_role_required")
+    if prowler_engine_version() is None:
+        raise HTTPException(status_code=503, detail="prowler_not_installed")
+    active = db.scalar(select(CloudScan.id).where(
+        CloudScan.environment_id == env.id,
+        CloudScan.status.in_(("QUEUED", "RUNNING")),
+    ).limit(1))
+    if active is not None:
+        raise HTTPException(status_code=409, detail="cloud_scan_already_active")
+    scan = CloudScan(
+        id=new_id(), environment_id=env.id, kind="AWS_ADVANCED",
+        status="QUEUED", scanner_version=PROWLER_SCAN_VERSION,
+        requested_by=actor.user.id,
+    )
+    db.add(scan)
+    db.flush()
+    db.add(CloudScanEvent(scan_id=scan.id, event_type="STATE", message_code="QUEUED"))
+    _audit(db, request, actor, "CLOUD_ADVANCED_SCAN_REQUESTED",
+           "cloud_scan", scan.id, {"environment_id": env.id,
+                                   "kind": "AWS_ADVANCED"})
+    db.commit()
+    if not enqueue_advanced(scan.id):
+        scan.status = "FAILED"
+        scan.error_code = "CLOUD_WORKER_BUSY"
+        scan.completed_at = datetime.utcnow()
+        db.add(CloudScanEvent(scan_id=scan.id, event_type="STATE",
+                              message_code="WORKER_BUSY"))
+        db.commit()
+        raise HTTPException(status_code=503, detail="cloud_worker_busy")
     db.refresh(scan)
     return scan
 

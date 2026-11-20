@@ -1672,8 +1672,9 @@ The scanner is bounded to two concurrent in-process jobs, up to three
 regions, 250 resources and a 120-second approximate data-collection budget.
 This initial executor is intended for the locally managed single-backend
 installation; a distributed durable work queue, advanced IAM permissions
-comparison, Prowler cloud auditing and deployment approval
-governance are **not yet implemented**. Terraform ZIP scanning is available
+comparison and deployment approval governance are **not yet implemented**.
+The separate Prowler advanced AWS audit is available as described below, but
+full coverage requires additional reviewed read-only IAM permissions. Terraform ZIP scanning is available
 separately with Checkov and Trivy as described below. SHA-256 hashes cover normalized
 safe observations; they are not AWS-signed remote attestations. The broader
 Cloud Security dashboard, filtering and detailed risk workflows are planned
@@ -1728,6 +1729,51 @@ Rule severities not returned by a scanner remain UNKNOWN rather than guessed.
 A completed scan records successful scanner execution, not a blanket claim
 that the uploaded infrastructure is safe.
 
+## Deploy Security: Prowler advanced AWS audits (step 4)
+
+Cloud Security now has an optional, strictly read-only advanced AWS scanner.
+
+- Prowler 5.51.0 runs from its own Python environment under
+  .runtime/tools/prowler/venv. The backend Python environment is unchanged.
+- Provision using backend/.venv/Scripts/python.exe scripts/provision_prowler.py
+  --install on Windows, or the equivalent backend/.venv/bin/python command
+  on Linux. Use --status to verify the pinned installation. On a clean
+  installation the vendor dependency graph is resolved with pinned uv; source
+  builds remain inside the isolated Prowler virtualenv, not a kernel sandbox.
+- Before launching, the ADMIN selects an already CONNECTED AWS environment
+  with a role ARN. The backend uses boto3 and STS AssumeRole to obtain temporary
+  credentials; no persistent IAM access keys are saved. AWS CLI is optional.
+- The GUI offers a "Check read-only AWS permissions" diagnostic. It probes
+  a limited set of EC2, IAM, S3, CloudTrail and CloudWatch API actions and
+  returns ALLOWED, DENIED or UNKNOWN. An ALLOWED probe is NOT a guarantee
+  that every Prowler check is authorized.
+- A successful installation enables "Start advanced read-only audit".
+  Each Prowler execution is bounded in time, output and concurrency. Results
+  use OCSF Detection Finding JSON; only normalized rule IDs, outcomes,
+  severity, resource hashes, SHA-256 evidence and safe summaries are stored
+  in the existing Cloud Security PostgreSQL tables.
+- Prowler checks with missing read permissions or missing OCSF records are
+  represented as PARTIAL/UNKNOWN, never a fabricated PASS. If Prowler fails
+  to execute at all, the scan is FAILED with a generic error code.
+  The GUI keeps baseline boto3, Terraform IaC and advanced AWS scan history
+  separate and presents the underlying evidence.
+- Neither the advanced scanner nor the permissions preview mutates AWS.
+  They do not change IAM roles, launch or terminate EC2, or write to S3.
+
+**Coverage limits:** Our AWS laboratory role is deliberately minimal. Some
+advanced read actions (for example EC2 volume listing, IAM user listing,
+CloudTrail trail descriptions and CloudWatch alarms) are denied. On
+20 November 2026 a genuine AWS advanced scan completed as PARTIAL:
+8 normalized resources, 5 failed checks, 25 unknown checks and 60 evidence
+records. The initial scan exposed a cloud-evidence FK insertion order issue,
+which is covered by a regression test with actual FK enforcement.
+Existing AWS baseline and Terraform audits were preserved. The advanced
+audit cannot be interpreted as complete until additional, reviewed read
+permissions permit broader checks and findings are validated against AWS.
+The Prowler process is not a production OS-isolated sandbox;
+cross-platform fresh-install and full global-regression gates are still
+required. These are qualifications, not hidden PASS verdicts.
+
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework
@@ -1743,7 +1789,7 @@ that the uploaded infrastructure is safe.
   this does not attest a remote MCP's behavior.
 - Runtime policy depends on OPA availability and fails closed when OPA is unavailable.
 - Scanner and DevSecOps analysis are not a complete production pipeline yet.
-- AWS baseline read-only inventory and a real connected audit have been demonstrated; a non-root audit identity remains required. Terraform ZIP scans with Checkov and Trivy are operational. Prowler, advanced IAM-to-MCP comparison and guided cross-account AWS onboarding remain future work.
+- AWS baseline read-only inventory and a real connected audit have been demonstrated; a non-root audit identity remains required. Terraform ZIP scans with Checkov and Trivy are operational. Prowler 5.51.0 advanced read-only audits are available but currently PARTIAL due to narrowly scoped IAM permissions. Advanced IAM-to-MCP comparison and guided cross-account AWS onboarding remain future work.
 - No full audit report generation yet.
 - Control Plane authentication is intentionally minimal and local-first: ADMIN/VIEWER, HttpOnly sessions, CSRF protection, and audit.
 

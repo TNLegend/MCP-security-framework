@@ -813,7 +813,7 @@ export async function revokeUserSessions(userId, reason) {
 
 
 export async function fetchCloudEnvironments() {
-  return request("/control-plane/cloud-security/environments");
+  return request("/control-plane/cloud-security/environments", { timeoutMs: 45000 });
 }
 
 export async function createCloudEnvironment(payload) {
@@ -844,11 +844,11 @@ export async function startCloudScan(id) {
 
 export async function fetchCloudScans(environmentId = null) {
   const qs = environmentId ? `?environment_id=${encodeURIComponent(environmentId)}` : "";
-  return request(`/control-plane/cloud-security/scans${qs}`);
+  return request(`/control-plane/cloud-security/scans${qs}`, { timeoutMs: 45000 });
 }
 
 export async function fetchCloudScanDetail(scanId) {
-  return request(`/control-plane/cloud-security/scans/${scanId}`);
+  return request(`/control-plane/cloud-security/scans/${scanId}`, { timeoutMs: 45000 });
 }
 
 // ZIP bytes are sent verbatim, not as JSON or multipart form data.
@@ -863,4 +863,24 @@ export async function uploadTerraformZip(file) {
 
 export async function fetchIaCScannerAvailability() {
   return request("/control-plane/cloud-security/iac/scanners", { timeoutMs: 45000 });
+}
+
+// Prowler audits reuse an already verified AWS environment and audit role.
+export async function fetchProwlerAvailability() {
+  return request("/control-plane/cloud-security/advanced/scanner", { timeoutMs: 45000 });
+}
+
+export async function startProwlerCloudScan(id) {
+  return request(
+    "/control-plane/cloud-security/environments/" + encodeURIComponent(id) + "/advanced-scans",
+    { method: "POST", timeoutMs: 45000 },
+  );
+}
+
+
+export async function fetchProwlerPermissionPreview(id) {
+  return request(
+    "/control-plane/cloud-security/environments/" + encodeURIComponent(id) + "/advanced/permissions",
+    { timeoutMs: 45000 },
+  );
 }

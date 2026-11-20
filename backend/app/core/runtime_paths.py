@@ -55,6 +55,16 @@ TRIVY_EXE = TRIVY_DIR / ("trivy.exe" if os.name == "nt" else "trivy")
 TRIVY_CACHE_DIR = TRIVY_DIR / "cache"
 TRIVY_DOCKER_CONFIG_DIR = TRIVY_DIR / "docker-config"
 
+PROWLER_VERSION = "5.51.0"
+PROWLER_DIR = RUNTIME_TOOLS_DIR / "prowler"
+PROWLER_VENV_DIR = PROWLER_DIR / "venv"
+PROWLER_PYTHON = PROWLER_VENV_DIR / (
+    "Scripts/python.exe" if os.name == "nt" else "bin/python"
+)
+PROWLER_EXE = PROWLER_VENV_DIR / (
+    "Scripts/prowler.exe" if os.name == "nt" else "bin/prowler"
+)
+
 CHECKOV_VERSION = "3.4.6"
 CHECKOV_DIR = RUNTIME_TOOLS_DIR / "checkov"
 CHECKOV_VENV_DIR = CHECKOV_DIR / "venv"
@@ -95,6 +105,7 @@ def runtime_directories(
         runtime_tools_dir / "trivy" / "cache",
         runtime_tools_dir / "trivy" / "docker-config",
         runtime_tools_dir / "checkov",
+        runtime_tools_dir / "prowler",
         runtime_dir / "tmp",
         runtime_dir / "postgres",
         runtime_secrets_dir,
