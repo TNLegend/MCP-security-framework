@@ -1990,6 +1990,21 @@ The active backend on port 8000 still runs the original framework checkout;
 the new manual-IAM implementation remains on this feature branch until
 explicitly deployed or merged.
 
+## Deploy Security: advisory OPA governance (phase 6 initial milestone)
+
+Deploy governance now has a separate read-only Rego v1 policy. A new
+authenticated scan endpoint builds an OPA input from verified signed MCP
+mapping, IAM comparison and PostgreSQL evidence. OPA reports
+REVIEW_REQUIRED, EVIDENCE_INCOMPLETE or OBSERVATION_ONLY; it never grants
+AWS permissions or allows/blocks Runtime MCP tools/call. The GUI displays
+this as an advisory review, with fail-closed HTTP errors on OPA outages.
+
+See the independent mcp-security-qualification repository report docs/phase7_deploy_opa_governance_milestone1_20261120.md for tests, policy boundaries
+and known limitations. The original running Runtime OPA instance must load
+both Runtime and Deploy policies before enabling this feature in the running
+GUI; the feature is NOT deployed by the research branch.
+
+
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework

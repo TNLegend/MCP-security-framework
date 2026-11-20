@@ -919,6 +919,12 @@ export async function startIAMMCPComparison(environmentId, mappingId) {
     });
 }
 
+export async function fetchDeployGovernance(scanId) {
+  return request("/control-plane/cloud-security/scans/" +
+    encodeURIComponent(scanId) + "/deploy-governance",
+    { timeoutMs: 15000 });
+}
+
 export async function fetchIAMMCPResults(scanId) {
   return request("/control-plane/cloud-security/scans/" + encodeURIComponent(scanId) + "/iam-comparisons",
     { timeoutMs: 45000 });

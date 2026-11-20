@@ -9,6 +9,7 @@ import {
   fetchIaCScannerAvailability, uploadTerraformZip,
   fetchProwlerAvailability, startProwlerCloudScan,
   fetchProwlerPermissionPreview, startIAMMCPComparison, fetchIAMMCPResults,
+  fetchDeployGovernance,
   fetchIAMMappings, fetchIAMMappingContext, createIAMMapping, approveIAMMapping,
   fetchServers, safeErrorMessage,
 } from "../api/client";
@@ -107,6 +108,12 @@ function iamAssessmentExplanation(value) {
       "There are more IAM differences than this scan can safely display.",
     IAM_MCP_EFFECT_NOT_MAPPED:
       "No IAM action was approved for this signed MCP effect. It remains unknown, not safe.",
+    DEPLOY_OPA_UNAVAILABLE_OR_TIMEOUT:
+      "The Deploy Security governance policy could not be evaluated by OPA. No compliance decision was made.",
+    DEPLOY_OPA_UNDEFINED_RESULT:
+      "OPA has not loaded the Deploy Security policy. Ask the administrator to load the separate deploy_security.rego file.",
+    DEPLOY_OPA_INVALID_DECISION:
+      "The Deploy Security governance result was invalid. No decision was accepted.",
 
 
   };
@@ -149,6 +156,9 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [approvalConfirmed, setApprovalConfirmed] = useState(false);
   const [mappingContextError, setMappingContextError] = useState("");
   const [iamRows, setIamRows] = useState([]);
+  const [deployGovernance, setDeployGovernance] = useState(null);
+  const [governanceError, setGovernanceError] = useState("");
+  const [governanceLoading, setGovernanceLoading] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -394,11 +404,28 @@ export default function CloudSecurity({ isAdmin = false }) {
 
   async function showScan(scanId) {
     setError("");
+    setDeployGovernance(null);
+    setGovernanceError("");
     try {
       const item = await fetchCloudScanDetail(scanId);
       setDetails(item);
       setIamRows(item.scan.kind === "IAM_MCP" ? await fetchIAMMCPResults(scanId) : []);
     } catch (err) { setError(cloudError(err)); }
+  }
+
+  async function evaluateDeployGovernance() {
+    if (!details?.scan?.id || details.scan.kind !== "IAM_MCP") return;
+    setGovernanceError("");
+    setDeployGovernance(null);
+    setGovernanceLoading(true);
+    try {
+      const result = await fetchDeployGovernance(details.scan.id);
+      setDeployGovernance(result);
+    } catch (err) {
+      setGovernanceError(cloudError(err));
+    } finally {
+      setGovernanceLoading(false);
+    }
   }
 
   const current = environments.find((e) => e.id === selected);
@@ -467,7 +494,8 @@ export default function CloudSecurity({ isAdmin = false }) {
         <h3>Environments</h3>
         <label>Select AWS environment
           <select disabled={loading || !environments.length} value={selected} onChange={(e) => {
-            setSelected(e.target.value); setDetails(null); setEdit(null); setPermissionPreview(null);
+            setSelected(e.target.value); setDetails(null); setEdit(null);
+            setPermissionPreview(null); setDeployGovernance(null); setGovernanceError("");
           }}>
             {!environments.length && <option value="">No environments configured</option>}
             {environments.map((env) => (
@@ -1019,6 +1047,29 @@ export default function CloudSecurity({ isAdmin = false }) {
           {details.scan.error_code && <p>Failure code: {details.scan.error_code}</p>}
           {details.scan.kind === "IAM_MCP" && (
             <div>
+              <h4>OPA Deploy governance (advisory only)</h4>
+              <p>This separate OPA policy reviews verified, signed scan evidence.
+                It never grants AWS access, blocks MCP tool calls, or certifies
+                effective IAM permissions. A role shared by other workloads
+                may legitimately retain grants outside this MCP mapping.</p>
+              <button className="secondary-action" type="button"
+                disabled={governanceLoading || details.scan.status !== "PARTIAL"}
+                onClick={evaluateDeployGovernance}>
+                {governanceLoading ? "Checking OPA governance..." : "Evaluate governance with OPA"}
+              </button>
+              {governanceError && <p role="alert">OPA governance unavailable:
+                {governanceError}. No compliance conclusion was produced.</p>}
+              {deployGovernance && (
+                <div role="status">
+                  <p><strong>OPA assessment:
+                    {deployGovernance.classification.replaceAll("_", " ")}</strong></p>
+                  <p>{deployGovernance.explanation}</p>
+                  <p>Recommended follow-up: {deployGovernance.obligations.join(", ")}.
+                    Runtime enforcement: disabled. Effective AWS access: not proven.</p>
+                  <small>Policy: {deployGovernance.policy_revision}.
+                    Rules: {deployGovernance.rule_ids.join(", ")}</small>
+                </div>
+              )}
               <h4>Bidirectional MCP and IAM permissions review ({iamRows.length})</h4>
               <p>Each IAM audit is a point-in-time snapshot. Re-run after changing
                 AWS role policies. A right outside this MCP mapping is not proof

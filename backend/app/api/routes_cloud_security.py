@@ -39,6 +39,13 @@ from app.services.cloud_iam_mapping import (
 )
 from app.services.published_configuration import PublishedConfigurationProvider
 from app.models.mcp_server import MCPServer
+from app.services.cloud_deploy_governance import (
+    DeployGovernanceError, build_deploy_iam_governance_input,
+)
+from app.services.cloud_deploy_opa_client import (
+    DeployAdvisoryDecision, DeployOPAClient, DeployOPAError,
+)
+from app.core.config import settings
 from app.services.control_plane_audit import record_control_plane_audit
 from app.services.control_plane_auth import (
     AuthenticatedControlPlaneUser, require_admin, require_authenticated_user,
@@ -562,6 +569,34 @@ def list_iam_mcp_results(
         raise HTTPException(status_code=404,detail="iam_comparison_not_found")
     return db.scalars(select(CloudIAMComparison).where(
         CloudIAMComparison.scan_id==scan_id).limit(250)).all()
+
+
+@router.get("/scans/{scan_id}/deploy-governance",
+            response_model=DeployAdvisoryDecision)
+def get_iam_deploy_governance(
+    scan_id: str,
+    _: AuthenticatedControlPlaneUser=Depends(require_authenticated_user),
+    db: Session=Depends(get_db),
+):
+    """Advisory OPA review; never authorize/deny MCP tools or mutate AWS.
+
+    The only OPA input is reconstructed from verified signed and hash-consistent
+    PostgreSQL scan records, not submitted by a caller.
+    """
+    scan=_scan(db,scan_id)
+    if scan.kind != "IAM_MCP":
+        raise HTTPException(status_code=404,detail="deploy_governance_scan_not_found")
+    try:
+        evidence=build_deploy_iam_governance_input(db,scan_id)
+    except DeployGovernanceError as exc:
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+    try:
+        return DeployOPAClient(
+            base_url=settings.opa_base_url,
+            timeout_seconds=settings.opa_timeout_seconds,
+        ).evaluate(evidence)
+    except DeployOPAError as exc:
+        raise HTTPException(status_code=503,detail=str(exc)) from exc
 
 
 @router.get("/scans",response_model=list[ScanPublic])
