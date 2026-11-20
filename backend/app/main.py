@@ -5,6 +5,7 @@ from app.api.routes_control_plane_audit import router as control_plane_audit_rou
 from app.api.routes_control_plane_auth import router as control_plane_auth_router
 from app.api.routes_control_plane_config import router as control_plane_config_router
 from app.api.routes_build_security import router as build_security_router
+from app.api.routes_cloud_security import router as cloud_security_router
 from app.api.routes_controlled_ai import router as controlled_ai_router
 from app.api.routes_control_plane_tool_analysis import (
     router as control_plane_tool_analysis_router,
@@ -62,6 +63,7 @@ app.include_router(control_plane_users_router, prefix=settings.api_prefix)
 app.include_router(control_plane_config_router, prefix=settings.api_prefix)
 app.include_router(controlled_ai_router, prefix=settings.api_prefix)
 app.include_router(build_security_router, prefix=settings.api_prefix)
+app.include_router(cloud_security_router, prefix=settings.api_prefix)
 app.include_router(control_plane_tool_analysis_router, prefix=settings.api_prefix)
 app.include_router(m4_semantics_router, prefix=settings.api_prefix)
 app.include_router(control_plane_audit_router, prefix=settings.api_prefix)
@@ -113,6 +115,10 @@ def initialize_analyzer_local_identity():
     with SessionLocal() as db:
         assert_current(db,token)
         db.rollback()
+    # In this locally managed single-backend runtime, unfinished cloud work from
+    # a previous process is never advertised as successfully completed.
+    from app.services.cloud_security import mark_interrupted_scans
+    mark_interrupted_scans()
 
 
 @app.middleware('http')

@@ -43,6 +43,12 @@ rfc8785==0.1.4
 argon2-cffi==23.1.0
 argon2-cffi-bindings==25.1.0
 
+# Deploy Security: AWS SDK (never requires AWS CLI or permanent credentials)
+boto3==1.44.7
+botocore==1.44.7
+s3transfer==0.19.3
+jmespath==1.1.0
+
 # HTTP clients
 requests==2.34.2
 urllib3==2.8.0

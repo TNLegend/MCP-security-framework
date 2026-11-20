@@ -265,10 +265,36 @@ def _migrate_legacy_tool_approval_statuses(connection) -> None:
 
 
 def init_db() -> None:
+    # New cloud tables are created idempotently alongside the existing schema.
+    # No altering of signed runtime tables or existing production rows.
     Base.metadata.create_all(bind=engine)
     ensure_phase2_inventory_columns()
+    # Verify the new Deploy Security tables also exist on fresh and upgraded DBs.
+    ensure_cloud_security_schema()
     print("Database tables created successfully.")
 
 
-if __name__ == "__main__":
+def ensure_cloud_security_schema() -> None:
+    """Add-only, repeatable migration for the seven new Deploy Security tables."""
+    from app.models.cloud_security import (
+        CloudEnvironment, CloudScan, CloudResource, CloudFinding,
+        CloudEvidence, CloudIAMComparison, CloudScanEvent,
+    )
+    tables = [model.__table__ for model in (
+        CloudEnvironment, CloudScan, CloudResource, CloudFinding,
+        CloudEvidence, CloudIAMComparison, CloudScanEvent,
+    )]
+    Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
+    with engine.begin() as connection:
+        # Add-only upgrade for environments created before service selection existed.
+        connection.execute(text(
+            """ALTER TABLE cloud_environments
+            ADD COLUMN IF NOT EXISTS services JSON DEFAULT '["EC2","S3","IAM"]' NOT NULL"""
+        ))
+        names = set(inspect(connection).get_table_names())
+    if missing := {table.name for table in tables} - names:
+        raise RuntimeError(f"cloud_schema_incomplete: {sorted(missing)}")
+
+
+if __name__ == '__main__':
     init_db()

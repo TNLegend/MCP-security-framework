@@ -810,3 +810,36 @@ export async function revokeUserSessions(userId, reason) {
     body: JSON.stringify({ reason }),
   });
 }
+
+
+export async function fetchCloudEnvironments() {
+  return request("/control-plane/cloud-security/environments");
+}
+
+export async function createCloudEnvironment(payload) {
+  return request("/control-plane/cloud-security/environments", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function testCloudEnvironment(id) {
+  return request(`/control-plane/cloud-security/environments/${id}/test`, {
+    method: "POST", timeoutMs: 45000,
+  });
+}
+
+export async function startCloudScan(id) {
+  return request(`/control-plane/cloud-security/environments/${id}/scans`, {
+    method: "POST",
+  });
+}
+
+export async function fetchCloudScans(environmentId = null) {
+  const qs = environmentId ? `?environment_id=${encodeURIComponent(environmentId)}` : "";
+  return request(`/control-plane/cloud-security/scans${qs}`);
+}
+
+export async function fetchCloudScanDetail(scanId) {
+  return request(`/control-plane/cloud-security/scans/${scanId}`);
+}

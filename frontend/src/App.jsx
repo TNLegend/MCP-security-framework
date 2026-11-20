@@ -21,6 +21,7 @@ import {
 } from "./api/client";
 import Dashboard from "./pages/Dashboard";
 import BuildSecurity from "./pages/BuildSecurity";
+import CloudSecurity from "./pages/CloudSecurity";
 import Audit from "./pages/Audit";
 import EmergencyDeny from "./pages/EmergencyDeny";
 import Inventory from "./pages/Inventory";
@@ -36,6 +37,7 @@ const pages = [
   { id: "inventory", label: "MCP tools", group: "Tools" },
   { id: "analysis", label: "Security review", group: "Tools" },
   { id: "build", label: "Code scans", group: "Security" },
+  { id: "cloud", label: "Cloud security", group: "Security" },
   { id: "config", label: "Security rules", group: "Security" },
   { id: "emergency", label: "Emergency block", group: "Security" },
   { id: "runtime", label: "Tool activity", group: "Monitoring" },
@@ -261,6 +263,10 @@ function App() {
           servers={activeServers}
         />
       );
+    }
+
+    if (activePage === "cloud") {
+      return <CloudSecurity isAdmin={isAdmin} />;
     }
 
     if (activePage === "analysis") {

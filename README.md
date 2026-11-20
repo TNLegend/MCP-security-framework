@@ -1630,6 +1630,51 @@ Deploy using Python 3.12+ and the lab folder's dedicated `requirements.txt`. AWS
 
 This is a laboratory proof of integration, **not** completion of AWS/Deploy Security scanning, broad IAM analysis or a global backend regression.
 
+## Deploy Security: AWS cloud-audit backend (initial version)
+
+The **Cloud security** page of the existing Security Center is a separate feature from
+**MCP tools / Discovery**. ADMIN users can register a named AWS environment,
+choose up to three regions and the EC2/S3/IAM services to inspect, test a
+least-privilege AWS identity, and start a bounded read-only baseline audit.
+VIEWER users may inspect environment records and audit results but cannot add
+environments, test credentials, or start scans.
+
+The backend uses `boto3==1.44.7` and the AWS SDK credential chain (EC2 instance
+role, short-lived environment credentials, or a named profile). Optionally, an
+existing non-root identity may assume a **specific audit role ARN**. Access keys,
+passwords, session tokens and raw AWS policy documents are never accepted in
+the Cloud Security API or stored in PostgreSQL. Root callers are rejected, as
+are identity changes to a different AWS account after an environment has been
+verified. AWS CLI / SSM Plugin remain optional lab tooling, never framework
+startup prerequisites.
+
+For a dedicated audit principal, review and adapt
+`policies/cloud_security/aws_baseline_audit_policy.example.json`. Replace the
+bucket placeholder and configure an appropriate role trust policy. Avoid using
+the root account or permanent access keys. The API cannot provision AWS
+identities or authenticate interactively on behalf of an external AWS user.
+
+Seven new PostgreSQL tables (`cloud_*`) are created through the project's
+existing idempotent `python -m app.db.init_db` startup/install flow, with
+an add-only upgrade for the environment's selected services. The initial
+audit uses only STS identity verification and EC2 Describe / S3 List-Get /
+IAM List operations. It checks internet-wide SSH exposure and S3 Block Public
+Access when sufficient permissions are available. Results are recorded as
+resources, confirmed findings, normalized SHA-256 observation summaries, and
+scan history events. Insufficient privileges, incomplete listings or time
+limits produce **PARTIAL / UNKNOWN**, not PASS. An interrupted job is marked
+INTERRUPTED on restart of the locally managed single-backend runtime.
+
+The scanner is bounded to two concurrent in-process jobs, up to three
+regions, 250 resources and a 120-second approximate data-collection budget.
+This initial executor is intended for the locally managed single-backend
+installation; a distributed durable work queue, advanced IAM permissions
+comparison, full Prowler/Checkov/Trivy integration and deployment approval
+governance are **not yet implemented**. SHA-256 hashes cover normalized
+safe observations; they are not AWS-signed remote attestations. The broader
+Cloud Security dashboard, filtering and detailed risk workflows are planned
+for the later GUI phase.
+
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework
@@ -1645,7 +1690,7 @@ This is a laboratory proof of integration, **not** completion of AWS/Deploy Secu
   this does not attest a remote MCP's behavior.
 - Runtime policy depends on OPA availability and fails closed when OPA is unavailable.
 - Scanner and DevSecOps analysis are not a complete production pipeline yet.
-- A private AWS EC2/S3 MCP laboratory integration has been tested end-to-end; cloud audit scanners, IAM-to-MCP comparison and Cloud Security GUI are not implemented yet.
+- The AWS cloud-audit backend and basic Cloud security connection UI are available; a live scanner execution still requires a dedicated non-root AWS audit identity, and Prowler/Checkov/Trivy plus IAM-to-MCP comparison remain future work.
 - No full audit report generation yet.
 - Control Plane authentication is intentionally minimal and local-first: ADMIN/VIEWER, HttpOnly sessions, CSRF protection, and audit.
 
