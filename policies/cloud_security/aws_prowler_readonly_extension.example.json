@@ -1,0 +1,16 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ProwlerObservedReadOnlyGaps",
+      "Effect": "Allow",
+      "Action": [
+        "cloudtrail:DescribeTrails",
+        "cloudwatch:DescribeAlarms",
+        "ec2:DescribeVolumes",
+        "iam:ListUsers"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

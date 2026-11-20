@@ -1760,19 +1760,29 @@ Cloud Security now has an optional, strictly read-only advanced AWS scanner.
 - Neither the advanced scanner nor the permissions preview mutates AWS.
   They do not change IAM roles, launch or terminate EC2, or write to S3.
 
-**Coverage limits:** Our AWS laboratory role is deliberately minimal. Some
-advanced read actions (for example EC2 volume listing, IAM user listing,
-CloudTrail trail descriptions and CloudWatch alarms) are denied. On
-20 November 2026 a genuine AWS advanced scan completed as PARTIAL:
-8 normalized resources, 5 failed checks, 25 unknown checks and 60 evidence
-records. The initial scan exposed a cloud-evidence FK insertion order issue,
-which is covered by a regression test with actual FK enforcement.
-Existing AWS baseline and Terraform audits were preserved. The advanced
-audit cannot be interpreted as complete until additional, reviewed read
-permissions permit broader checks and findings are validated against AWS.
-The Prowler process is not a production OS-isolated sandbox;
-cross-platform fresh-install and full global-regression gates are still
-required. These are qualifications, not hidden PASS verdicts.
+**Coverage limits:** The first real AWS audit returned PARTIAL with
+8 resources, 5 failed checks, 25 unknown checks and 60 evidence records.
+After the operator added four explicit read-only IAM actions, all seven
+original read probes returned ALLOWED. The first post-grant run found 10 resources, 11 failed checks, 21 unknown
+checks and 66 evidence records. Prowler 5.51.0 exit code 3 signals
+failed security checks and is not an execution failure. After fixing that
+mapping, a new live audit (0885a195-e0f9-446a-b58e-52c1d7a0d3ae) recorded
+10 resources, 11 failed checks, 20 unknown checks and 66 valid SHA-256
+evidence records. Scanner execution was COMPLETED, while security coverage
+correctly remained PARTIAL: 19 MANUAL findings plus S3 not assessed.
+No historical audit rows were changed. S3 remains unassessed because
+bucket-scoped reads such as
+GetBucketLocation, GetBucketPolicyStatus, GetEncryptionConfiguration,
+GetBucketVersioning and GetBucketLogging are denied, even though bucket
+listing succeeds. The GUI now reports these five read-only gaps and can
+generate an **operator-reviewed, bucket-scoped** policy proposal (see
+policies/cloud_security/aws_prowler_s3_bucket_read_extension.example.json).
+REPLACE_WITH_REVIEWED_BUCKET_NAME must be replaced before applying that
+policy manually to the audit role only; no IAM changes are performed by
+this application. Success of any probe is not a guarantee of full Prowler
+coverage. Older AWS baseline and Terraform scans were preserved.
+Prowler is not a production OS-isolated sandbox; clean installation on
+other systems and full backend regression are later release gates.
 
 ## Current Limitations
 
@@ -1789,7 +1799,7 @@ required. These are qualifications, not hidden PASS verdicts.
   this does not attest a remote MCP's behavior.
 - Runtime policy depends on OPA availability and fails closed when OPA is unavailable.
 - Scanner and DevSecOps analysis are not a complete production pipeline yet.
-- AWS baseline read-only inventory and a real connected audit have been demonstrated; a non-root audit identity remains required. Terraform ZIP scans with Checkov and Trivy are operational. Prowler 5.51.0 advanced read-only audits are available but currently PARTIAL due to narrowly scoped IAM permissions. Advanced IAM-to-MCP comparison and guided cross-account AWS onboarding remain future work.
+- AWS baseline read-only inventory and a real connected audit have been demonstrated; a non-root audit identity remains required. Terraform ZIP scans with Checkov and Trivy are operational. Prowler 5.51.0 advanced read-only audits work with bounded execution; remaining S3 read permissions, manual checks and service coverage are reported as incomplete rather than a fabricated security PASS. Advanced IAM-to-MCP comparison and guided cross-account AWS onboarding remain future work.
 - No full audit report generation yet.
 - Control Plane authentication is intentionally minimal and local-first: ADMIN/VIEWER, HttpOnly sessions, CSRF protection, and audit.
 

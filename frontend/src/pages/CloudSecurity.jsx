@@ -83,6 +83,8 @@ export default function CloudSecurity({ isAdmin = false }) {
   useEffect(() => {
     fetchProwlerAvailability().then(setProwlerStatus).catch(() => setProwlerStatusError(true));
   }, []);
+  // A diagnostic is only valid for the environment that was probed.
+  useEffect(() => { setPermissionPreview(null); }, [selected]);
 
   // A queued scan progresses without requiring repeated manual Refresh clicks.
   useEffect(() => {
@@ -360,7 +362,9 @@ export default function CloudSecurity({ isAdmin = false }) {
           </button>
         )}
         </div>
-        {permissionPreview && (
+        {permissionPreview && current
+          && permissionPreview.account_id === current.account_id
+          && permissionPreview.role_arn === current.role_arn && (
           <div>
             <h4>AWS permission diagnostic</h4>
             <p>These API probes identify missing permissions. They do not
@@ -375,6 +379,21 @@ export default function CloudSecurity({ isAdmin = false }) {
                 ))}</tbody>
               </table>
             </div>
+            {isAdmin && permissionPreview.read_only_policy_proposal && (
+              <details>
+                <summary>Review missing read-only AWS permissions</summary>
+                <p>This policy is a proposal for the selected AWS audit role only.
+                  An AWS administrator must review and apply it manually.
+                  It does not grant full Prowler coverage and cannot override
+                  explicit denies, permission boundaries or organization policies.
+                  Never attach it to the MCP server execution role.
+                  For any S3 bucket policy, replace REPLACE_WITH_REVIEWED_BUCKET_NAME
+                  with the exact approved bucket name before applying.</p>
+                <pre style={{ overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {JSON.stringify(permissionPreview.read_only_policy_proposal, null, 2)}
+                </pre>
+              </details>
+            )}
           </div>
         )}
         <h4>Advanced AWS audit history</h4>

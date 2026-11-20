@@ -123,6 +123,51 @@ def availability() -> dict:
             "services": list(SERVICES), "mode": "READ_ONLY"}
 
 
+# The only actions the GUI may recommend are those we execute in the
+# read-only capability check. Never translate arbitrary API/user input to IAM.
+_READ_ONLY_PROBE_ACTIONS = frozenset((
+    "ec2:DescribeVolumes", "ec2:DescribeSecurityGroups",
+    "iam:ListUsers", "iam:ListRoles",
+    "s3:ListAllMyBuckets", "cloudtrail:DescribeTrails",
+    "cloudwatch:DescribeAlarms",
+))
+_S3_BUCKET_READ_PROBES = (
+    ("s3:GetBucketLocation", "get_bucket_location"),
+    ("s3:GetBucketPolicyStatus", "get_bucket_policy_status"),
+    ("s3:GetEncryptionConfiguration", "get_bucket_encryption"),
+    ("s3:GetBucketVersioning", "get_bucket_versioning"),
+    ("s3:GetBucketLogging", "get_bucket_logging"),
+)
+_S3_BUCKET_READ_ACTIONS = frozenset(action for action, _ in _S3_BUCKET_READ_PROBES)
+
+
+def policy_proposal_for_denied_checks(checks: list[dict]) -> dict | None:
+    """Generate a manually reviewed, read-only policy; never attach it.
+
+    Bucket-scoped S3 actions are not granted for all buckets by default.
+    The reviewer must replace the bucket-name placeholder with the intended
+    bucket before applying the proposal in AWS IAM.
+    """
+    denied = {row.get("action") for row in checks if row.get("status") == "DENIED"}
+    general = sorted(denied & _READ_ONLY_PROBE_ACTIONS)
+    bucket_actions = sorted(denied & _S3_BUCKET_READ_ACTIONS)
+    statements = []
+    if general:
+        statements.append({
+            "Sid": "ProwlerReadOnlyObservedDeniedProbes",
+            "Effect": "Allow", "Action": general, "Resource": "*",
+        })
+    if bucket_actions:
+        statements.append({
+            "Sid": "ProwlerS3ReviewedBucketReadOnly",
+            "Effect": "Allow", "Action": bucket_actions,
+            "Resource": "arn:aws:s3:::REPLACE_WITH_REVIEWED_BUCKET_NAME",
+        })
+    if not statements:
+        return None
+    return {"Version": "2012-10-17", "Statement": statements}
+
+
 def permission_preview(env: CloudEnvironment) -> dict:
     """Read-only probes; expose only action identifiers and access verdicts.
 
@@ -145,11 +190,14 @@ def permission_preview(env: CloudEnvironment) -> dict:
          "describe_alarms", {"MaxRecords": 1}),
     )
     rows = []
+    listed_buckets = None
     for service, action, client_name, operation, parameters in checks:
         try:
             client = sdk.client(client_name, region_name=env.regions[0], config=config)
-            getattr(client, operation)(**parameters)
+            response = getattr(client, operation)(**parameters)
             status = "ALLOWED"
+            if operation == "list_buckets" and isinstance(response, dict):
+                listed_buckets = response.get("Buckets")
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
             status = "DENIED" if code in (
@@ -158,8 +206,33 @@ def permission_preview(env: CloudEnvironment) -> dict:
         except (BotoCoreError, OSError):
             status = "UNKNOWN"
         rows.append({"service": service, "action": action, "status": status})
+    # Bound S3 inspection and never return or persist bucket names.
+    if isinstance(listed_buckets, list):
+        s3 = sdk.client("s3", region_name=env.regions[0], config=config)
+        buckets = [b["Name"] for b in listed_buckets[:5]
+                   if isinstance(b, dict) and isinstance(b.get("Name"), str)]
+        complete_sample = bool(buckets) and len(listed_buckets) <= 5
+        for action, operation in _S3_BUCKET_READ_PROBES:
+            results = []
+            for bucket_name in buckets:
+                try:
+                    getattr(s3, operation)(Bucket=bucket_name)
+                    results.append("ALLOWED")
+                except ClientError as exc:
+                    code = exc.response.get("Error", {}).get("Code", "")
+                    results.append("DENIED" if code in (
+                        "AccessDenied", "AccessDeniedException", "UnauthorizedOperation",
+                    ) else "UNKNOWN")
+                except (BotoCoreError, OSError):
+                    results.append("UNKNOWN")
+            outcome = ("DENIED" if "DENIED" in results else
+                       "ALLOWED" if complete_sample and all(x == "ALLOWED" for x in results)
+                       else "UNKNOWN")
+            rows.append({"service": "S3", "action": action, "status": outcome})
     return {"account_id": account, "role_arn": env.role_arn,
             "permission_checks": rows,
+            "read_only_policy_proposal": policy_proposal_for_denied_checks(rows),
+            "policy_proposal_requires_manual_review": True,
             "complete_audit_permissions_verified": False}
 
 
@@ -229,6 +302,19 @@ def _credentials_env(base: Path, frozen, region: str) -> dict[str, str]:
     return out
 
 
+def _cli_execution_result(exit_code: int, has_report: bool) -> str:
+    """Prowler 5.51.0 uses exit code 3 when security checks FAIL.
+
+    An exit code of 3 with a report is still a successful execution of the
+    scanner, not an incomplete audit. Finding outcomes are stored separately.
+    """
+    if not has_report:
+        return "NO_REPORT" if exit_code == 0 else "EXECUTION_FAILED"
+    if exit_code in (0, 3):
+        return "COMPLETED"
+    return "PARTIAL"
+
+
 def _run_cli(folder: Path, regions: list[str], frozen) -> tuple[str, bytes | None]:
     report = folder / "report"
     report.mkdir(mode=0o700)
@@ -265,13 +351,12 @@ def _run_cli(folder: Path, regions: list[str], frozen) -> tuple[str, bytes | Non
             code = child.wait(timeout=10)
         matches = list(report.glob("*.ocsf.json"))
         if len(matches) != 1:
-            # A successful CLI execution can legitimately yield zero findings
-            # and no OCSF output. That is INCOMPLETE coverage, not an all-pass.
-            # A nonzero CLI exit is a real execution failure.
-            return ("NO_REPORT" if code == 0 else "EXECUTION_FAILED"), None
+            # Without an OCSF report, neither successful nor check-failure
+            # CLI exit codes establish a clean security verdict.
+            return _cli_execution_result(code, False), None
         if matches[0].stat().st_size > MAX_BYTES:
             return "OUTPUT_LIMIT", None
-        return ("COMPLETED" if code == 0 else "PARTIAL"), matches[0].read_bytes()
+        return _cli_execution_result(code, True), matches[0].read_bytes()
     except (OSError, subprocess.TimeoutExpired):
         return "EXECUTION_FAILED", None
 
