@@ -1859,16 +1859,33 @@ may still authorize) and `EXPLICIT_DENY` for unconditioned matching
 identity Denies. No automatic IAM changes or permissions remediation occur.
 
 The original PostgreSQL comparison
-(`62b44b81-6999-4349-b358-51a5714f776b`) correctly preserved its
-four **UNKNOWN** outcomes from *before* the read grants. The subsequent
-post-grant policy observations above were independently verified in
-read-only code, but have **not yet been submitted as a new authenticated
-Cloud Security GUI scan** because the browser's local control-plane
-login session expired. The new worker's PostgreSQL persistence is
-qualified by isolated integration tests with realistic IAM data.
-An operator must sign back into the GUI for the final real
-GUI ? backend ? AWS ? PostgreSQL ? GUI qualification. Do not treat
-the earlier UNKNOWN history as if it were updated.
+(`62b44b81-6999-4349-b358-51a5714f776b`) correctly preserves its
+four **UNKNOWN** outcomes from before the read grants. After the operator
+signed into the real Chrome control-plane session, a fresh end-to-end
+ADMIN scan was launched from Cloud Security on the registered MCP Document
+Server (server ID 7), using verified EC2 instance
+`i-02032a22654bcb6ac` and the existing AWS Document Lab audit role.
+
+The new scan `a9bfcd09-dcea-4a67-9a20-0b1d02bc9bdc` completed with status
+**PARTIAL**, 1 verified-host resource observation, **3 POTENTIAL_EXCESS**
+findings (MEDIUM), **1 UNKNOWN** effective IAM permission, and **5 distinct
+SHA-256 evidence records**. The four per-tool rows contain expected S3
+actions and ARNs, the verified role identity, signed revision 80 and a
+normalized IAM policy digest. All five evidence hashes were independently
+recomputed from PostgreSQL data and matched. The authenticated result
+endpoint returned HTTP 200 with the four rows and no raw IAM policy
+documents; the GUI displayed the same four assessments, associated
+findings, events and evidence. No new cloud credentials were stored.
+The older scan history remained untouched.
+
+**Step 5 local functional acceptance is qualified:** real authenticated
+GUI to API to AWS IAM to PostgreSQL to GUI, with conservative IAM diagnostics
+and no automatic IAM changes. It is intentionally not an AWS effective
+permission certification: instance selection is operator-supplied,
+resource-based policies, SCPs, boundaries, conditions and session policies
+need additional attestation before any effective-authorization PASS can be
+claimed. That independent policy-depth limitation does not block proceeding
+to phase-7 Step 6 governance; it must remain visible in risk decisions.
 
 ## Current Limitations
 

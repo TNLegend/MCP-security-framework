@@ -497,7 +497,7 @@ export default function CloudSecurity({ isAdmin = false }) {
                 || !/^i-[0-9a-f]{8}([0-9a-f]{9})?$/.test(instanceId)}
               onClick={() => action(
                 () => startIAMMCPComparison(current.id, mcpServerId, instanceId),
-                (result) => "IAM ? MCP comparison queued (" + result.id + ").",
+                (result) => "IAM and MCP comparison queued (" + result.id + ").",
               )}>
               Compare AWS and MCP permissions
             </button>
@@ -587,7 +587,11 @@ export default function CloudSecurity({ isAdmin = false }) {
       {details && (
         <section className="detail-panel">
           <h3>Audit details — {details.scan.status}</h3>
-          <p>{details.scan.kind === "IAC_CONFIG" ? "Unfinished or unavailable scanners are UNKNOWN, never PASS. No uploaded source is retained." : "Rule checks with insufficient AWS permissions are marked unknown or partial, never passed."}</p>
+          <p>{details.scan.kind === "IAM_MCP"
+            ? "This scan compares signed MCP contracts with AWS identity-policy observations. Potential gaps are not proof of effective AWS access; unverified checks remain UNKNOWN."
+            : details.scan.kind === "IAC_CONFIG"
+              ? "Unfinished or unavailable scanners are UNKNOWN, never PASS. No uploaded source is retained."
+              : "Rule checks with insufficient AWS permissions are marked unknown or partial, never passed."}</p>
           {details.scan.error_code && <p>Failure code: {details.scan.error_code}</p>}
           {details.scan.kind === "IAM_MCP" && (
             <div>
@@ -596,9 +600,12 @@ export default function CloudSecurity({ isAdmin = false }) {
                 established. Potential excess is not proof of effective access,
                 because resource policies, boundaries and organization controls
                 may restrict it. No role or MCP contract is changed.</p>
-              <p>Permissions requiring review: iam:GetInstanceProfile,
-                iam:GetRole, iam:ListRolePolicies, iam:GetRolePolicy,
-                iam:ListAttachedRolePolicies, iam:GetPolicy and iam:GetPolicyVersion.</p>
+              {iamRows.some((item) => item.notes === "IAM_ROLE_OR_POLICY_READ_UNAVAILABLE") && (
+                <p>AWS IAM read permissions are insufficient for this scan.
+                  Review iam:GetInstanceProfile, iam:GetRole, iam:ListRolePolicies,
+                  iam:GetRolePolicy, iam:ListAttachedRolePolicies, iam:GetPolicy
+                  and iam:GetPolicyVersion on the audit role.</p>
+              )}
               <div className="table-scroll"><table>
                 <thead><tr><th>MCP tool</th><th>Expected AWS action</th>
                   <th>Expected S3 resource</th><th>Assessment</th>
@@ -611,7 +618,7 @@ export default function CloudSecurity({ isAdmin = false }) {
                   <td>{item.role_arn ? item.role_arn.split("/").pop() : "Not verified"}</td>
                   <td>{iamAssessmentExplanation(item.notes)}
                     {item.signed_revision && <span> Signed contract revision: {item.signed_revision}.</span>}
-                    {item.policy_digest && <span> Policy evidence: <code>{item.policy_digest.slice(0, 16)}?</code></span>}
+                    {item.policy_digest && <span> Policy evidence: <code>{item.policy_digest.slice(0, 16)}...</code></span>}
                   </td>
                 </tr>)}</tbody>
               </table></div>
