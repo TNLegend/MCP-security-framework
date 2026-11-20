@@ -157,6 +157,7 @@ class ScanDetailPublic(BaseModel):
 
 class IAMMappingIdentity(BaseModel):
     kind: Literal["EC2", "ECS", "LAMBDA", "EKS_POD_IDENTITY"]
+    expected_role_arn: str | None = Field(default=None, pattern=AWS_ROLE.pattern)
     region: str | None = Field(default=None, pattern=AWS_REGION.pattern)
     instance_id: str | None = Field(default=None, max_length=19)
     cluster: str | None = Field(default=None, max_length=100)
@@ -200,11 +201,13 @@ class IAMMappingEntry(BaseModel):
                            pattern=r"^[A-Za-z0-9_.-]+$")
     effect_id: str = Field(min_length=1, max_length=160,
                            pattern=r"^[A-Za-z0-9_.-]+$")
-    scope_id: str = Field(min_length=1, max_length=160,
-                          pattern=r"^[A-Za-z0-9_.-]+$")
+    scope_id: str | None = Field(default=None, min_length=1, max_length=160,
+                                 pattern=r"^[A-Za-z0-9_.-]+$")
     action: str = Field(min_length=3, max_length=120,
-                        pattern=r"^[a-z0-9]+:[A-Za-z0-9]+$")
-    resource_template: str = Field(min_length=12, max_length=512)
+                        pattern=r"^[a-z0-9][a-z0-9-]*:[A-Za-z0-9]+$")
+    resource_template: str = Field(min_length=1, max_length=512)
+    global_resource_acknowledged: bool = False
+    justification: str | None = Field(default=None, max_length=500)
     model_config = ConfigDict(extra="forbid")
 
 
@@ -212,6 +215,8 @@ class IAMMappingCreate(BaseModel):
     name: str = Field(min_length=3, max_length=128)
     mcp_server_id: int = Field(gt=0, le=1000000)
     identity: IAMMappingIdentity
+    role_usage: Literal["UNKNOWN", "DEDICATED", "SHARED"] = "UNKNOWN"
+    acknowledge_unmapped_effects: bool = False
     entries: list[IAMMappingEntry] = Field(min_length=1, max_length=100)
     model_config = ConfigDict(extra="forbid")
 

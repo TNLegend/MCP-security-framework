@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import {
+  manualMappingCoverage, isMappingBoundToCurrentContext, canRequestManualAudit,
+} from "./cloudIamMapping";
+import {
   createCloudEnvironment, fetchCloudEnvironments, fetchCloudScans,
   fetchCloudScanDetail, startCloudScan, testCloudEnvironment,
   updateCloudEnvironment,
@@ -28,6 +31,21 @@ function cloudError(err) {
     PROWLER_NOT_INSTALLED: "The advanced scanner is unavailable; no scan was performed.",
     IAM_MCP_SIGNED_SERVER_CONTRACT_NOT_FOUND: "No published signed MCP contract matches the selected server.",
     IAM_MCP_SIGNED_TOOL_APPROVAL_MISSING: "A published MCP tool contract has no matching observation approval. Review and approve the tool before mapping cloud permissions.",
+    IAM_MCP_UNMAPPED_EFFECTS_REQUIRE_ACKNOWLEDGEMENT:
+      "Some approved MCP effects are not mapped to IAM actions. Acknowledge the unknown effects before submitting the mapping.",
+    IAM_MCP_GLOBAL_ACTION_WITH_SIGNED_RESOURCE:
+      "A scoped MCP effect cannot be mapped to AWS Resource '*'. Select its signed resource scope.",
+    IAM_MCP_GLOBAL_RESOURCE_APPROVAL_REQUIRED:
+      "Global IAM resource access requires explicit administrator acknowledgement.",
+    IAM_MCP_GLOBAL_RESOURCE_JUSTIFICATION_REQUIRED:
+      "Explain why this signed unscoped capability requires an AWS-wide resource grant.",
+    IAM_WORKLOAD_ROLE_CHANGED_REAPPROVAL_REQUIRED:
+      "The workload now has a different IAM role. Review and approve a new mapping.",
+    IAM_MCP_MAPPING_APPROVAL_DIGEST_MISMATCH:
+      "The mapping has changed since approval. Create a new draft for review.",
+    IAM_MCP_APPROVAL_CHANGED_DURING_SCAN:
+      "The approved mapping changed while the IAM audit was running. Request a fresh audit.",
+
     IAM_MCP_INSTANCE_PROFILE_MISSING: "The EC2 instance has no readable IAM instance profile.",
     IAM_MCP_EC2_INSTANCE_UNVERIFIED: "The selected EC2 instance could not be verified in the AWS account.",
     IAC_ZIP_REQUIRED: "Select a ZIP archive containing Terraform files.",
@@ -48,6 +66,7 @@ function iamAssessmentLabel(value) {
   const labels = {
     EXPLICIT_DENY: "Explicit IAM denial",
     POTENTIAL_EXCESS: "Potentially broader AWS permissions",
+    OUTSIDE_MCP_MAPPING: "IAM grant outside this MCP's approved mapping",
     POTENTIAL_MISSING: "Possible missing IAM permission",
     UNKNOWN: "Not fully verified",
   };
@@ -68,6 +87,28 @@ function iamAssessmentExplanation(value) {
       "The AWS role or policy documents could not be fully verified.",
     IAM_COMPLEX_POLICY_UNRESOLVED:
       "IAM conditions or alternative policy clauses require further evaluation.",
+    IAM_ACTION_NOT_IN_APPROVED_MCP_MAPPING:
+      "This explicit identity-policy Allow is outside the approved actions for this MCP. Other consumers of the role may need it.",
+    IAM_RESOURCE_NOT_IN_APPROVED_MCP_MAPPING:
+      "The IAM Allow applies to a resource outside this MCP's approved mapping. Effective AWS access is not established.",
+    IAM_REVERSE_WILDCARD_ACTION_SCOPE:
+      "An IAM action wildcard can include additional actions. The full set has not been proven.",
+    IAM_REVERSE_WILDCARD_RESOURCE_SCOPE:
+      "The IAM resource wildcard is not proven to be limited to the approved MCP scope.",
+    IAM_REVERSE_COMPLEX_ALLOW:
+      "A conditional or negated IAM Allow requires further evaluation.",
+    IAM_REVERSE_POLICY_SHAPE_UNKNOWN:
+      "The IAM clause cannot be interpreted safely.",
+    IAM_REVERSE_ACTION_UNSUPPORTED:
+      "The IAM action could not be interpreted safely.",
+    IAM_REVERSE_RESOURCE_UNSUPPORTED:
+      "The IAM resource expression exceeds safe comparison limits.",
+    IAM_REVERSE_RESULT_LIMIT:
+      "There are more IAM differences than this scan can safely display.",
+    IAM_MCP_EFFECT_NOT_MAPPED:
+      "No IAM action was approved for this signed MCP effect. It remains unknown, not safe.",
+
+
   };
   return explanations[value] || "This comparison needs additional verification.";
 }
@@ -98,6 +139,8 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [mcpServerId, setMcpServerId] = useState("");
   const [identityKind, setIdentityKind] = useState("EC2");
   const [identityInputs, setIdentityInputs] = useState({});
+  const [roleUsage, setRoleUsage] = useState("UNKNOWN");
+  const [unmappedAcknowledged, setUnmappedAcknowledged] = useState(false);
   const [mappingName, setMappingName] = useState("Cloud tool permissions");
   const [mappingContext, setMappingContext] = useState(null);
   const [mappingRows, setMappingRows] = useState([]);
@@ -165,9 +208,12 @@ export default function CloudSecurity({ isAdmin = false }) {
     fetchIAMMappingContext(selected, mcpServerId).then((ctx) => {
       if (cancelled) return;
       setMappingContext(ctx);
+      setUnmappedAcknowledged(false);
       setMappingRows(ctx.effects.map((effect) => ({
         tool_name: effect.tool_name, effect_id: effect.effect_id,
-        scope_id: "", action: "", resource_template: "",
+        scope_id: effect.resource_type ? "" : null,
+        action: "", resource_template: effect.resource_type ? "" : "*",
+        justification: "", global_resource_acknowledged: false,
       })));
     }).catch(() => {
       if (!cancelled) {
@@ -191,10 +237,19 @@ export default function CloudSecurity({ isAdmin = false }) {
 
   async function saveMappingDraft() {
     if (!current || !mappingContext) return;
+    const { completeRows, unmapped } = manualMappingCoverage(
+      mappingContext.effects, mappingRows);
+    if (unmapped.length && !unmappedAcknowledged) {
+      setError("Some signed MCP effects have no complete IAM mapping. Explicitly acknowledge those unknown effects.");
+      return;
+    }
     const config = {
       name: mappingName.trim(),
       mcp_server_id: Number(mcpServerId),
+      role_usage: roleUsage,
+      acknowledge_unmapped_effects: unmapped.length > 0 && unmappedAcknowledged,
       identity: {
+        expected_role_arn: identityInputs.expected_role_arn?.trim() || null,
         kind: identityKind,
         region: identityInputs.region || current.regions[0],
         ...(identityKind === "EC2" ? { instance_id: identityInputs.instance_id || "" } : {}),
@@ -211,10 +266,11 @@ export default function CloudSecurity({ isAdmin = false }) {
           association_id: identityInputs.association_id || "",
         } : {}),
       },
-      entries: mappingRows.filter((r) => r.action.trim() && r.scope_id &&
-        r.resource_template.trim()).map((r) => ({
-          ...r, action: r.action.trim(), resource_template: r.resource_template.trim(),
-        })),
+      entries: completeRows.map((r) => ({
+        ...r, action: r.action.trim(), resource_template: r.resource_template.trim(),
+        scope_id: r.resource_template.trim() === "*" ? null : r.scope_id,
+        justification: r.justification?.trim() || null,
+      })),
     };
     const created = await action(
       () => createIAMMapping(current.id, config),
@@ -644,8 +700,28 @@ export default function CloudSecurity({ isAdmin = false }) {
                           ({ ...old, [field]: e.target.value.trim() }))} />
                     </label>
                   ))}
+                  <label>IAM role usage
+                    <select value={roleUsage} onChange={(e) => setRoleUsage(e.target.value)}>
+                      <option value="UNKNOWN">Unknown other consumers</option>
+                      <option value="SHARED">Shared with other workloads</option>
+                      <option value="DEDICATED">Declared dedicated to this MCP</option>
+                    </select>
+                  </label>
+                  <p>Role usage is an administrator declaration, not proof that
+                    no other workloads or maintenance processes use this role.</p>
+                  <label>Expected workload IAM role ARN (recommended)
+                    <input value={identityInputs.expected_role_arn || ""}
+                      placeholder="arn:aws:iam::123456789012:role/MyMcpRole"
+                      maxLength={240}
+                      onChange={(e) => setIdentityInputs((old) =>
+                        ({ ...old, expected_role_arn: e.target.value.trim() }))} />
+                  </label>
+                  <p>An unexpected IAM role change stops the audit when a role ARN
+                    is pinned here. Without a pinned role, the identity binding
+                    remains explicitly incomplete.</p>
                   <p>Cloud access mappings are reviewed, not inferred from tool names.
-                    Use signed SELF scopes only. Resource templates must include
+                    Use signed SELF scopes for resource-bound effects. Their
+                    resource templates must include
                     <code> {"${scope}"} </code>, optionally referring to another
                     signed scope using <code> {"${scope:scope-id}"} </code>.
                     Example: <code> {"arn:aws:s3:::bucket-name/path/${scope}"} </code>
@@ -664,7 +740,12 @@ export default function CloudSecurity({ isAdmin = false }) {
                               ef.tool_name + "|" + ef.effect_id === e.target.value);
                             if (!chosen) return;
                             setMappingRows((old) => old.map((row, i) => i === index
-                              ? { ...row, tool_name: chosen.tool_name, effect_id: chosen.effect_id, scope_id: "" }
+                              ? {
+                                ...row, tool_name: chosen.tool_name, effect_id: chosen.effect_id,
+                                scope_id: chosen.resource_type ? "" : null,
+                                resource_template: chosen.resource_type ? "" : "*",
+                                global_resource_acknowledged: false,
+                              }
                               : row));
                           }}>
                           {mappingContext.effects.map((effect) => (
@@ -680,20 +761,43 @@ export default function CloudSecurity({ isAdmin = false }) {
                         <input value={entry.action} placeholder="service:Action"
                           onChange={(e) => updateMappingRow(index, "action", e.target.value)} />
                       </label>
-                      <label>Signed resource scope
-                        <select value={entry.scope_id}
-                          onChange={(e) => updateMappingRow(index, "scope_id", e.target.value)}>
-                          <option value="">Choose an approved scope</option>
-                          {allowedScopes.map((sc) => <option key={sc.scope_id} value={sc.scope_id}>
-                            {sc.scope_id}: {sc.canonical_value}
-                          </option>)}
-                        </select>
-                      </label>
+                      {currentEffect?.resource_type ? (
+                        <label>Signed resource scope
+                          <select value={entry.scope_id || ""}
+                            onChange={(e) => updateMappingRow(index, "scope_id", e.target.value)}>
+                            <option value="">Choose an approved scope</option>
+                            {allowedScopes.map((sc) => <option key={sc.scope_id} value={sc.scope_id}>
+                              {sc.scope_id}: {sc.canonical_value}
+                            </option>)}
+                          </select>
+                        </label>
+                      ) : (
+                        <p role="status">This signed MCP effect does not declare any
+                          resource. An AWS action requiring Resource "*" can be
+                          mapped only with an explicit justification and approval.</p>
+                      )}
                       <label>Cloud resource ARN template
                         <input value={entry.resource_template}
                           placeholder="arn:aws:s3:::bucket-name/path/${scope}"
                           maxLength={512}
+                          disabled={!currentEffect?.resource_type}
                           onChange={(e) => updateMappingRow(index, "resource_template", e.target.value)} />
+                      </label>
+                      {!currentEffect?.resource_type && (
+                        <label>
+                          <input type="checkbox"
+                            checked={Boolean(entry.global_resource_acknowledged)}
+                            onChange={(e) => updateMappingRow(index,
+                              "global_resource_acknowledged", e.target.checked)} />
+                          I explicitly approve AWS Resource "*" for this unscoped
+                          signed effect and will document why the IAM action needs it.
+                        </label>
+                      )}
+                      <label>IAM action justification (optional)
+                        <input value={entry.justification || ""}
+                          maxLength={500}
+                          placeholder="Why this signed capability requires the selected IAM action"
+                          onChange={(e) => updateMappingRow(index, "justification", e.target.value)} />
                       </label>
                       <button type="button" className="tiny-action"
                         onClick={() => setMappingRows((old) => old.filter((_, i) => i !== index))}>
@@ -706,13 +810,27 @@ export default function CloudSecurity({ isAdmin = false }) {
                       const effect = mappingContext.effects[0];
                       if (effect) setMappingRows((old) => [...old, {
                         tool_name: effect.tool_name, effect_id: effect.effect_id,
-                        scope_id: "", action: "", resource_template: "",
+                        scope_id: effect.resource_type ? "" : null,
+                        action: "", resource_template: effect.resource_type ? "" : "*",
+                        justification: "", global_resource_acknowledged: false,
                       }]);
                     }}>
                     Add another AWS action
                   </button>
-                  <button type="button" disabled={busy || !mappingRows.some((r) =>
-                    r.action && r.scope_id && r.resource_template)}
+                  {(() => {
+                    const count = manualMappingCoverage(
+                      mappingContext.effects, mappingRows).unmapped.length;
+                    return count > 0 && (
+                      <label>
+                        <input type="checkbox" checked={unmappedAcknowledged}
+                          onChange={(e) => setUnmappedAcknowledged(e.target.checked)} />
+                        I acknowledge that {count} signed MCP effect(s) remain
+                        unmapped and must be reported as UNKNOWN.
+                      </label>
+                    );
+                  })()}
+                  <button type="button" disabled={busy ||
+                    !manualMappingCoverage(mappingContext.effects,mappingRows).completeRows.length}
                     onClick={saveMappingDraft}>Save mapping draft</button>
                 </div>
               )}
@@ -735,10 +853,8 @@ export default function CloudSecurity({ isAdmin = false }) {
           {(() => {
             const chosen = iamMappings.find((m) => m.id === iamMappingId);
             const registered = mcpServers.find((server) => server.id === chosen?.mcp_server_id);
-            const bound = chosen?.configuration?.source_binding;
-            const validBinding = Boolean(current && registered && bound &&
-              bound.account_id === current.account_id &&
-              bound.server_endpoint === registered.endpoint);
+            const validBinding = isMappingBoundToCurrentContext(
+              chosen, current, registered, mappingContext);
             const currentRevision = chosen?.signed_revision === mappingContext?.signed_revision &&
               chosen?.signed_content_hash === mappingContext?.signed_content_hash;
             return chosen && (
@@ -747,6 +863,21 @@ export default function CloudSecurity({ isAdmin = false }) {
                   Hosting: {chosen.configuration?.identity?.kind}. Approved
                   mapping digest: {chosen.approval_digest?.slice(0, 16) || "Pending approval"}.
                   New published contract revisions require new mapping approval.</p>
+                <p>Declared role usage: {chosen.configuration?.role_usage || "UNKNOWN"}.
+                  Expected IAM role: {chosen.configuration?.identity?.expected_role_arn || "Not pinned"}.
+                  Unmapped effects acknowledged:
+                  {chosen.configuration?.unmapped_effects_acknowledged ? " yes" : " no"}.</p>
+                <details>
+                  <summary>Review mapping entries ({chosen.configuration?.entries?.length || 0})</summary>
+                  {(chosen.configuration?.entries || []).map((entry, index) => (
+                    <p key={index}><strong>{entry.tool_name} / {entry.effect_id}</strong>:
+                      <code> {entry.action} </code> on
+                      <code> {entry.resource_template} </code>
+                      (signed scope: {entry.scope_id}).
+                      {entry.justification && <span> Reason: {entry.justification}</span>}
+                    </p>
+                  ))}
+                </details>
                 {(!validBinding || !currentRevision) && (
                   <p role="status">This older configuration is not bound to the
                     current AWS account, registered MCP endpoint and signed
@@ -760,6 +891,8 @@ export default function CloudSecurity({ isAdmin = false }) {
                       setMappingName(chosen.name + " reviewed");
                       setIdentityKind(cfg.identity?.kind || "EC2");
                       setIdentityInputs({ ...(cfg.identity || {}) });
+                      setRoleUsage(cfg.role_usage || "UNKNOWN");
+                      setUnmappedAcknowledged(Boolean(cfg.unmapped_effects_acknowledged));
                       setMappingRows((cfg.entries || []).map((entry) => ({ ...entry })));
                       setApprovalConfirmed(false);
                       setMessage("Configuration copied into the editor. Review all permissions and save a new draft.");
@@ -780,7 +913,7 @@ export default function CloudSecurity({ isAdmin = false }) {
                       onClick={approveSelectedMapping}>Approve mapping</button>
                   </div>
                 )}
-                {isAdmin && chosen.status === "APPROVED" && validBinding && currentRevision && (
+                {isAdmin && canRequestManualAudit(chosen,current,registered,mappingContext) && (
                   <button type="button" className="secondary-action"
                     disabled={busy || current?.status !== "CONNECTED"}
                     onClick={() => action(
@@ -886,7 +1019,10 @@ export default function CloudSecurity({ isAdmin = false }) {
           {details.scan.error_code && <p>Failure code: {details.scan.error_code}</p>}
           {details.scan.kind === "IAM_MCP" && (
             <div>
-              <h4>Signed MCP contracts versus IAM permissions ({iamRows.length})</h4>
+              <h4>Bidirectional MCP and IAM permissions review ({iamRows.length})</h4>
+              <p>Each IAM audit is a point-in-time snapshot. Re-run after changing
+                AWS role policies. A right outside this MCP mapping is not proof
+                that a shared role is overprivileged or that AWS access is effective.</p>
               <p>The IAM identity-permission column reports evidence of an
                 identity-policy Allow or Deny. Effective AWS access is assessed
                 separately: a present identity grant is not proof that the
@@ -900,13 +1036,15 @@ export default function CloudSecurity({ isAdmin = false }) {
                   and iam:GetPolicyVersion on the audit role.</p>
               )}
               <div className="table-scroll"><table>
-                <thead><tr><th>MCP tool</th><th>Expected AWS action</th>
-                  <th>Expected cloud resource</th><th>Assessment</th>
+                <thead><tr><th>Direction</th><th>MCP tool</th><th>AWS action</th>
+                  <th>Cloud resource</th><th>Assessment</th>
                   <th>Identity IAM permission</th><th>Effective AWS access</th>
                   <th>IAM role</th><th>Reason</th></tr></thead>
                 <tbody>{iamRows.map((item) => <tr key={item.id}>
-                  <td>{item.tool_name || "Unknown tool"}</td>
-                  <td>{item.expected_actions.join(", ") || "Unmapped"}</td>
+                  <td>{item.tool_name ? "MCP need to IAM" : "IAM to MCP needs"}</td>
+                  <td>{item.tool_name || "Role grant"}</td>
+                  <td>{item.expected_actions.join(", ") ||
+                    item.observed_actions.join(", ") || "Unresolved"}</td>
                   <td><code>{item.expected_resource_arn || "Not verified"}</code></td>
                   <td>{iamAssessmentLabel(item.status)}</td>
                   <td>{(item.identity_permission_status || "Not recorded")

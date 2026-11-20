@@ -89,7 +89,24 @@ def compile_expectations(snapshot,endpoint,entries):
         rtype=(effect.fixed_resource.resource_type if effect.fixed_resource
                else effect.resource_bindings[0].resource_type
                if len(effect.resource_bindings)==1 else None)
-        scope=scopes.get(entry["scope_id"])
+        if entry["resource_template"]=="*":
+            if rtype is not None or effect.fixed_resource or effect.resource_bindings:
+                raise MappingError("IAM_MCP_GLOBAL_ACTION_WITH_SIGNED_RESOURCE")
+            if entry.get("scope_id") is not None:
+                raise MappingError("IAM_MCP_GLOBAL_ACTION_MUST_NOT_USE_SCOPE")
+            if not entry.get("global_resource_acknowledged"):
+                raise MappingError("IAM_MCP_GLOBAL_RESOURCE_APPROVAL_REQUIRED")
+            justification=entry.get("justification")
+            if not isinstance(justification,str) or len(justification.strip())<12:
+                raise MappingError("IAM_MCP_GLOBAL_RESOURCE_JUSTIFICATION_REQUIRED")
+            result.append({"tool":tool,"effect_id":eid,
+                           "action":entry["action"],"resource":"*",
+                           "status":"READY",
+                           "reason":"ADMIN_APPROVED_UNSCOPED_SIGNED_EFFECT"})
+            continue
+        if entry.get("global_resource_acknowledged"):
+            raise MappingError("IAM_MCP_GLOBAL_ACKNOWLEDGEMENT_WITH_SCOPED_RESOURCE")
+        scope=scopes.get(entry.get("scope_id"))
         if not rtype or scope is None or scope.match_mode!="SELF" or scope.broad_scope_acknowledged or scope.resource_type!=rtype:
             raise MappingError("IAM_MCP_SIGNED_SCOPE_MISMATCH")
         if effect.fixed_resource and effect.fixed_resource.canonical_value!=scope.canonical_value:
@@ -130,4 +147,8 @@ def verify_approved_mapping(row,snapshot,endpoint,account_id):
         raise MappingError("IAM_MCP_MAPPING_SIGNED_REVISION_CHANGED")
     if row.approval_digest!=mapping_digest(row):
         raise MappingError("IAM_MCP_MAPPING_APPROVAL_DIGEST_MISMATCH")
-    return compile_expectations(snapshot,endpoint,row.configuration["entries"])
+    expectations=compile_expectations(snapshot,endpoint,row.configuration["entries"])
+    if (any(entry["status"]!="READY" for entry in expectations)
+            and not row.configuration.get("unmapped_effects_acknowledged",False)):
+        raise MappingError("IAM_MCP_UNMAPPED_EFFECTS_REQUIRE_ACKNOWLEDGEMENT")
+    return expectations

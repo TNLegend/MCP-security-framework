@@ -417,10 +417,15 @@ def create_iam_mapping(
     try:
         snapshot=PublishedConfigurationProvider(db).load_active_snapshot()
         configuration={"identity":payload.identity.model_dump(mode="json",exclude_none=True),
+                       "role_usage":payload.role_usage,
+                       "unmapped_effects_acknowledged":payload.acknowledge_unmapped_effects,
                        "entries":[e.model_dump(mode="json") for e in payload.entries],
                        "source_binding":{"account_id":env.account_id,
                                          "server_endpoint":server.endpoint}}
-        compile_expectations(snapshot,server.endpoint,configuration["entries"])
+        expected_rows=compile_expectations(snapshot,server.endpoint,configuration["entries"])
+        if (any(x["status"]!="READY" for x in expected_rows)
+                and not payload.acknowledge_unmapped_effects):
+            raise MappingError("IAM_MCP_UNMAPPED_EFFECTS_REQUIRE_ACKNOWLEDGEMENT")
     except MappingError as exc:
         raise HTTPException(status_code=422,detail=str(exc)) from exc
     row=CloudIAMMapping(
@@ -467,7 +472,10 @@ def approve_iam_mapping(
         if row.configuration.get("source_binding")!={"account_id":_env(db,environment_id).account_id,
                                                       "server_endpoint":server.endpoint}:
             raise MappingError("IAM_MCP_MAPPING_CLOUD_OR_SERVER_BINDING_CHANGED")
-        compile_expectations(snapshot,server.endpoint,row.configuration["entries"])
+        approved_rows=compile_expectations(snapshot,server.endpoint,row.configuration["entries"])
+        if (any(x["status"]!="READY" for x in approved_rows)
+                and not row.configuration.get("unmapped_effects_acknowledged",False)):
+            raise MappingError("IAM_MCP_UNMAPPED_EFFECTS_REQUIRE_ACKNOWLEDGEMENT")
     except MappingError as exc:
         raise HTTPException(status_code=409,detail=str(exc)) from exc
     row.status="APPROVED"
@@ -553,7 +561,7 @@ def list_iam_mcp_results(
     if scan.kind!="IAM_MCP":
         raise HTTPException(status_code=404,detail="iam_comparison_not_found")
     return db.scalars(select(CloudIAMComparison).where(
-        CloudIAMComparison.scan_id==scan_id).limit(100)).all()
+        CloudIAMComparison.scan_id==scan_id).limit(250)).all()
 
 
 @router.get("/scans",response_model=list[ScanPublic])

@@ -25,7 +25,7 @@ from app.models.cloud_security import (
 from app.services.cloud_security import check_connection, _safe_error
 from app.services.published_configuration import PublishedConfigurationProvider
 
-VERSION = "iam-mcp-generic-v2"
+VERSION = "iam-mcp-manual-bidirectional-v3"
 log = logging.getLogger(__name__)
 _POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cloud-iam-mcp")
 _CAPACITY = BoundedSemaphore(1)
@@ -153,6 +153,7 @@ def compare_policy(action: str, resource: str, statements: list[dict],
         patterns = patterns if isinstance(patterns, list) else [patterns]
         if any(isinstance(pattern, str) and
                ("*" in pattern or "?" in pattern) and _matches(pattern,resource)
+               and pattern!=resource
                for pattern in patterns):
             broad.add("IAM_BROAD_RESOURCE_ALLOW")
         actions = item.get("Action", [])
@@ -220,15 +221,38 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
         except Exception as exc:
             read_errors.append(_safe_error(exc))
         if identity is not None:
+            approved_role=workload.get("expected_role_arn")
+            if approved_role and approved_role!=identity["role_arn"]:
+                raise ComparisonError("IAM_WORKLOAD_ROLE_CHANGED_REAPPROVAL_REQUIRED")
+            if not approved_role:
+                policy_codes.append("IAM_ROLE_ARN_NOT_PINNED_BY_ADMIN")
             try:
-                iam_statements,policy_codes,_=_policy_statements(
+                iam_statements,policy_codes_read,_=_policy_statements(
                     sdk.client("iam"),identity["role_name"])
+                policy_codes.extend(policy_codes_read)
             except ComparisonError as exc:
                 read_errors.append(str(exc))
             except Exception as exc:
                 read_errors.append(_safe_error(exc))
         policy_hash=digest(iam_statements) if identity and not read_errors else None
+        from app.services.cloud_iam_policy_delta import reverse_identity_policy
+        deltas=(reverse_identity_policy(iam_statements,expected)
+                if identity and not read_errors else [])
         with SessionLocal.begin() as db:
+            # Revalidate the exact approval and currently published signed
+            # revision after network I/O, before persisting any findings.
+            current_mapping=db.get(CloudIAMMapping,mapping_id)
+            current_server=db.get(MCPServer,server_id)
+            current_env=db.get(CloudEnvironment,environment_id)
+            if not current_mapping or not current_server or not current_env:
+                raise ComparisonError("IAM_MCP_SCAN_BINDING_CHANGED")
+            fresh=PublishedConfigurationProvider(db).load_active_snapshot()
+            verify_approved_mapping(current_mapping,fresh,current_server.endpoint,
+                                    current_env.account_id)
+            if (current_mapping.approval_digest!=approved_hash or
+                    fresh.content_hash!=signature_hash or
+                    fresh.revision_number!=revision_number):
+                raise ComparisonError("IAM_MCP_APPROVAL_CHANGED_DURING_SCAN")
             scan=db.get(CloudScan,scan_id)
             if scan is None or scan.status!="RUNNING":
                 return
@@ -246,6 +270,9 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     "workload_type":workload["kind"],
                     "identity_verified":bool(identity),
                     "mcp_workload_association":"OPERATOR_SELECTED",
+                    "role_usage_operator_declared":mapping.configuration.get("role_usage","UNKNOWN"),
+                    "role_arn_admin_pinned":bool(workload.get("expected_role_arn")),
+                    "identity_policy_digest":policy_hash,
                     "signed_revision":revision_number,
                     "signed_revision_hash":signature_hash,
                     "approved_mapping_id":mapping_id,
@@ -311,6 +338,9 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     "signed_revision_hash":signature_hash,
                     "approved_mapping_digest":approved_hash,
                     "workload_type":workload["kind"],
+                    "role_usage_operator_declared":mapping.configuration.get("role_usage","UNKNOWN"),
+                    "role_arn_admin_pinned":bool(workload.get("expected_role_arn")),
+                    "identity_policy_digest":policy_hash,
                 }
                 db.add(CloudIAMComparison(
                     scan_id=scan.id,mcp_server_id=server_id,role_arn=role_arn,
@@ -320,15 +350,10 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     expected_resource_arn=entry["resource"],
                     policy_digest=policy_hash,signed_revision=revision_number,
                     expected_actions=[entry["action"]] if entry["action"] else [],
-                    observed_actions=sorted({
-                        item for statement in iam_statements
-                        if statement.get("Effect")=="Allow"
-                        for item in (statement.get("Action") if isinstance(
-                                     statement.get("Action"),list)
-                                     else [statement.get("Action")])
-                        if isinstance(item,str) and
-                        re.fullmatch(r"[a-z0-9]+:[A-Za-z*?]{1,60}",item)
-                    })[:20] if identity and not read_errors else [],
+                    observed_actions=[entry["action"]] if identity and not read_errors
+                    and reason in ("IAM_EXACT_IDENTITY_ALLOW_EFFECTIVE_UNKNOWN",
+                                   "IAM_ALLOW_SCOPE_BROADER_THAN_SIGNED_MCP")
+                    else [],
                     notes=reason,
                 ))
                 # Truncate rule identifiers with a digest to distinguish multiple
@@ -340,6 +365,63 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     scan_id=scan.id,resource_id=res.id,rule_id=rule,
                     outcome="UNKNOWN" if status=="UNKNOWN" else "FAIL",
                     evidence_sha256=digest(summary),safe_summary=summary,
+                ))
+            for delta in deltas:
+                is_extra=delta.status=="OUTSIDE_MCP_MAPPING"
+                if is_extra:
+                    issues+=1
+                    if mapping.configuration.get("role_usage")=="DEDICATED":
+                        interpretation="The administrator declares a dedicated role, but exclusivity of its consumers is not independently proven."
+                    elif mapping.configuration.get("role_usage")=="SHARED":
+                        interpretation="The role is shared: other non-MCP consumers may legitimately need this grant."
+                    else:
+                        interpretation="The role's other consumers are not established."
+                    db.add(CloudFinding(
+                        scan_id=scan.id,resource_id=res.id,
+                        rule_id="IAM_MCP_OUTSIDE_APPROVED_MAPPING",
+                        severity="MEDIUM",result="OUTSIDE_MCP_MAPPING",
+                        fingerprint=digest([scan.id,"REVERSE",delta.action,
+                                            delta.resource,delta.reason]),
+                        title="IAM identity-policy grant outside this MCP's approved mapping",
+                        description=("This unconditional identity-policy Allow is not justified by the "
+                                     "approved MCP mapping. It does not establish effective AWS access "
+                                     "or prove the role can safely lose this grant. "+interpretation),
+                        remediation="Review all consumers of the role and the signed MCP needs before changing AWS permissions.",
+                    ))
+                else:
+                    unknown+=1
+                reverse_summary={
+                    "direction":"IAM_POLICY_TO_APPROVED_MCP_NEEDS",
+                    "status":delta.status,"reason_code":delta.reason,
+                    "action":delta.action,"resource":delta.resource,
+                    "policy_statement_index":delta.statement_index,
+                    "evidence_class":delta.evidence,
+                    "role_usage_operator_declared":mapping.configuration.get("role_usage","UNKNOWN"),
+                    "all_signed_effects_mapped":all(x["status"]=="READY" for x in expected),
+                    "effective_permission_status":"UNKNOWN",
+                    "role_arn_admin_pinned":bool(workload.get("expected_role_arn")),
+                    "identity_policy_digest":policy_hash,
+                    "approved_mapping_digest":approved_hash,
+                    "signed_revision_hash":signature_hash,
+                }
+                db.add(CloudIAMComparison(
+                    scan_id=scan.id,mcp_server_id=server_id,role_arn=role_arn,
+                    status=delta.status,tool_name=None,
+                    identity_permission_status=(
+                        "IDENTITY_ALLOW_OUTSIDE_MAPPING" if is_extra else "UNKNOWN"),
+                    effective_permission_status="UNKNOWN",
+                    expected_resource_arn=delta.resource,
+                    policy_digest=policy_hash,signed_revision=revision_number,
+                    expected_actions=[],observed_actions=[delta.action] if delta.action else [],
+                    notes=delta.reason,
+                ))
+                db.add(CloudEvidence(
+                    scan_id=scan.id,resource_id=res.id,
+                    rule_id="IAM_MCP_REVERSE_"+digest(
+                        [delta.status,delta.action,delta.resource,delta.reason])[:20].upper(),
+                    outcome="FAIL" if is_extra else "UNKNOWN",
+                    evidence_sha256=digest(reverse_summary),
+                    safe_summary=reverse_summary,
                 ))
             for issue in sorted(set(read_errors+policy_codes)):
                 db.add(CloudScanEvent(

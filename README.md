@@ -1943,6 +1943,46 @@ The current implemented cloud provider is AWS only. Azure and GCP need
 separate identity and policy adapters. Unknown MCP tool capabilities
 without approved mappings remain unassessed, not compliant.
 
+## Deploy Security: manual MCP-to-AWS IAM mapping (phase 5.5)
+
+The production comparison is administrator-reviewed; it does not infer IAM
+actions from MCP source code. The automatic discovery research remains separate.
+
+1. Register an MCP and publish its signed Runtime Security Contract and its
+   approved tool observation.
+2. Connect a read-only AWS audit environment. Select an EC2, ECS, Lambda or
+   EKS Pod Identity workload and declare whether its role is shared, dedicated
+   or unknown; optionally pin its expected IAM role ARN.
+3. Enter IAM actions and signed SELF scope-linked ARN templates for each
+   approved MCP tool effect. Supply optional justification per scoped action.
+4. If signed effects are left unmapped, explicitly acknowledge that they will
+   remain UNKNOWN. Save the draft, review the exact content and approve as ADMIN.
+5. Run the IAM scan. The backend revalidates the signed published revision,
+   account, endpoint, mapping digest and optional role pinning before findings.
+
+A global IAM Resource '*' exception is permitted ONLY for an EXPLICIT signed
+MCP effect with no fixed or argument-bound resource. It requires a specific
+admin justification and acknowledgement; scoped effects cannot use it.
+
+Two comparison directions:
+- MCP approved action/resource needs versus the AWS identity policies:
+  present Allow, broad Allow, explicit Deny, missing Allow or UNKNOWN.
+- AWS identity-policy Allow statements versus ALL approved MCP needs:
+  extra literal actions/resources are reported as OUTSIDE_MCP_MAPPING;
+  wildcards, conditions, negations and unknown policy shapes remain UNKNOWN.
+
+These results are read-only identity-policy signals, NOT effective AWS
+authorization or proof that a shared role can safely lose a permission.
+Permission boundaries, SCPs, session/resource policies and other role
+consumers may affect effective authorization. Workload selection does not
+prove that a particular MCP process runs inside it. Scans stay PARTIAL.
+
+A new scan is required after changes to AWS IAM policies; any changed
+approved mapping, signed revision, account, endpoint or pinned workload role
+requires review. The implementation never grants AWS rights or alters OPA.
+The separate QA repository records mock-API tests and a blocked live AWS
+read-only verification: the audit profile cannot call ec2:DescribeInstances.
+
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework
