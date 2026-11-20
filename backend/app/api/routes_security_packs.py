@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -35,7 +36,11 @@ from app.services.control_plane_auth import (
     require_admin,
     require_authenticated_user,
 )
-from app.services.control_plane_config import active_revision
+from app.services.control_plane_config import active_revision, ControlPlaneConfigError
+from app.services.tool_observation_renewal import (
+    ToolObservationRenewalError,
+    renew_admin_allowed_tool_observations,
+)
 from app.services.published_configuration import validate_config_content
 from app.services.security_pack_lifecycle import (
     SecurityPackLifecycleError,
@@ -425,6 +430,42 @@ def draft_tool_contract(
         db.commit()
         return result
     except SecurityPackOnboardingError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class RenewApprovedToolObservationsRequest(BaseModel):
+    draft_revision_id: str = Field(min_length=1, max_length=64)
+    expected_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    change_summary: str = Field(min_length=3, max_length=2000)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+@router.post("/tools/{tool_id}/contracts/renew-approved-observations")
+def renew_approved_observations(
+    tool_id: int,
+    payload: RenewApprovedToolObservationsRequest,
+    current: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Explicit ADMIN reapproval, never an automatic transfer of permissions."""
+    tool = db.get(MCPTool, tool_id)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    try:
+        result = renew_admin_allowed_tool_observations(
+            db, tool=tool,
+            draft_revision_id=payload.draft_revision_id,
+            expected_content_hash=payload.expected_content_hash,
+            expected_fingerprint=payload.expected_fingerprint,
+            change_summary=payload.change_summary,
+            actor=current.user,
+        )
+        db.commit()
+        return result
+    except (ToolObservationRenewalError, ControlPlaneConfigError) as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

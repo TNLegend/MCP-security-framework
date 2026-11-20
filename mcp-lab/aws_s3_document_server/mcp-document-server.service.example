@@ -1,0 +1,21 @@
+[Unit]
+Description=AWS S3 Document MCP Lab
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=mcpdemo
+Group=mcpdemo
+WorkingDirectory=/opt/mcp-document-server
+Environment=MCP_DOCUMENTS_BUCKET=YOUR_PRIVATE_DOCUMENTS_BUCKET
+Environment=AWS_REGION=eu-west-3
+ExecStart=/opt/mcp-document-server/.venv/bin/python /opt/mcp-document-server/server.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

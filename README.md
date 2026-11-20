@@ -1620,6 +1620,16 @@ The runtime path enforces these rules:
 - temporary per-session content fingerprints block read-then-send replay without
   retaining the returned content in the taint store.
 
+## Phase 7: AWS MCP laboratory integration
+
+A minimal real S3-backed MCP server is available under `mcp-lab/aws_s3_document_server/`. It provides `list_documents`, `read_document`, `upload_document` and `delete_document` through a private EC2 endpoint. The server obtains AWS credentials exclusively from its **EC2 IAM instance role**; it never needs or receives an agent's AWS access keys.
+
+The lab is reached from a local framework through **AWS Systems Manager port forwarding**, not a public EC2 inbound port. In the verified lab environment, signed Control Plane revision **80** governs an `aws-document-demo` agent with exact-file read and demo-file write/delete scopes. Real Gateway → EC2 → S3 tests covered successful reading, controlled create/delete and enforcement denials; runtime ALLOW/BLOCK evidence is visible in **Security Center → Tool activity**.
+
+Deploy using Python 3.12+ and the lab folder's dedicated `requirements.txt`. AWS CLI v2 and the Session Manager Plugin are **optional operator tools for that private tunnel** and deliberately not part of the framework's generic startup dependencies. The SSM tunnel and protocol-verification verdict are time-bound; expired verdicts fail closed and must be renewed using the governed **MCP tools → Discover tools** process. Use a narrowly scoped SSM identity rather than a root account for any long-running installation.
+
+This is a laboratory proof of integration, **not** completion of AWS/Deploy Security scanning, broad IAM analysis or a global backend regression.
+
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework
@@ -1635,7 +1645,7 @@ The runtime path enforces these rules:
   this does not attest a remote MCP's behavior.
 - Runtime policy depends on OPA availability and fails closed when OPA is unavailable.
 - Scanner and DevSecOps analysis are not a complete production pipeline yet.
-- No AWS integration yet.
+- A private AWS EC2/S3 MCP laboratory integration has been tested end-to-end; cloud audit scanners, IAM-to-MCP comparison and Cloud Security GUI are not implemented yet.
 - No full audit report generation yet.
 - Control Plane authentication is intentionally minimal and local-first: ADMIN/VIEWER, HttpOnly sessions, CSRF protection, and audit.
 

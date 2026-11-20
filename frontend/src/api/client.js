@@ -576,6 +576,14 @@ export async function addDeclarativeSecurityPack(payload) {
   });
 }
 
+export async function renewApprovedToolObservations(toolId, payload) {
+  return request(`/control-plane/security-packs/tools/${toolId}/contracts/renew-approved-observations`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    timeoutMs: DISCOVERY_TIMEOUT_MS,
+  });
+}
+
 export async function reanalyzeToolContract(toolId) {
   return request(`/control-plane/security-packs/tools/${toolId}/reanalyze`, {
     method: "POST",

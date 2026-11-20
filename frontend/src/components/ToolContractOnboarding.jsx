@@ -8,6 +8,7 @@ import {
   fetchToolTemplateSuggestions,
   publishConfigRevision,
   reanalyzeToolContract,
+  renewApprovedToolObservations,
   safeErrorMessage,
 } from "../api/client";
 import ToolSecurityPackBuilder from "./ToolSecurityPackBuilder";
@@ -31,6 +32,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
   const [approveObservations, setApproveObservations] = useState(true);
   const [changeSummary, setChangeSummary] = useState("");
   const [draftRevisionId, setDraftRevisionId] = useState(null);
+  const [renewalDraft, setRenewalDraft] = useState(null);
   const [contractDraft, setContractDraft] = useState(null);
   const [packBuilderOpen, setPackBuilderOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -61,6 +63,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
       setFixedResources({});
       setSchemaBoundsText("[]");
       setDraftRevisionId(null);
+      setRenewalDraft(null);
       setContractDraft(null);
       setPackBuilderOpen(false);
       setLoading(false);
@@ -91,7 +94,8 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
         );
         const draftCandidates = (revisions || []).filter(
           (revision) => revision.status === "DRAFT" && revision.schema_version === 2,
-        );
+        ).sort((a, b) => b.revision_number - a.revision_number);
+        setRenewalDraft(draftCandidates[0] || null);
 
         for (const draft of draftCandidates) {
           const draftSuggestions = await fetchToolTemplateSuggestions(tool.id, draft.id);
@@ -265,6 +269,31 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
     }
   }
 
+  async function renewSignedObservationInDraft() {
+    if (!renewalDraft || !tool.current_fingerprint || changeSummary.trim().length < 3) {
+      setError("Choose a draft and describe why the signed observation is being renewed.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await renewApprovedToolObservations(tool.id, {
+        draft_revision_id: renewalDraft.id,
+        expected_content_hash: renewalDraft.content_hash,
+        expected_fingerprint: tool.current_fingerprint,
+        change_summary: changeSummary.trim(),
+      });
+      setMessage(`Current ADMIN-reviewed evidence approved for ${result.approved_profiles} protocol profiles in Draft ${renewalDraft.revision_number}. Publish only after every tool is reviewed.`);
+      setRenewalDraft(null);
+      await onComplete?.();
+    } catch (err) {
+      setError(safeErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function publishAndReanalyze() {
     if (!contractDraft) return;
     setBusy(true);
@@ -333,6 +362,20 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
           tool={tool}
         />
       )}
+
+      {isAdmin && renewalDraft && !contractDraft &&
+        ["ADMIN_ALLOWED", "APPROVED"].includes(String(tool.analysis_status || "").toUpperCase()) && (
+          <section className="contract-review" aria-label="Explicit observation renewal">
+            <div>
+              <strong>Approve current reviewed evidence</strong>
+              <p>Draft {renewalDraft.revision_number}: explicitly approve this tool's current analysis after your ADMIN review. The backend verifies model/source integrity, exact fingerprint, signed contract and evidence before recording new observations. This does not itself permit execution.</p>
+            </div>
+            <button className="secondary-action" disabled={busy || changeSummary.trim().length < 3}
+              onClick={renewSignedObservationInDraft} type="button">
+              {busy ? "Verifying..." : `Approve reviewed observations in Draft ${renewalDraft.revision_number}`}
+            </button>
+          </section>
+        )}
 
       <form className="contract-editor" onSubmit={submit}>
         <div className="contract-toolbar">
