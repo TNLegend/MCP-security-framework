@@ -296,6 +296,11 @@ def ensure_cloud_security_schema() -> None:
         connection.execute(text("ALTER TABLE cloud_resources ALTER COLUMN environment_id DROP NOT NULL"))
         connection.execute(text("ALTER TABLE cloud_scans ADD COLUMN IF NOT EXISTS source_fingerprint VARCHAR(64)"))
         connection.execute(text("ALTER TABLE cloud_scans ADD COLUMN IF NOT EXISTS source_file_count INTEGER DEFAULT 0 NOT NULL"))
+        # Step 5: additive IAM-to-MCP observation details, preserving old scans.
+        connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS tool_name VARCHAR(128)"))
+        connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS expected_resource_arn VARCHAR(512)"))
+        connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS policy_digest VARCHAR(64)"))
+        connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS signed_revision INTEGER"))
         names = set(inspect(connection).get_table_names())
     if missing := {table.name for table in tables} - names:
         raise RuntimeError(f"cloud_schema_incomplete: {sorted(missing)}")

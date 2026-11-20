@@ -130,6 +130,10 @@ class CloudIAMComparison(Base):
     expected_actions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     observed_actions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    expected_resource_arn: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    policy_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    signed_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class CloudScanEvent(Base):

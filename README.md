@@ -1793,6 +1793,60 @@ release regression remain the later phase-7 portability/release gates.
 No IAM change was applied by the framework and earlier audit history
 was preserved.
 
+## Deploy Security: IAM-to-MCP permissions comparison (step 5)
+
+Cloud Security now includes a read-only comparison of *published, signed*
+MCP tool security contracts with the IAM configuration of their AWS EC2 host.
+It does **not** install policies, mutate cloud resources, approve Gateway
+calls, or independently certify the account's effective permissions.
+
+- Select an existing CONNECTED AWS environment, an already registered MCP
+  server, and the EC2 instance ID that the operator believes hosts it.
+  The EC2 instance must exist in that account. The operator-provided
+  MCP-to-EC2 association is not a cryptographic host attestation.
+- The backend verifies the active signed configuration revision and maps
+  declared cloud-object tool effects and exact authority scopes to expected
+  S3 actions and resource ARNs. The supported initial mapping covers
+  `read_document`, `upload_document`, `delete_document` and
+  `list_documents`, including the server-side `demo/` prefix.
+- To establish the execution role, the audit role must read the EC2
+  instance profile using IAM GetInstanceProfile; subsequent IAM GetRole,
+  ListRolePolicies, GetRolePolicy, ListAttachedRolePolicies, GetPolicy and
+  GetPolicyVersion provide the attached policy documents. The module
+  limits the number of policies/statements retrieved and stores their
+  SHA-256 fingerprint, never the raw policy text.
+- Comparisons report `EXPLICIT_DENY` when an unconditional matching identity
+  Deny is confirmed, `POTENTIAL_EXCESS` when a broad matching Allow is
+  found, and `UNKNOWN` otherwise. A matching identity Allow is **not**
+  called compliant: resource policies, permission boundaries, session
+  policies, SCPs, conditions and the true MCP-to-host association can change
+  effective authorization. All initial scans remain PARTIAL by design.
+- Each tool's expected action, expected S3 resource, status, evidence digest,
+  signed revision, available verified IAM role and safe reason code is
+  recorded in the existing Cloud Security PostgreSQL history. The
+  `cloud_iam_comparisons` migration adds only nullable columns and
+  preserves older rows. Existing ADMIN/VIEWER authentication applies.
+- The POST route `/api/v1/control-plane/cloud-security/environments/{id}/iam-comparisons`
+  accepts `{"mcp_server_id":7,"instance_id":"i-..."}` and the GET route
+  `/api/v1/control-plane/cloud-security/scans/{id}/iam-comparisons` shows
+  per-tool results. The same workflow appears under Cloud Security.
+
+**Current AWS laboratory limitation:** the authenticated read-only audit
+role can read the EC2 instance's attached profile name, but is denied
+`iam:GetInstanceProfile`, `iam:GetRole`, `iam:ListRolePolicies` and
+`iam:ListAttachedRolePolicies`. A real comparison on 20 November 2026
+(run `62b44b81-6999-4349-b358-51a5714f776b`) therefore recorded four
+`UNKNOWN` tool results, a signed-revision proof and an AWS_ACCESS_DENIED
+coverage event. It did not invent a role-policy mismatch or an all-clear.
+A sample narrowly scoped *manual* read-only IAM policy is provided at
+`policies/cloud_security/aws_iam_mcp_readonly_extension.example.json`.
+After an AWS administrator approves the policy for **MCPDeployAuditRole**
+only, rerun the comparison; never attach it to MCPDocumentServerRole.
+
+The first real E2E scan above was initiated internally, not through an
+authenticated GUI session. An authenticated GUI-to-API retest and effective
+IAM scope qualification are pending; they are not represented as passed.
+
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework

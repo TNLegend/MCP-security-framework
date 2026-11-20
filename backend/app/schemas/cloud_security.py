@@ -154,3 +154,23 @@ class ScanDetailPublic(BaseModel):
     findings: list[FindingPublic]
     evidence: list[EvidencePublic]
     events: list[ScanEventPublic]
+
+class IAMComparisonRequest(BaseModel):
+    mcp_server_id: int = Field(gt=0, le=1000000)
+    instance_id: str = Field(pattern=r"^i-[0-9a-f]{8}(?:[0-9a-f]{9})?$")
+    model_config = ConfigDict(extra="forbid")
+
+
+class IAMComparisonPublic(BaseModel):
+    id: str
+    tool_name: str | None
+    expected_resource_arn: str | None
+    policy_digest: str | None
+    signed_revision: int | None
+    mcp_server_id: int | None
+    role_arn: str | None
+    status: str
+    expected_actions: list[str]
+    observed_actions: list[str]
+    notes: str | None
+    model_config = ConfigDict(from_attributes=True, extra="forbid")

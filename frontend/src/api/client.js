@@ -884,3 +884,19 @@ export async function fetchProwlerPermissionPreview(id) {
     { timeoutMs: 45000 },
   );
 }
+
+export async function startIAMMCPComparison(environmentId, mcpServerId, instanceId) {
+  return request(
+    "/control-plane/cloud-security/environments/" + encodeURIComponent(environmentId) + "/iam-comparisons",
+    {
+      method: "POST",
+      body: JSON.stringify({ mcp_server_id: Number(mcpServerId), instance_id: instanceId }),
+      timeoutMs: 45000,
+    },
+  );
+}
+
+export async function fetchIAMMCPResults(scanId) {
+  return request("/control-plane/cloud-security/scans/" + encodeURIComponent(scanId) + "/iam-comparisons",
+    { timeoutMs: 45000 });
+}

@@ -12,12 +12,12 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.cloud_security import (
     CloudEnvironment, CloudEvidence, CloudFinding, CloudResource, CloudScan,
-    CloudScanEvent, new_id,
+    CloudScanEvent, CloudIAMComparison, new_id,
 )
 from app.schemas.cloud_security import (
     ConnectionTestPublic, EnvironmentCreate, EnvironmentPublic,
     EvidencePublic, FindingPublic, ResourcePublic, ScanDetailPublic,
-    ScanEventPublic, ScanPublic,
+    ScanEventPublic, ScanPublic, IAMComparisonRequest, IAMComparisonPublic,
 )
 from app.services.cloud_security import (
     CloudAuditError, _safe_error, check_connection, enqueue_scan,
@@ -31,6 +31,8 @@ from app.services.cloud_prowler_security import (
     enqueue_advanced, engine_version as prowler_engine_version,
     permission_preview,
 )
+from app.services.cloud_iam_mcp_security import VERSION as IAM_MCP_VERSION, enqueue_comparison
+from app.models.mcp_server import MCPServer
 from app.services.control_plane_audit import record_control_plane_audit
 from app.services.control_plane_auth import (
     AuthenticatedControlPlaneUser, require_admin, require_authenticated_user,
@@ -359,6 +361,62 @@ async def upload_iac_scan(
         raise HTTPException(status_code=503, detail="cloud_worker_busy")
     db.refresh(scan)
     return scan
+
+
+@router.post("/environments/{environment_id}/iam-comparisons",
+             response_model=ScanPublic, status_code=202)
+def request_iam_mcp_comparison(
+    environment_id: str, payload: IAMComparisonRequest, request: Request,
+    actor: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    env = db.scalar(select(CloudEnvironment).where(
+        CloudEnvironment.id == environment_id).with_for_update())
+    if env is None:
+        raise HTTPException(status_code=404, detail="cloud_environment_not_found")
+    if env.status != "CONNECTED" or not env.account_id or not env.role_arn:
+        raise HTTPException(status_code=409, detail="cloud_connection_not_verified")
+    server = db.get(MCPServer, payload.mcp_server_id)
+    if server is None or server.status != "active":
+        raise HTTPException(status_code=404, detail="mcp_server_not_found")
+    active = db.scalar(select(CloudScan.id).where(
+        CloudScan.environment_id == env.id,
+        CloudScan.status.in_(("QUEUED", "RUNNING")),
+    ).limit(1))
+    if active is not None:
+        raise HTTPException(status_code=409, detail="cloud_scan_already_active")
+    scan = CloudScan(id=new_id(),environment_id=env.id,kind="IAM_MCP",
+                     status="QUEUED",scanner_version=IAM_MCP_VERSION,
+                     requested_by=actor.user.id)
+    db.add(scan)
+    db.flush()
+    db.add(CloudScanEvent(scan_id=scan.id,event_type="STATE",message_code="QUEUED"))
+    _audit(db,request,actor,"CLOUD_IAM_MCP_COMPARISON_REQUESTED",
+           "cloud_scan",scan.id,{"environment_id":env.id,
+            "mcp_server_id":payload.mcp_server_id,"kind":"IAM_MCP"})
+    db.commit()
+    if not enqueue_comparison(scan.id,env.id,payload.mcp_server_id,payload.instance_id):
+        scan.status="FAILED"
+        scan.error_code="CLOUD_WORKER_BUSY"
+        scan.completed_at=datetime.utcnow()
+        db.add(CloudScanEvent(scan_id=scan.id,event_type="STATE",message_code="WORKER_BUSY"))
+        db.commit()
+        raise HTTPException(status_code=503,detail="cloud_worker_busy")
+    db.refresh(scan)
+    return scan
+
+
+@router.get("/scans/{scan_id}/iam-comparisons",response_model=list[IAMComparisonPublic])
+def list_iam_mcp_results(
+    scan_id: str,
+    _: AuthenticatedControlPlaneUser=Depends(require_authenticated_user),
+    db: Session=Depends(get_db),
+):
+    scan=_scan(db,scan_id)
+    if scan.kind!="IAM_MCP":
+        raise HTTPException(status_code=404,detail="iam_comparison_not_found")
+    return db.scalars(select(CloudIAMComparison).where(
+        CloudIAMComparison.scan_id==scan_id).limit(100)).all()
 
 
 @router.get("/scans",response_model=list[ScanPublic])

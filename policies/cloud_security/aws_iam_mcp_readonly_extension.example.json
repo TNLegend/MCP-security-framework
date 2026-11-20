@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadVerifiedMcpInstanceProfile",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetInstanceProfile"
+      ],
+      "Resource": "arn:aws:iam::REPLACE_WITH_AWS_ACCOUNT_ID:instance-profile/REPLACE_WITH_INSTANCE_PROFILE_NAME"
+    },
+    {
+      "Sid": "ReadVerifiedMcpExecutionRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole",
+        "iam:ListRolePolicies",
+        "iam:GetRolePolicy",
+        "iam:ListAttachedRolePolicies"
+      ],
+      "Resource": "arn:aws:iam::REPLACE_WITH_AWS_ACCOUNT_ID:role/REPLACE_WITH_EXECUTION_ROLE_NAME"
+    },
+    {
+      "Sid": "ReadOnlyManagedPolicyDefinitions",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion"
+      ],
+      "Resource": [
+        "arn:aws:iam::REPLACE_WITH_AWS_ACCOUNT_ID:policy/*",
+        "arn:aws:iam::aws:policy/*"
+      ]
+    }
+  ]
+}

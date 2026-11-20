@@ -5,7 +5,8 @@ import {
   updateCloudEnvironment,
   fetchIaCScannerAvailability, uploadTerraformZip,
   fetchProwlerAvailability, startProwlerCloudScan,
-  fetchProwlerPermissionPreview, safeErrorMessage,
+  fetchProwlerPermissionPreview, startIAMMCPComparison, fetchIAMMCPResults,
+  fetchServers, safeErrorMessage,
 } from "../api/client";
 
 function cloudError(err) {
@@ -24,6 +25,9 @@ function cloudError(err) {
     prowler_audit_role_required: "Configure a temporary read-only AWS role before an advanced audit.",
     PROWLER_AUDIT_ROLE_REQUIRED: "A temporary AWS audit role is required.",
     PROWLER_NOT_INSTALLED: "The advanced scanner is unavailable; no scan was performed.",
+    IAM_MCP_SIGNED_SERVER_CONTRACT_NOT_FOUND: "No published signed MCP contract matches the selected server.",
+    IAM_MCP_INSTANCE_PROFILE_MISSING: "The EC2 instance has no readable IAM instance profile.",
+    IAM_MCP_EC2_INSTANCE_UNVERIFIED: "The selected EC2 instance could not be verified in the AWS account.",
     IAC_ZIP_REQUIRED: "Select a ZIP archive containing Terraform files.",
     IAC_ARCHIVE_SIZE_INVALID: "The ZIP file must be smaller than 2 MB.",
     IAC_UNSAFE_ARCHIVE_PATH: "The ZIP contains unsafe file paths.",
@@ -60,6 +64,10 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [prowlerStatus, setProwlerStatus] = useState(null);
   const [prowlerStatusError, setProwlerStatusError] = useState(false);
   const [permissionPreview, setPermissionPreview] = useState(null);
+  const [mcpServers, setMcpServers] = useState([]);
+  const [mcpServerId, setMcpServerId] = useState("");
+  const [instanceId, setInstanceId] = useState("");
+  const [iamRows, setIamRows] = useState([]);
 
   async function refresh() {
     setLoading(true);
@@ -82,6 +90,14 @@ export default function CloudSecurity({ isAdmin = false }) {
   }, []);
   useEffect(() => {
     fetchProwlerAvailability().then(setProwlerStatus).catch(() => setProwlerStatusError(true));
+  }, []);
+  useEffect(() => {
+    fetchServers().then((response) => {
+      const data = Array.isArray(response) ? response : response?.servers || response?.items || [];
+      const active = data.filter((server) => server.status === "active");
+      setMcpServers(active);
+      if (active.length) setMcpServerId(String(active[0].id));
+    }).catch(() => setError("MCP server list could not be loaded."));
   }, []);
   // A diagnostic is only valid for the environment that was probed.
   useEffect(() => { setPermissionPreview(null); }, [selected]);
@@ -182,14 +198,18 @@ export default function CloudSecurity({ isAdmin = false }) {
 
   async function showScan(scanId) {
     setError("");
-    try { setDetails(await fetchCloudScanDetail(scanId)); }
-    catch (err) { setError(cloudError(err)); }
+    try {
+      const item = await fetchCloudScanDetail(scanId);
+      setDetails(item);
+      setIamRows(item.scan.kind === "IAM_MCP" ? await fetchIAMMCPResults(scanId) : []);
+    } catch (err) { setError(cloudError(err)); }
   }
 
   const current = environments.find((e) => e.id === selected);
   const currentScans = scans.filter((s) => s.kind === "AWS_BASELINE" && s.environment_id === selected);
   const advancedScans = scans.filter((s) => s.kind === "AWS_ADVANCED" && s.environment_id === selected);
   const iacScans = scans.filter((s) => s.kind === "IAC_CONFIG");
+  const iamScans = scans.filter((s) => s.kind === "IAM_MCP" && s.environment_id === selected);
 
   return (
     <section className="page-panel">
@@ -422,6 +442,57 @@ export default function CloudSecurity({ isAdmin = false }) {
       </section>
 
       <section className="detail-panel">
+        <h3>Compare MCP tool permissions with AWS</h3>
+        <p>Compare the published, signed MCP tool contracts with the AWS IAM
+          policies of the selected EC2 instance. This is read-only. Unavailable
+          IAM policies, unverified roles and complex effective permissions remain UNKNOWN.</p>
+        <div className="contract-editor">
+          <label>MCP server
+            <select value={mcpServerId} disabled={!mcpServers.length}
+              onChange={(event) => setMcpServerId(event.target.value)}>
+              {!mcpServers.length && <option value="">No registered MCP servers</option>}
+              {mcpServers.map((server) => <option value={server.id} key={server.id}>
+                {server.name}
+              </option>)}
+            </select>
+          </label>
+          <label>AWS EC2 instance ID hosting this server
+            <input value={instanceId} onChange={(event) => setInstanceId(event.target.value.trim())}
+              placeholder="i-0123456789abcdef0" maxLength={19} />
+          </label>
+          <p>Choose the actual host instance. Its IAM instance profile must be
+            verified before any role policy is attributed to the MCP server.
+            The audit role must have IAM read permissions; this action never grants them.</p>
+          {isAdmin && current && (
+            <button type="button" className="secondary-action"
+              disabled={busy || current.status !== "CONNECTED" || !mcpServerId
+                || !/^i-[0-9a-f]{8}([0-9a-f]{9})?$/.test(instanceId)}
+              onClick={() => action(
+                () => startIAMMCPComparison(current.id, mcpServerId, instanceId),
+                (result) => "IAM ? MCP comparison queued (" + result.id + ").",
+              )}>
+              Compare AWS and MCP permissions
+            </button>
+          )}
+        </div>
+        <h4>Permissions comparison history</h4>
+        {iamScans.length === 0 ? <p>No IAM permission comparisons yet.</p> : (
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>Started</th><th>Status</th><th>Potential issues</th><th>Unknown</th><th>Details</th></tr></thead>
+              <tbody>{iamScans.map((scan) => <tr key={scan.id}>
+                <td>{new Date(scan.created_at).toLocaleString()}</td>
+                <td>{scan.status}</td>
+                <td>{scan.finding_count}</td><td>{scan.unknown_checks}</td>
+                <td><button className="tiny-action" type="button"
+                  onClick={() => showScan(scan.id)}>View</button></td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="detail-panel">
         <h3>Scan infrastructure configuration</h3>
         <p>Upload a Terraform ZIP to identify configuration risks before deployment.
           No AWS connection is required and Terraform code is never executed.</p>
@@ -490,6 +561,31 @@ export default function CloudSecurity({ isAdmin = false }) {
           <h3>Audit details — {details.scan.status}</h3>
           <p>{details.scan.kind === "IAC_CONFIG" ? "Unfinished or unavailable scanners are UNKNOWN, never PASS. No uploaded source is retained." : "Rule checks with insufficient AWS permissions are marked unknown or partial, never passed."}</p>
           {details.scan.error_code && <p>Failure code: {details.scan.error_code}</p>}
+          {details.scan.kind === "IAM_MCP" && (
+            <div>
+              <h4>Signed MCP contracts versus IAM permissions ({iamRows.length})</h4>
+              <p>UNKNOWN means AWS permissions or the host identity were not fully
+                established. Potential excess is not proof of effective access,
+                because resource policies, boundaries and organization controls
+                may restrict it. No role or MCP contract is changed.</p>
+              <p>Permissions requiring review: iam:GetInstanceProfile,
+                iam:GetRole, iam:ListRolePolicies, iam:GetRolePolicy,
+                iam:ListAttachedRolePolicies, iam:GetPolicy and iam:GetPolicyVersion.</p>
+              <div className="table-scroll"><table>
+                <thead><tr><th>MCP tool</th><th>Expected AWS action</th>
+                  <th>Expected S3 resource</th><th>Assessment</th>
+                  <th>IAM role</th><th>Reason</th></tr></thead>
+                <tbody>{iamRows.map((item) => <tr key={item.id}>
+                  <td>{item.tool_name || "Unknown tool"}</td>
+                  <td>{item.expected_actions.join(", ") || "Unmapped"}</td>
+                  <td><code>{item.expected_resource_arn || "Not verified"}</code></td>
+                  <td>{item.status}</td>
+                  <td>{item.role_arn ? item.role_arn.split("/").pop() : "Not verified"}</td>
+                  <td>{item.notes || "?"}</td>
+                </tr>)}</tbody>
+              </table></div>
+            </div>
+          )}
           <h4>Findings ({details.findings.length})</h4>
           {details.findings.length ? details.findings.map((f) => (
             <article key={f.id}>
@@ -508,7 +604,10 @@ export default function CloudSecurity({ isAdmin = false }) {
               Source contents and scanner raw output are not stored.</p>
             {details.evidence.map((e) => (
               <article key={e.id} className="detail-panel">
-                <p><strong>{e.rule_id} - {(e.rule_id.startsWith("IAC_") || e.rule_id === "PROWLER_EXECUTION") && e.outcome === "PASS" ? "SCANNER EXECUTED" : e.outcome}</strong></p>
+                <p><strong>{e.rule_id} - {e.rule_id === "IAM_MCP_SIGNED_REVISION" && e.outcome === "PASS"
+                  ? "SIGNED CONFIG VERIFIED"
+                  : (e.rule_id.startsWith("IAC_") || e.rule_id === "PROWLER_EXECUTION") && e.outcome === "PASS"
+                    ? "SCANNER EXECUTED" : e.outcome}</strong></p>
                 <p>SHA-256: <code>{e.evidence_sha256}</code></p>
                 {e.safe_summary?.scanner && <p>Scanner: {e.safe_summary.scanner}</p>}
                 {e.safe_summary?.file && <p>File: {e.safe_summary.file}
