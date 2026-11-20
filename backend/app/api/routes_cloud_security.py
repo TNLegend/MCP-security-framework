@@ -612,8 +612,9 @@ def evaluate_and_record_deploy_governance(
             base_url=settings.opa_base_url,
             timeout_seconds=settings.opa_timeout_seconds,
         ).evaluate(evidence)
-        # OPA I/O happened outside the database write lock. Rebuild under a
-        # scan row lock, and reject signed binding or evidence drift.
+        # Serialize evaluation persistence with other scan-level decisions
+        # before rebuilding its signed evidence under the lock.
+        db.scalar(select(CloudScan).where(CloudScan.id == scan_id).with_for_update())
         fresh=_deploy_context(db,scan_id,scan.kind)
         if governance_digest(evidence)!=governance_digest(fresh):
             raise DeployHistoryError("DEPLOY_EVIDENCE_CHANGED_DURING_EVALUATION")

@@ -2037,9 +2037,14 @@ OPA service causes an explicit startup failure, not a fallback.
 
 This release is developed and qualified on a dedicated feature branch,
 NOT installed into the currently running backend/OPA/PostgreSQL service.
-The additive SQL migration must be tested and applied through the
-controlled deployment procedure. PostgreSQL triggers and full live
-scanner execution remain deployment qualification items.
+The additive SQL migration and PostgreSQL UPDATE/DELETE/TRUNCATE guards
+have PASSED an isolated real PostgreSQL 17.11 acceptance test. They are
+NOT applied to the active database. The launcher also verifies the exact
+remote OPA source bytes against the local pinned SHA-256 manifest before
+migrating, and refuses any additional unqualified Rego modules.
+Full production rollout, restore rehearsal and scanner-binary coverage
+remain distinct deployment-qualification items. See independent QA report:
+mcp-security-qualification/docs/phase7_deploy_opa_phase6_isolated_closure_20261121.md.
 
 Independent report: mcp-security-qualification/
 docs/phase7_deploy_opa_phase6_final_20261120.md.

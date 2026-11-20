@@ -44,6 +44,50 @@ from app.core.config import settings  # noqa: E402
 from app.services.local_runtime_manager import LocalRuntimeManager  # noqa: E402
 
 
+def _opa_remote_bundle_matches_manifest(base_url: str) -> bool:
+    """Verify exact loaded Rego source bytes against the pinned local manifest.
+
+    OPA's /v1/policies endpoint exposes the raw source for every loaded module.
+    Any extra/missing module or byte-level drift rejects the deployment.
+    A privileged subsequent hot update remains outside this startup check.
+    """
+    import hashlib
+
+    try:
+        manifest_path = REPO_ROOT / "policies" / "opa" / "deploy_bundle_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected = manifest.get("policy_sha256")
+        if (manifest.get("format") != "deploy-opa-local-bundle-v1"
+                or not isinstance(expected, dict)
+                or set(expected) != {"runtime_policy.rego", "deploy_security.rego"}):
+            return False
+        with urllib.request.urlopen(
+            base_url.rstrip("/") + "/v1/policies", timeout=5
+        ) as response:
+            raw = response.read(2_000_001)
+        if len(raw) > 2_000_000:
+            return False
+        listing = json.loads(raw.decode("utf-8"))
+        policies = listing.get("result") if isinstance(listing, dict) else None
+        if not isinstance(policies, list) or len(policies) != len(expected):
+            return False
+        observed: dict[str, str] = {}
+        for entry in policies:
+            if not isinstance(entry, dict):
+                return False
+            module_id, source = entry.get("id"), entry.get("raw")
+            if not isinstance(module_id, str) or not isinstance(source, str):
+                return False
+            filename = module_id.replace("\\", "/").split("/")[-1]
+            if filename in observed or filename not in expected:
+                return False
+            observed[filename] = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        return observed == expected
+    except (OSError, urllib.error.URLError, TimeoutError, ValueError,
+            UnicodeError, TypeError, AttributeError):
+        return False
+
+
 def _opa_dual_policy_ready(base_url: str) -> bool:
     """A healthy OPA listener without Deploy policy must NOT be reused as ready."""
     endpoints = (
@@ -66,10 +110,20 @@ def _opa_dual_policy_ready(base_url: str) -> bool:
             result = payload.get("result") if isinstance(payload, dict) else None
             if not isinstance(result, dict):
                 return False
+            if kind == "runtime" and (
+                result.get("policy_revision") != "opa-runtime-v2"
+                or result.get("decision") != "BLOCK"
+                or result.get("effect") != "DENY"
+                or not isinstance(result.get("rule_ids"), list)
+                or not result["rule_ids"]
+            ):
+                return False
             if kind == "deploy" and (
-                result.get("classification") != "EVIDENCE_INCOMPLETE"
+                result.get("policy_revision") != "opa-deploy-security-advisory-v1"
+                or result.get("classification") != "EVIDENCE_INCOMPLETE"
                 or result.get("runtime_enforcement") is not False
                 or result.get("effective_aws_authorization_proven") is not False
+                or result.get("obligations") != ["REVIEW_EVIDENCE", "LOG"]
             ):
                 return False
         except (urllib.error.URLError, OSError, TimeoutError,
@@ -108,6 +162,9 @@ def main() -> int:
             return 1
         if not _opa_dual_policy_ready(settings.opa_base_url):
             print(json.dumps({"ready": False, "error": "opa_runtime_or_deploy_policy_missing"}, indent=2))
+            return 1
+        if not _opa_remote_bundle_matches_manifest(settings.opa_base_url):
+            print(json.dumps({"ready": False, "error": "opa_remote_policy_bundle_mismatch"}, indent=2))
             return 1
 
         # Only migrate after verifying both policies. A Runtime-only reused

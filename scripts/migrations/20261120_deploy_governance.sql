@@ -50,6 +50,16 @@ BEGIN
         BEFORE UPDATE OR DELETE ON cloud_deploy_exception_events
         FOR EACH ROW EXECUTE FUNCTION deploy_governance_append_only();
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='trg_cloud_deploy_governance_decisions_no_truncate') THEN
+        CREATE TRIGGER trg_cloud_deploy_governance_decisions_no_truncate
+        BEFORE TRUNCATE ON cloud_deploy_governance_decisions
+        FOR EACH STATEMENT EXECUTE FUNCTION deploy_governance_append_only();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='trg_cloud_deploy_exception_events_no_truncate') THEN
+        CREATE TRIGGER trg_cloud_deploy_exception_events_no_truncate
+        BEFORE TRUNCATE ON cloud_deploy_exception_events
+        FOR EACH STATEMENT EXECUTE FUNCTION deploy_governance_append_only();
+    END IF;
 END;
 $$;
 COMMIT;

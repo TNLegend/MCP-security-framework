@@ -326,6 +326,14 @@ def ensure_cloud_security_schema() -> None:
                             BEFORE UPDATE OR DELETE ON {table}
                             FOR EACH ROW EXECUTE FUNCTION deploy_governance_append_only();
                         END IF;
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_trigger
+                            WHERE tgname = 'trg_{table}_no_truncate'
+                        ) THEN
+                            CREATE TRIGGER trg_{table}_no_truncate
+                            BEFORE TRUNCATE ON {table}
+                            FOR EACH STATEMENT EXECUTE FUNCTION deploy_governance_append_only();
+                        END IF;
                     END;
                     $$;
                 """))
