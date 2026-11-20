@@ -141,6 +141,20 @@ _S3_BUCKET_READ_PROBES = (
 _S3_BUCKET_READ_ACTIONS = frozenset(action for action, _ in _S3_BUCKET_READ_PROBES)
 
 
+def _s3_probe_verdict(operation: str, error_code: str) -> str:
+    """An absent bucket policy is a successful metadata read, NOT a PASS.
+
+    AWS responds with NoSuchBucketPolicy when the bucket has no bucket
+    policy. This confirms an authorized request without claiming the bucket
+    is secure (ACLs/public-access settings require separate evaluation).
+    """
+    if operation == "get_bucket_policy_status" and error_code == "NoSuchBucketPolicy":
+        return "ALLOWED"
+    if error_code in ("AccessDenied", "AccessDeniedException", "UnauthorizedOperation"):
+        return "DENIED"
+    return "UNKNOWN"
+
+
 def policy_proposal_for_denied_checks(checks: list[dict]) -> dict | None:
     """Generate a manually reviewed, read-only policy; never attach it.
 
@@ -220,9 +234,7 @@ def permission_preview(env: CloudEnvironment) -> dict:
                     results.append("ALLOWED")
                 except ClientError as exc:
                     code = exc.response.get("Error", {}).get("Code", "")
-                    results.append("DENIED" if code in (
-                        "AccessDenied", "AccessDeniedException", "UnauthorizedOperation",
-                    ) else "UNKNOWN")
+                    results.append(_s3_probe_verdict(operation, code))
                 except (BotoCoreError, OSError):
                     results.append("UNKNOWN")
             outcome = ("DENIED" if "DENIED" in results else

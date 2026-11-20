@@ -397,6 +397,9 @@ export default function CloudSecurity({ isAdmin = false }) {
           </div>
         )}
         <h4>Advanced AWS audit history</h4>
+        <p>UNKNOWN checks may require human review even when all tested AWS
+          read permissions are available. Scanner execution can be complete
+          while the overall security assessment remains PARTIAL.</p>
         {advancedScans.length === 0 ? <p>No advanced AWS audits yet.</p> : (
           <div className="table-scroll">
             <table>

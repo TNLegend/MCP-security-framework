@@ -1760,29 +1760,38 @@ Cloud Security now has an optional, strictly read-only advanced AWS scanner.
 - Neither the advanced scanner nor the permissions preview mutates AWS.
   They do not change IAM roles, launch or terminate EC2, or write to S3.
 
-**Coverage limits:** The first real AWS audit returned PARTIAL with
-8 resources, 5 failed checks, 25 unknown checks and 60 evidence records.
-After the operator added four explicit read-only IAM actions, all seven
-original read probes returned ALLOWED. The first post-grant run found 10 resources, 11 failed checks, 21 unknown
-checks and 66 evidence records. Prowler 5.51.0 exit code 3 signals
-failed security checks and is not an execution failure. After fixing that
-mapping, a new live audit (0885a195-e0f9-446a-b58e-52c1d7a0d3ae) recorded
-10 resources, 11 failed checks, 20 unknown checks and 66 valid SHA-256
-evidence records. Scanner execution was COMPLETED, while security coverage
-correctly remained PARTIAL: 19 MANUAL findings plus S3 not assessed.
-No historical audit rows were changed. S3 remains unassessed because
-bucket-scoped reads such as
-GetBucketLocation, GetBucketPolicyStatus, GetEncryptionConfiguration,
-GetBucketVersioning and GetBucketLogging are denied, even though bucket
-listing succeeds. The GUI now reports these five read-only gaps and can
-generate an **operator-reviewed, bucket-scoped** policy proposal (see
-policies/cloud_security/aws_prowler_s3_bucket_read_extension.example.json).
-REPLACE_WITH_REVIEWED_BUCKET_NAME must be replaced before applying that
-policy manually to the audit role only; no IAM changes are performed by
-this application. Success of any probe is not a guarantee of full Prowler
-coverage. Older AWS baseline and Terraform scans were preserved.
-Prowler is not a production OS-isolated sandbox; clean installation on
-other systems and full backend regression are later release gates.
+**AWS coverage after reviewed read-only IAM grants (20 November 2026):**
+The initial audit had 8 resources, 5 failed checks, 25 unknowns and 60
+evidence rows. After the first four read grants, the next qualified audit
+had 10 resources, 11 failed checks, 20 unknowns and 66 evidence rows.
+The operator then added the five bucket-scoped S3 read permissions to
+the existing `MCPDeployAuditRole`. A new real GUI-initiated Prowler audit
+(`252fb8ff-9fd9-4a64-8eae-bad828a46432`) recorded **11 resources,
+22 failed security checks, 20 UNKNOWN checks and 83 independent SHA-256
+evidence rows**. It assessed EC2, S3, IAM, CloudTrail and CloudWatch
+without an unassessed-service event. Prowler execution was COMPLETED;
+the scan status remains correctly PARTIAL because its 20 OCSF manual
+checks require human interpretation. The findings include S3 bucket
+configurations, including KMS encryption, versioning, public ACL and
+secure transport. These are security findings for review, not proof
+of exploitation, and the IAM audit role cannot remediate them.
+
+All 12 read-only API capability probes now pass. The last S3
+`GetBucketPolicyStatus` request returns AWS `NoSuchBucketPolicy`:
+it proves the bucket-policy lookup ran, with no bucket policy configured;
+it is **not** a security PASS or proof of private access. The backend
+classifies that case as a readable metadata lookup while continuing
+to retain Prowler's independent FAIL/MANUAL outcomes. Scanner success,
+permissions capability and security compliance must not be conflated.
+
+The AWS account has **not** been certified secure. The remaining
+20 MANUAL checks require a separate human review. Other Prowler
+checks and AWS regions not in the selected scan's scope cannot be
+claimed assessed. The local Prowler subprocess is not a production
+OS-isolated sandbox. Cross-platform fresh-clone and full backend
+release regression remain the later phase-7 portability/release gates.
+No IAM change was applied by the framework and earlier audit history
+was preserved.
 
 ## Current Limitations
 
@@ -1799,7 +1808,7 @@ other systems and full backend regression are later release gates.
   this does not attest a remote MCP's behavior.
 - Runtime policy depends on OPA availability and fails closed when OPA is unavailable.
 - Scanner and DevSecOps analysis are not a complete production pipeline yet.
-- AWS baseline read-only inventory and a real connected audit have been demonstrated; a non-root audit identity remains required. Terraform ZIP scans with Checkov and Trivy are operational. Prowler 5.51.0 advanced read-only audits work with bounded execution; remaining S3 read permissions, manual checks and service coverage are reported as incomplete rather than a fabricated security PASS. Advanced IAM-to-MCP comparison and guided cross-account AWS onboarding remain future work.
+- AWS baseline read-only inventory and a real connected audit have been demonstrated; a non-root audit identity remains required. Terraform ZIP scans with Checkov and Trivy are operational. Prowler 5.51.0 advanced read-only audits work with bounded execution; unverified or manual checks are reported as incomplete; S3 is now covered in the selected AWS laboratory audit, but the account has not received an all-clear. Advanced IAM-to-MCP comparison and guided cross-account AWS onboarding remain future work.
 - No full audit report generation yet.
 - Control Plane authentication is intentionally minimal and local-first: ADMIN/VIEWER, HttpOnly sessions, CSRF protection, and audit.
 
