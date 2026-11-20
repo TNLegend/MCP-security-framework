@@ -1959,7 +1959,7 @@ From the framework root:
 The JSON output includes candidate actions, source SHA-256 evidence, symbolic
 resource parameters, unresolved paths, catalogue provenance and explicit
 mapping_approved=false / audit_eligible=false. The checked-in research
-catalogue covers only selected S3, DynamoDB and CloudWatch operations and
+catalogue covers only selected S3, DynamoDB, CloudWatch, AWS Location and Pricing operations and
 may contain context-dependent alternative IAM actions; no candidate is a
 verified effective AWS authorization. No GUI or runtime integration exists
 yet. Independent qualification and limitations are documented in the QA

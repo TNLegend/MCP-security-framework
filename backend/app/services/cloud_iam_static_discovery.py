@@ -276,6 +276,10 @@ class Inspector:
                 return imported.rsplit(".", 1)[-1]
             if imported in {"boto3.Session", "boto3.session.Session"}:
                 return "session"
+        if (isinstance(func, ast.Attribute) and func.attr == "Session" and
+                isinstance(func.value, ast.Name) and
+                self.imports.get(func.value.id) == "boto3"):
+            return "session"
         if not isinstance(func, ast.Attribute) or func.attr not in {"client", "resource"}:
             return None
         base = func.value
@@ -288,6 +292,21 @@ class Inspector:
                 return func.attr
         return None
 
+
+    def _client_destination(self, node, env, chain, branch):
+        endpoint = next((k.value for k in node.keywords if k.arg == "endpoint_url"), None)
+        if endpoint is None:
+            return "AWS_DEFAULT"
+        if isinstance(endpoint, ast.Constant) and endpoint.value is None:
+            return "AWS_DEFAULT"
+        concrete = self.symbol(endpoint, env)
+        if isinstance(concrete, str) and concrete.startswith(
+            ("http://localhost:", "http://127.0.0.1:",
+             "http://[::1]:", "https://localhost:")
+        ):
+            return "LOCAL"
+        self._gap(node, chain, branch, "AWS_ENDPOINT_CONFIGURATION_UNVERIFIED")
+        return "UNKNOWN"
 
     def expression(self, node, env, owner, chain, branch, depth, active):
         if node is None:
@@ -346,22 +365,7 @@ class Inspector:
                 if service is None:
                     self._gap(node, chain, branch, "DYNAMIC_AWS_SERVICE")
                     return None
-                endpoint = next((self.symbol(k.value, env)
-                                 for k in node.keywords if k.arg == "endpoint_url"), None)
-                destination = "AWS_DEFAULT"
-                if endpoint is not None:
-                    if (isinstance(endpoint, str) and
-                        (endpoint.startswith("http://localhost:")
-                         or endpoint.startswith("http://127.0.0.1:")
-                         or endpoint.startswith("http://[::1]:")
-                         or endpoint.startswith("https://localhost:"))):
-                        destination = "LOCAL"
-                    elif isinstance(endpoint, str) and endpoint.startswith("$" + "{ENV:"):
-                        destination = "UNKNOWN"
-                        self._gap(node, chain, branch, "CONFIGURED_ENDPOINT_UNKNOWN")
-                    else:
-                        destination = "CUSTOM_OR_UNKNOWN"
-                        self._gap(node, chain, branch, "NONDEFAULT_ENDPOINT_UNVERIFIED")
+                destination = self._client_destination(node, env, chain, branch)
                 return AWSObject(service, destination, constructor)
             helper = self.helper_name(node.func, owner)
             if helper:
@@ -415,7 +419,10 @@ class Inspector:
                         if not isinstance(service, str) or "UNKNOWN" in service or "UNBOUND" in service:
                             self._gap(node, chain, branch, "SESSION_SERVICE_UNRESOLVED")
                             return None
-                        return AWSObject(service, obj.destination)
+                        destination = self._client_destination(node, env, chain, branch)
+                        if obj.destination != "AWS_DEFAULT" and destination == "AWS_DEFAULT":
+                            destination = obj.destination
+                        return AWSObject(service, destination)
                     if obj.kind == "client" and method == "get_paginator":
                         name = self._literal(node.args[0]) if node.args else None
                         if name is None:
@@ -509,12 +516,18 @@ class Inspector:
                         env[item.optional_vars.id] = value
                 self.statements(stmt.body, env, owner, chain, branch, depth, active)
             elif isinstance(stmt, (ast.Try, ast.TryStar)):
-                self.statements(stmt.body, dict(env), owner, chain, branch, depth, active)
+                # Python's try block does NOT introduce a variable scope.
+                # Preserve assignments on the normal path for subsequent
+                # statements; exception handlers are inspected separately.
+                success = dict(env)
+                self.statements(stmt.body, success, owner, chain,
+                                branch + f"|try@{stmt.lineno}", depth, active)
+                self.statements(stmt.orelse, success, owner, chain, branch, depth, active)
                 for handler in stmt.handlers:
                     self.statements(handler.body, dict(env), owner, chain,
                                     branch + f"|except@{handler.lineno}", depth, active)
-                self.statements(stmt.orelse, dict(env), owner, chain, branch, depth, active)
-                self.statements(stmt.finalbody, dict(env), owner, chain, branch, depth, active)
+                self.statements(stmt.finalbody, success, owner, chain, branch, depth, active)
+                env.update(success)
             elif isinstance(stmt, ast.Match):
                 self.expression(stmt.subject, env, owner, chain, branch, depth, active)
                 for case in stmt.cases:

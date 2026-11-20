@@ -328,6 +328,94 @@
       "source_url": "https://servicereference.us-east-1.amazonaws.com/v1/logs/logs.json",
       "unmapped_requested_methods": []
     },
+    "pricing": {
+      "operations": {
+        "describe_services": {
+          "api_operation": "DescribeServices",
+          "authorized_action_candidates": [
+            {
+              "action": "pricing:DescribeServices",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "get_attribute_values": {
+          "api_operation": "GetAttributeValues",
+          "authorized_action_candidates": [
+            {
+              "action": "pricing:GetAttributeValues",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "get_price_list_file_url": {
+          "api_operation": "GetPriceListFileUrl",
+          "authorized_action_candidates": [
+            {
+              "action": "pricing:GetPriceListFileUrl",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "get_products": {
+          "api_operation": "GetProducts",
+          "authorized_action_candidates": [
+            {
+              "action": "pricing:GetProducts",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "list_price_lists": {
+          "api_operation": "ListPriceLists",
+          "authorized_action_candidates": [
+            {
+              "action": "pricing:ListPriceLists",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        }
+      },
+      "service_version": "v1.5",
+      "source_sha256": "9505f87f7a6ee416501a5ce752789155e011a75bdb4e359d5807c413af1f4578",
+      "source_url": "https://servicereference.us-east-1.amazonaws.com/v1/pricing/pricing.json",
+      "unmapped_requested_methods": []
+    },
     "s3": {
       "operations": {
         "delete_object": {
