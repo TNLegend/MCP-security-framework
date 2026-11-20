@@ -673,6 +673,1290 @@
       "source_sha256": "42a0406559f357e77fad1e4a77c1d3d9aa62bc90da4dd990c13149ae92147c6d",
       "source_url": "https://servicereference.us-east-1.amazonaws.com/v1/s3/s3.json",
       "unmapped_requested_methods": []
+    },
+    "sns": {
+      "operations": {
+        "add_permission": {
+          "api_operation": "AddPermission",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:AddPermission",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": true,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "check_if_phone_number_is_opted_out": {
+          "api_operation": "CheckIfPhoneNumberIsOptedOut",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:CheckIfPhoneNumberIsOptedOut",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "confirm_subscription": {
+          "api_operation": "ConfirmSubscription",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:ConfirmSubscription",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "create_platform_application": {
+          "api_operation": "CreatePlatformApplication",
+          "authorized_action_candidates": [
+            {
+              "action": "iam:PassRole",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "sns:CreatePlatformApplication",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "create_platform_endpoint": {
+          "api_operation": "CreatePlatformEndpoint",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:CreatePlatformEndpoint",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "create_sms_sandbox_phone_number": {
+          "api_operation": "CreateSMSSandboxPhoneNumber",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:CreateSMSSandboxPhoneNumber",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "create_topic": {
+          "api_operation": "CreateTopic",
+          "authorized_action_candidates": [
+            {
+              "action": "iam:PassRole",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "sns:CreateTopic",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            },
+            {
+              "action": "sns:PutDataProtectionPolicy",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            },
+            {
+              "action": "sns:TagResource",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": true,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "delete_endpoint": {
+          "api_operation": "DeleteEndpoint",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:DeleteEndpoint",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "delete_platform_application": {
+          "api_operation": "DeletePlatformApplication",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:DeletePlatformApplication",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "delete_sms_sandbox_phone_number": {
+          "api_operation": "DeleteSMSSandboxPhoneNumber",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:DeleteSMSSandboxPhoneNumber",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "delete_topic": {
+          "api_operation": "DeleteTopic",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:DeleteTopic",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "get_data_protection_policy": {
+          "api_operation": "GetDataProtectionPolicy",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:GetDataProtectionPolicy",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "get_endpoint_attributes": {
+          "api_operation": "GetEndpointAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:GetEndpointAttributes",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "get_platform_application_attributes": {
+          "api_operation": "GetPlatformApplicationAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:GetPlatformApplicationAttributes",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "get_sms_attributes": {
+          "api_operation": "GetSMSAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:GetSMSAttributes",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "get_sms_sandbox_account_status": {
+          "api_operation": "GetSMSSandboxAccountStatus",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:GetSMSSandboxAccountStatus",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "get_subscription_attributes": {
+          "api_operation": "GetSubscriptionAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:GetSubscriptionAttributes",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "get_topic_attributes": {
+          "api_operation": "GetTopicAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:GetTopicAttributes",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "list_endpoints_by_platform_application": {
+          "api_operation": "ListEndpointsByPlatformApplication",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:ListEndpointsByPlatformApplication",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": true,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "list_origination_numbers": {
+          "api_operation": "ListOriginationNumbers",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:ListOriginationNumbers",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": true,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "list_phone_numbers_opted_out": {
+          "api_operation": "ListPhoneNumbersOptedOut",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:ListPhoneNumbersOptedOut",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "list_platform_applications": {
+          "api_operation": "ListPlatformApplications",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:ListPlatformApplications",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": true,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "list_sms_sandbox_phone_numbers": {
+          "api_operation": "ListSMSSandboxPhoneNumbers",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:ListSMSSandboxPhoneNumbers",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": true,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "list_subscriptions": {
+          "api_operation": "ListSubscriptions",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:ListSubscriptions",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": true,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "list_subscriptions_by_topic": {
+          "api_operation": "ListSubscriptionsByTopic",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:ListSubscriptionsByTopic",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": true,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "list_tags_for_resource": {
+          "api_operation": "ListTagsForResource",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:ListTagsForResource",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "list_topics": {
+          "api_operation": "ListTopics",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:ListTopics",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": true,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "opt_in_phone_number": {
+          "api_operation": "OptInPhoneNumber",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:OptInPhoneNumber",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "publish": {
+          "api_operation": "Publish",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:Publish",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "publish_batch": {
+          "api_operation": "PublishBatch",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:Publish",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "put_data_protection_policy": {
+          "api_operation": "PutDataProtectionPolicy",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:PutDataProtectionPolicy",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "remove_permission": {
+          "api_operation": "RemovePermission",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:RemovePermission",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": true,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "set_endpoint_attributes": {
+          "api_operation": "SetEndpointAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:SetEndpointAttributes",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "set_platform_application_attributes": {
+          "api_operation": "SetPlatformApplicationAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "iam:PassRole",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "sns:SetPlatformApplicationAttributes",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "set_sms_attributes": {
+          "api_operation": "SetSMSAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "iam:PassRole",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "sns:SetSMSAttributes",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "set_subscription_attributes": {
+          "api_operation": "SetSubscriptionAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "iam:PassRole",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "sns:SetSubscriptionAttributes",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "set_topic_attributes": {
+          "api_operation": "SetTopicAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "iam:PassRole",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "sns:SetTopicAttributes",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": true,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "subscribe": {
+          "api_operation": "Subscribe",
+          "authorized_action_candidates": [
+            {
+              "action": "iam:PassRole",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "sns:Subscribe",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "tag_resource": {
+          "api_operation": "TagResource",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:TagResource",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": true,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "unsubscribe": {
+          "api_operation": "Unsubscribe",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:Unsubscribe",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "untag_resource": {
+          "api_operation": "UntagResource",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:UntagResource",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": true,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "topic"
+              ]
+            }
+          ]
+        },
+        "verify_sms_sandbox_phone_number": {
+          "api_operation": "VerifySMSSandboxPhoneNumber",
+          "authorized_action_candidates": [
+            {
+              "action": "sns:VerifySMSSandboxPhoneNumber",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": []
+            }
+          ]
+        }
+      },
+      "service_version": "v1.5",
+      "source_sha256": "36396847c543959df076d04811fa0fc7895a19ab31d946b3aacd0464c4433ed3",
+      "source_url": "https://servicereference.us-east-1.amazonaws.com/v1/sns/sns.json",
+      "unmapped_requested_methods": []
+    },
+    "sqs": {
+      "operations": {
+        "add_permission": {
+          "api_operation": "AddPermission",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:AddPermission",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": true,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "cancel_message_move_task": {
+          "api_operation": "CancelMessageMoveTask",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:CancelMessageMoveTask",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            },
+            {
+              "action": "sqs:DeleteMessage",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            },
+            {
+              "action": "sqs:GetQueueAttributes",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "queue"
+              ]
+            },
+            {
+              "action": "sqs:ReceiveMessage",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "change_message_visibility": {
+          "api_operation": "ChangeMessageVisibility",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:ChangeMessageVisibility",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "change_message_visibility_batch": {
+          "api_operation": "ChangeMessageVisibilityBatch",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:ChangeMessageVisibility",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "create_queue": {
+          "api_operation": "CreateQueue",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:CreateQueue",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            },
+            {
+              "action": "sqs:TagQueue",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": true,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "delete_message": {
+          "api_operation": "DeleteMessage",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:DeleteMessage",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "delete_message_batch": {
+          "api_operation": "DeleteMessageBatch",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:DeleteMessage",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "delete_queue": {
+          "api_operation": "DeleteQueue",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:DeleteQueue",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "get_queue_attributes": {
+          "api_operation": "GetQueueAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:GetQueueAttributes",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "get_queue_url": {
+          "api_operation": "GetQueueUrl",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:GetQueueUrl",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "list_dead_letter_source_queues": {
+          "api_operation": "ListDeadLetterSourceQueues",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:ListDeadLetterSourceQueues",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "list_message_move_tasks": {
+          "api_operation": "ListMessageMoveTasks",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:GetQueueAttributes",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "queue"
+              ]
+            },
+            {
+              "action": "sqs:ListMessageMoveTasks",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "list_queue_tags": {
+          "api_operation": "ListQueueTags",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:ListQueueTags",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "list_queues": {
+          "api_operation": "ListQueues",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:ListQueues",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            }
+          ]
+        },
+        "purge_queue": {
+          "api_operation": "PurgeQueue",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:PurgeQueue",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "receive_message": {
+          "api_operation": "ReceiveMessage",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:ReceiveMessage",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "remove_permission": {
+          "api_operation": "RemovePermission",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:RemovePermission",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": true,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "send_message": {
+          "api_operation": "SendMessage",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:SendMessage",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "send_message_batch": {
+          "api_operation": "SendMessageBatch",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:SendMessage",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "set_queue_attributes": {
+          "api_operation": "SetQueueAttributes",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:SetQueueAttributes",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": true,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "start_message_move_task": {
+          "api_operation": "StartMessageMoveTask",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:DeleteMessage",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            },
+            {
+              "action": "sqs:GetQueueAttributes",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "queue"
+              ]
+            },
+            {
+              "action": "sqs:ReceiveMessage",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "queue"
+              ]
+            },
+            {
+              "action": "sqs:SendMessage",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            },
+            {
+              "action": "sqs:StartMessageMoveTask",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "tag_queue": {
+          "api_operation": "TagQueue",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:TagQueue",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": true,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        },
+        "untag_queue": {
+          "api_operation": "UntagQueue",
+          "authorized_action_candidates": [
+            {
+              "action": "sqs:UntagQueue",
+              "properties": {
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": true,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "queue"
+              ]
+            }
+          ]
+        }
+      },
+      "service_version": "v1.5",
+      "source_sha256": "ab3025f946395ff6dface0582385527a45435b149fdd3e99e3ee9e3d2eafd541",
+      "source_url": "https://servicereference.us-east-1.amazonaws.com/v1/sqs/sqs.json",
+      "unmapped_requested_methods": []
     }
   }
 }

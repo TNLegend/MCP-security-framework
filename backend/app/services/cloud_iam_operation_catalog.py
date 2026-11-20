@@ -133,3 +133,60 @@ def candidate_preview(report, catalog=None):
         "gaps": list(report.get("gaps", [])),
         "note": "Candidates are context-dependent; not effective IAM grants or approved MCP needs.",
     }
+
+
+def dynamic_sdk_candidate_preview(report, catalog=None):
+    """Map source-derived SDK candidate operations to possible IAM actions.
+
+    Strictly read-only and non-authoritative: neither dynamic tools/list nor
+    the deployed AWS SDK, resource/role binding, or signed contract is proven.
+    """
+    if catalog is None:
+        catalog = load_prototype_catalog()
+    if report.get("schema_version") != "dynamic-sdk-tools-preview-v1":
+        raise CatalogError("DYNAMIC_REPORT_VERSION_UNSUPPORTED")
+
+    def possibilities(service, method):
+        service_item = catalog.get("services", {}).get(service, {})
+        operation = service_item.get("operations", {}).get(method, {})
+        return {
+            "service": service,
+            "sdk_method": method,
+            "action_candidates": [
+                x["action"] for x in operation.get("authorized_action_candidates", [])
+                if isinstance(x, dict) and isinstance(x.get("action"), str)
+            ],
+            "catalog_sha256": service_item.get("source_sha256"),
+            "catalog_url": service_item.get("source_url"),
+        }
+
+    tools = []
+    for item in report.get("tools", []):
+        service = item["service"]
+        main = item.get("main_operation")
+        calls = []
+        if item.get("main_operation_proven") and main:
+            calls.append({"role": "PRIMARY", **possibilities(service, main)})
+        for aux in item.get("auxiliary_operations", []):
+            calls.append({
+                "role": "VALIDATOR_OR_AUXILIARY",
+                "source_file": aux.get("file"),
+                "source_line": aux.get("line"),
+                "callback": aux.get("callback"),
+                **possibilities(service, aux["operation"]),
+            })
+        item_out = dict(item)
+        item_out["iam_calls"] = calls
+        item_out["binding_status"] = "REQUIRES_VERIFIED_SDK_CONFIG_TOOLS_LIST_AND_SIGNED_CONTRACT"
+        tools.append(item_out)
+
+    return {
+        "version": "dynamic-sdk-iam-candidate-preview-v1",
+        "exposure_confirmed": False,
+        "mapping_approved": False,
+        "audit_eligible": False,
+        "dynamic_tools": tools,
+        "source_files": report.get("source_files", []),
+        "gaps": report.get("gaps", []),
+        "warning": "SDK-model and source-derived candidates, NOT deployed tool inventory or approved IAM permissions.",
+    }

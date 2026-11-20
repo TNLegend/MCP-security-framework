@@ -31,8 +31,10 @@ def load_public_json(url):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--method", action="append", required=True,
+    parser.add_argument("--method", action="append", default=[],
                         help="Boto3 service:method, e.g. s3:get_object")
+    parser.add_argument("--service", action="append", default=[],
+                        help="Include all methods in a trusted local botocore service model")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
     requested = {}
@@ -41,6 +43,21 @@ def main():
         if not sep or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", service) or not method.isidentifier():
             parser.error("Invalid service:method")
         requested.setdefault(service, set()).add(method)
+    if args.service:
+        import botocore.session
+        from botocore import xform_name
+        session = botocore.session.get_session()
+        for service in args.service:
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", service):
+                parser.error("Invalid service")
+            model = session.get_service_model(service)
+            if len(model.operation_names) > 400:
+                parser.error("Service method count exceeds bound")
+            requested.setdefault(service, set()).update(
+                xform_name(method) for method in model.operation_names
+            )
+    if not requested:
+        parser.error("At least one --service or --method is required")
     mapping, mapping_digest = load_public_json(BASE + "mapping.json")
     directory = mapping["SDK"]["Python"]["Boto3"]
     snapshot = {

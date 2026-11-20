@@ -1983,6 +1983,33 @@ remain outside this research prototype. The independent QA report is
 docs/phase7_deploy_jalon_a_analyzer_reliability_20261120.md in
 mcp-security-qualification. Jalon A is not closed, and Jalon B remains blocked.
 
+### SDK-derived dynamic tools — source-only research prototype (2026-11-20)
+
+For MCP servers that register tools by enumerating boto3 client operations,
+the experimental CLI inspects bounded local Python source and a trusted
+local botocore service model without executing or importing the MCP:
+
+    backend/.venv/Scripts/python.exe scripts/probe_cloud_iam_static.py --root <SOURCE_ROOT> --source <ENTRY_PY> --dynamic-sdk
+
+It detects a restricted source pattern (a registration helper invoking an
+SDK-method generator with MCP registration and dispatch), extracts known
+ignored operations, literal name overrides, limited creation flags, and
+SDK client calls in validators or directly attributable tool overrides.
+Candidate tools, primary/auxiliary operations, source hashes, SDK-model version
+and AWS Service Authorization Reference provenance are returned in a JSON
+read-only preview. The offline catalogue now contains selected methods for
+S3, DynamoDB, CloudWatch, AWS Location and Pricing, plus locally enumerated
+SNS and SQS operations.
+
+This is not verification of the deployed SDK, invocation flags, actually
+exposed tools/list inventory, workload identity, resource bindings or signed
+Runtime effects. Unknown runtime changes to tool configuration cause
+abstention. Candidate methods and IAM actions MUST NOT become approved
+mappings or governance findings without separate proof and administrator
+approval. Production Cloud Security IAM APIs are unchanged. See the
+independent QA repository for synthetic tests and real-source replays.
+The acceptance gate to Jalon B is not satisfied by these tests alone.
+
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework

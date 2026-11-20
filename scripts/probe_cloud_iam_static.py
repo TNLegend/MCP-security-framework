@@ -20,7 +20,10 @@ from app.services.cloud_iam_static_discovery import (  # noqa: E402
     DiscoveryError, analyze_python_project,
 )
 from app.services.cloud_iam_operation_catalog import (  # noqa: E402
-    CatalogError, candidate_preview,
+    CatalogError, candidate_preview, dynamic_sdk_candidate_preview,
+)
+from app.services.cloud_iam_dynamic_discovery import (  # noqa: E402
+    DynamicDiscoveryError, discover_dynamic_sdk_tools,
 )
 
 
@@ -32,13 +35,26 @@ def main() -> int:
                         help="Python MCP entry file relative to --root")
     parser.add_argument("--raw", action="store_true",
                         help="Show source observations only, without offline IAM suggestions")
+    parser.add_argument("--dynamic-sdk", action="store_true",
+                        help="Also inspect SDK-generated tool candidates using locally installed botocore")
     options = parser.parse_args()
     root = options.root.resolve()
     source = (root / options.source).resolve()
     try:
         report = analyze_python_project(source, root)
         result = report if options.raw else candidate_preview(report)
-    except (DiscoveryError, CatalogError, OSError, SyntaxError, UnicodeError) as exc:
+        if options.dynamic_sdk:
+            dynamic = discover_dynamic_sdk_tools(root, source)
+            if options.raw:
+                result["dynamic_sdk"] = dynamic
+            else:
+                result["dynamic_sdk"] = dynamic_sdk_candidate_preview(dynamic)
+            # A static report cannot establish that SDK candidates are
+            # exposed, version-matched or reviewed.
+            result["audit_eligible"] = False
+            result["mapping_approved"] = False
+    except (DiscoveryError, DynamicDiscoveryError, CatalogError,
+            OSError, SyntaxError, UnicodeError) as exc:
         print(json.dumps({"error": type(exc).__name__, "reason": str(exc)}),
               file=sys.stderr)
         return 2
