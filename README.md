@@ -1965,6 +1965,24 @@ verified effective AWS authorization. Dynamic MCP registration through imported 
 yet. Independent qualification and limitations are documented in the QA
 repository under the Deploy Jalon A report (2026-11-20).
 
+### Reliability hardening after independent review (2026-11-20)
+
+The static research analyzer now keeps public MCP tool identities distinct
+from Python handler names; reports ambiguous and imported tool registrations;
+follows bounded local helper returns, global boto3 clients and a subset of
+control-flow alternatives; and detects nested SDK calls. It exposes
+per-tool uncertainty, dynamic request parameters and analysis budget limits.
+The IAM preview preserves this provenance, and recognizes the contextual S3
+GetObjectVersion case when VersionId is an explicit known value.
+
+These are **partial static observations**, not completeness or least-privilege
+proofs. In particular, introspection-generated tools (SNS/SQS), deployment
+identity verification, the approved runtime-contract reconciliation, the
+reverse IAM excess-privilege comparison and policy-governance integration
+remain outside this research prototype. The independent QA report is
+docs/phase7_deploy_jalon_a_analyzer_reliability_20261120.md in
+mcp-security-qualification. Jalon A is not closed, and Jalon B remains blocked.
+
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework

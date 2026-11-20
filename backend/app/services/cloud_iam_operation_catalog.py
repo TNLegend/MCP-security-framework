@@ -55,6 +55,16 @@ def candidate_preview(report, catalog=None):
             reason = "AWS_DESTINATION_NOT_VERIFIED"
         elif not actions:
             reason = "AWS_CATALOG_OPERATION_NOT_MAPPED"
+        elif (not observation.get("request_parameters_complete", True)
+              and len(actions) > 1):
+            reason = "AWS_REQUEST_PARAMETERS_UNRESOLVED"
+            status = "ALTERNATIVES_REQUIRE_REVIEW"
+        elif (service == "s3" and method == "get_object"
+              and str(observation.get("resource_parameters", {}).get("VersionId", "")).startswith(
+                  ("UNKNOWN", "$"+"{", "<")
+              )):
+            reason = "AWS_S3_VERSION_ID_UNRESOLVED"
+            status = "ALTERNATIVES_REQUIRE_REVIEW"
         else:
             api_operation = operation_entry.get("api_operation", "")
             same_service = [x for x in actions if x.get("action", "").startswith(service + ":")]
@@ -62,10 +72,21 @@ def candidate_preview(report, catalog=None):
                 x for x in same_service
                 if x["action"].split(":", 1)[1] == api_operation
             ]
-            if len(exact) == 1:
+            if (service == "s3" and method == "get_object"
+                    and observation.get("resource_parameters", {}).get("VersionId")
+                    and not str(observation["resource_parameters"]["VersionId"]).startswith(
+                        ("UNKNOWN", "$"+"{", "<")
+                    )):
+                versioned = [
+                    x for x in actions if x.get("action") == "s3:GetObjectVersion"
+                ]
+                if len(versioned) == 1:
+                    candidate = versioned[0]
+                    reason = "AWS_S3_EXPLICIT_VERSION_ID"
+            if candidate is None and len(exact) == 1:
                 candidate = exact[0]
                 reason = "AWS_OPERATION_NAME_CORRESPONDENCE"
-            elif api_operation.startswith("List"):
+            elif candidate is None and api_operation.startswith("List"):
                 listings = [
                     x for x in same_service
                     if x.get("properties", {}).get("IsList") is True
@@ -84,6 +105,7 @@ def candidate_preview(report, catalog=None):
             "line": observation.get("line"), "call_chain": observation.get("call_chain"),
             "branch": observation.get("branch"), "service": service, "operation": method,
             "destination": destination, "resource_parameters": observation.get("resource_parameters"),
+            "request_parameters_complete": observation.get("request_parameters_complete", True),
             "status": status, "reason": reason,
             "suggested_action": candidate.get("action") if candidate else None,
             "suggested_resource_types": candidate.get("resource_types", []) if candidate else [],
@@ -100,6 +122,11 @@ def candidate_preview(report, catalog=None):
         "version": "iam-candidate-preview-prototype-v1",
         "source_sha256": report.get("source_sha256"),
         "source_files": report.get("source_files", []),
+        "tools": list(report.get("tools", [])),
+        "tool_coverage": dict(report.get("tool_coverage", {})),
+        "tool_registration_status": report.get("tool_registration_status", "UNKNOWN"),
+        "assurance": report.get("assurance", "UNKNOWN"),
+        "analysis_limits": report.get("analysis_limits", {}),
         "mapping_approved": False,
         "audit_eligible": False,
         "operations": results,

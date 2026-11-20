@@ -13,9 +13,10 @@ MAX_BYTES = 1_000_000
 MAX_FUNCTIONS = 2000
 MAX_DEPTH = 14
 MAX_OPERATIONS = 250
+MAX_WORK_UNITS = 100_000
 RESOURCE_KEYS = frozenset({
     "Bucket", "Key", "Prefix", "TableName", "IndexName",
-    "QueueUrl", "FunctionName", "LogGroupName", "logGroupName",
+    "QueueUrl", "VersionId", "FunctionName", "LogGroupName", "logGroupName",
     "logGroupNames", "ResourceArn", "TopicArn", "StreamName",
 })
 
@@ -34,6 +35,29 @@ class AWSObject:
                 (other.service, other.destination, other.kind, other.value))
 
 
+class AWSChoices:
+    """Bounded set of alternative SDK objects at a control-flow join."""
+
+    def __init__(self, options):
+        unique = []
+        for option in options:
+            if isinstance(option, AWSChoices):
+                for child in option.options:
+                    if child not in unique:
+                        unique.append(child)
+            elif option not in unique:
+                unique.append(option)
+        self.options = tuple(unique)
+
+    def __eq__(self, other):
+        return isinstance(other, AWSChoices) and self.options == other.options
+
+
+class FlowExit:
+    def __init__(self, kind, value=None):
+        self.kind, self.value = kind, value
+
+
 class Inspector:
     def __init__(self, source, source_name, external_modules=None):
         if len(source.encode("utf-8")) > MAX_BYTES:
@@ -47,10 +71,16 @@ class Inspector:
         self.source_digests = {source_name: self.digest}
         self.functions = {}
         self.tools = {}
+        self.colliding_tool_names = set()
+        self.server_vars = {"mcp"}  # Legacy code-only fixtures with an implicit MCP binding.
         self.imports = {}
         self.globals = {}
         self.results = []
         self.gaps = []
+        self.truncated_gaps = 0
+        self.truncated_operations = 0
+        self.work_units = 0
+        self.budget_exceeded = False
         self.tool = ""
         self.wrapper_clients = {}
         self.wrapper_ambiguous = set()
@@ -66,21 +96,64 @@ class Inspector:
         for node in self.tree.body:
             if isinstance(node, ast.Import):
                 for x in node.names:
-                    self.imports[x.asname or x.name] = x.name
+                    local = x.asname or x.name
+                    self.imports[local] = x.name
+                    if local == "mcp":
+                        self.server_vars.discard("mcp")
+                        prior = self.tool
+                        self.tool = "__server__"
+                        self._gap(node, ("module",), "registration", "IMPORTED_MCP_INSTANCE_UNVERIFIED")
+                        self.tool = prior
             if isinstance(node, ast.ImportFrom):
                 for x in node.names:
-                    self.imports[x.asname or x.name] = (node.module or "") + "." + x.name
+                    local = x.asname or x.name
+                    self.imports[local] = (node.module or "") + "." + x.name
+                    if local == "mcp":
+                        self.server_vars.discard("mcp")
+                        prior = self.tool
+                        self.tool = "__server__"
+                        self._gap(node, ("module",), "registration", "IMPORTED_MCP_INSTANCE_UNVERIFIED")
+                        self.tool = prior
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if isinstance(value, ast.Call):
+                    fn = value.func
+                    constructor = (
+                        self.imports.get(fn.id, fn.id) if isinstance(fn, ast.Name)
+                        else fn.attr if isinstance(fn, ast.Attribute) else None
+                    )
+                    if constructor in {
+                        "FastMCP", "MCPServer", "mcp.server.fastmcp.FastMCP",
+                        "mcp.server.mcpserver.MCPServer",
+                    }:
+                        self.server_vars.update(x.id for x in targets if isinstance(x, ast.Name))
+                    else:
+                        # A real assignment overrides the legacy implicit
+                        # assumption that the identifier "mcp" is an MCP host.
+                        for target in targets:
+                            if isinstance(target, ast.Name) and target.id == "mcp":
+                                self.server_vars.discard("mcp")
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.functions[node.name] = node
-                if self._is_tool(node):
-                    self.tools[node.name] = node.name
+                public = self._is_tool(node)
+                if public is not None:
+                    self._register_known_tool(public, node.name, node)
             if isinstance(node, ast.ClassDef):
                 for item in node.body:
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         qname = node.name + "." + item.name
                         self.functions[qname] = item
-                        if self._is_tool(item):
-                            self.tools[item.name] = qname
+                        public = self._is_tool(item)
+                        if public is not None:
+                            self._register_known_tool(public, qname, item)
+        # Index nested local functions as lexical helpers. They are not tools
+        # unless independently registered; this only resolves reachable calls.
+        top_level = list(self.functions.items())
+        for name, function in top_level:
+            for descendant in ast.walk(function):
+                if isinstance(descendant, (ast.FunctionDef, ast.AsyncFunctionDef)) and descendant is not function:
+                    self.functions.setdefault(name + "." + descendant.name, descendant)
         if len(self.functions) > MAX_FUNCTIONS:
             raise DiscoveryError("TOO_MANY_FUNCTIONS")
         self._index_wrapper_constructors()
@@ -89,7 +162,21 @@ class Inspector:
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
                     if isinstance(target, ast.Name):
-                        self.globals[target.id] = self.symbol(node.value, self.globals)
+                        expr = node.value
+                        # Resolve only known boto3 constructor expressions at
+                        # module level. Never import or call arbitrary code.
+                        if isinstance(expr, ast.Call) and (
+                            self._sdk_constructor(expr.func) in {"client", "resource", "session"}
+                            or isinstance(expr.func, ast.Attribute)
+                            and expr.func.attr in {"client", "resource"}
+                            and isinstance(expr.func.value, ast.Call)
+                            and self._sdk_constructor(expr.func.value.func) == "session"
+                        ):
+                            self.globals[target.id] = self.expression(
+                                expr, self.globals, "", ("__module__",), "module", 0, frozenset()
+                            )
+                        else:
+                            self.globals[target.id] = self.symbol(expr, self.globals)
         # Some frameworks register bound methods in register() rather than decorating.
         for qname, func in self.functions.items():
             if qname.split(".")[-1] != "register":
@@ -108,8 +195,25 @@ class Inspector:
                     continue
                 handler = self.helper_name(node.args[0], owner)
                 if handler:
-                    self.tools.setdefault(handler.rsplit(".", 1)[-1], handler)
+                    public = self._registration_name(wrapper) or handler.rsplit(".", 1)[-1]
+                    self._register_known_tool(public, handler, node)
         self._flag_unresolved_tool_registration()
+
+    def _register_known_tool(self, public, handler, node):
+        if public in self.colliding_tool_names:
+            return
+        old = self.tools.get(public)
+        if old is not None and old != handler:
+            self.tools.pop(public, None)
+            self.colliding_tool_names.add(public)
+            previous = self.tool
+            self.tool = public
+            try:
+                self._gap(node, (handler,), "registration", "DUPLICATE_PUBLIC_TOOL_NAME")
+            finally:
+                self.tool = previous
+            return
+        self.tools[public] = handler
 
     def _flag_unresolved_tool_registration(self):
         """Flag dynamic registration without asserting SDK permissions.
@@ -154,7 +258,9 @@ class Inspector:
                           "IMPORTED_MCP_REGISTRATION_UNRESOLVED")
             if (isinstance(call.func, ast.Call)
                     and isinstance(call.func.func, ast.Attribute)
-                    and call.func.func.attr == "tool"):
+                    and call.func.func.attr == "tool"
+                    and isinstance(call.func.func.value, ast.Name)
+                    and call.func.func.value.id in self.server_vars):
                 handler = self.helper_name(call.args[0], "") if call.args else None
                 if (handler is None and call.args
                         and isinstance(call.args[0], ast.Attribute)
@@ -254,13 +360,27 @@ class Inspector:
                 raise DiscoveryError("TOO_MANY_IMPORTED_FUNCTIONS")
 
     @staticmethod
-    def _is_tool(func):
+    def _registration_name(node):
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if (keyword.arg == "name" and isinstance(keyword.value, ast.Constant)
+                        and isinstance(keyword.value.value, str)):
+                    return keyword.value.value
+        return None
+
+    def _is_tool(self, func):
         for decorator in func.decorator_list:
-            if isinstance(decorator, ast.Call):
-                decorator = decorator.func
-            if isinstance(decorator, ast.Attribute) and decorator.attr == "tool":
-                return True
-        return False
+            call = decorator if isinstance(decorator, ast.Call) else None
+            method = call.func if call else decorator
+            if (isinstance(method, ast.Attribute) and method.attr == "tool"
+                    and isinstance(method.value, ast.Name)
+                    and method.value.id in self.server_vars):
+                name_kw = next((k for k in call.keywords if k.arg == "name"), None) if call else None
+                if name_kw is not None and self._literal(name_kw.value) is None:
+                    self._gap(decorator, (func.name,), "registration", "DYNAMIC_PUBLIC_TOOL_NAME")
+                    return None
+                return self._registration_name(call) or func.name
+        return None
 
     def helper_name(self, node, owner):
         if isinstance(node, ast.Name):
@@ -310,22 +430,40 @@ class Inspector:
                 return "$" + "{ENV:" + key + "}" if key else "UNKNOWN"
         return "UNKNOWN"
 
+    def _budget(self, node, chain, branch):
+        if self.budget_exceeded:
+            return False
+        self.work_units += 1
+        if self.work_units > MAX_WORK_UNITS:
+            self.budget_exceeded = True
+            self._gap(node, chain, branch, "ANALYSIS_WORK_BUDGET_EXCEEDED")
+            return False
+        return True
+
     def _gap(self, node, chain, branch, reason):
         item = {"tool": self.tool, "file": self.name,
                 "line": getattr(node, "lineno", 0), "call_chain": list(chain),
                 "branch": branch, "reason": reason}
-        if item not in self.gaps and len(self.gaps) < MAX_OPERATIONS:
-            self.gaps.append(item)
+        if item not in self.gaps:
+            if len(self.gaps) < MAX_OPERATIONS:
+                self.gaps.append(item)
+            else:
+                self.truncated_gaps += 1
 
     def _record(self, node, chain, branch, target, operation, params):
         if len(self.results) >= MAX_OPERATIONS:
-            self._gap(node, chain, branch, "OPERATION_LIMIT")
+            self.truncated_operations += 1
+            if self.truncated_operations == 1:
+                self._gap(node, chain, branch, "OPERATION_LIMIT")
             return
+        if any(k.arg is None for k in node.keywords):
+            self._gap(node, chain, branch, "AWS_REQUEST_PARAMETERS_UNRESOLVED")
         self.results.append({
             "tool": self.tool, "file": self.name, "line": node.lineno,
             "call_chain": list(chain), "branch": branch,
             "service": target.service, "operation": operation,
             "destination": target.destination, "resource_parameters": params,
+            "request_parameters_complete": all(k.arg is not None for k in node.keywords),
             "evidence": "STATIC_AST_CANDIDATE",
         })
 
@@ -359,6 +497,9 @@ class Inspector:
 
     def _client_destination(self, node, env, chain, branch):
         endpoint = next((k.value for k in node.keywords if k.arg == "endpoint_url"), None)
+        if any(k.arg is None for k in node.keywords):
+            self._gap(node, chain, branch, "AWS_CLIENT_CONFIGURATION_UNRESOLVED")
+            return "UNKNOWN"
         if endpoint is None:
             return "AWS_DEFAULT"
         if isinstance(endpoint, ast.Constant) and endpoint.value is None:
@@ -373,7 +514,7 @@ class Inspector:
         return "UNKNOWN"
 
     def expression(self, node, env, owner, chain, branch, depth, active):
-        if node is None:
+        if node is None or not self._budget(node, chain, branch):
             return None
         if isinstance(node, ast.Name):
             return env.get(node.id, self.globals.get(node.id, self.symbol(node, env)))
@@ -432,6 +573,12 @@ class Inspector:
                 destination = self._client_destination(node, env, chain, branch)
                 return AWSObject(service, destination, constructor)
             helper = self.helper_name(node.func, owner)
+            if helper is None and isinstance(node.func, ast.Name):
+                for enclosing in reversed(chain):
+                    nested = enclosing + "." + node.func.id
+                    if nested in self.functions:
+                        helper = nested
+                        break
             if helper:
                 if depth >= MAX_DEPTH or helper in active:
                     self._gap(node, chain, branch, "RECURSION_OR_DEPTH_LIMIT")
@@ -458,14 +605,16 @@ class Inspector:
                     old_imports, old_globals, old_name = self.imports, self.globals, self.name
                     self.imports, self.globals, self.name = external
                     try:
-                        return self.statements(fn.body, scope, next_owner,
-                                               chain + (helper,), branch, depth + 1,
-                                               active | {helper})
+                        outcome = self.statements(fn.body, scope, next_owner,
+                                                  chain + (helper,), branch, depth + 1,
+                                                  active | {helper})
+                        return outcome.value if isinstance(outcome, FlowExit) and outcome.kind == "return" else None
                     finally:
                         self.imports, self.globals, self.name = old_imports, old_globals, old_name
-                return self.statements(fn.body, scope, next_owner,
-                                       chain + (helper,), branch, depth + 1,
-                                       active | {helper})
+                outcome = self.statements(fn.body, scope, next_owner,
+                                          chain + (helper,), branch, depth + 1,
+                                          active | {helper})
+                return outcome.value if isinstance(outcome, FlowExit) and outcome.kind == "return" else None
             if isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) >= 2:
                 obj = self.expression(node.args[0], env, owner, chain, branch, depth, active)
                 if isinstance(obj, AWSObject) and obj.kind in {"client", "table"}:
@@ -474,6 +623,21 @@ class Inspector:
             if isinstance(node.func, ast.Attribute):
                 obj = self.expression(node.func.value, env, owner, chain, branch, depth, active)
                 method = node.func.attr
+                if isinstance(obj, AWSChoices):
+                    if all(x.kind in {"client", "table"} for x in obj.options):
+                        for arg in node.args:
+                            self.expression(arg, env, owner, chain, branch, depth, active)
+                        for kw in node.keywords:
+                            self.expression(kw.value, env, owner, chain, branch, depth, active)
+                        for idx, alternative in enumerate(obj.options):
+                            params = self._parameters(node, env)
+                            if alternative.kind == "table":
+                                params = {"TableName": str(alternative.value), **params}
+                            self._record(node, chain, branch + f"|alternative:{idx + 1}",
+                                         alternative, method, params)
+                    else:
+                        self._gap(node, chain, branch, "AWS_CLIENT_ALTERNATIVES_UNRESOLVED")
+                    return None
                 if isinstance(obj, AWSObject):
                     if obj.kind == "session" and method == "client":
                         service = self.symbol(node.args[0], env) if node.args else "UNKNOWN"
@@ -507,6 +671,10 @@ class Inspector:
                             params = self._parameters(node, env)
                             if obj.kind == "table":
                                 params = {"TableName": str(obj.value), **params}
+                            for arg in node.args:
+                                self.expression(arg, env, owner, chain, branch, depth, active)
+                            for kw in node.keywords:
+                                self.expression(kw.value, env, owner, chain, branch, depth, active)
                             self._record(node, chain, branch, obj, method, params)
                         return None
             callable_obj = self.expression(node.func, env, owner, chain, branch, depth, active)
@@ -518,6 +686,10 @@ class Inspector:
                     params = self._parameters(node, env)
                     if table is not None:
                         params = {"TableName": str(table), **params}
+                    for arg in node.args:
+                        self.expression(arg, env, owner, chain, branch, depth, active)
+                    for kw in node.keywords:
+                        self.expression(kw.value, env, owner, chain, branch, depth, active)
                     self._record(node, chain, branch, callable_obj, method, params)
                 return None
             if (isinstance(node.func, ast.Name) and node.func.id in self.imports
@@ -540,9 +712,68 @@ class Inspector:
             return self.symbol(node, env)
         return self.symbol(node, env)
 
+    def _join_environments(self, env, paths, node, chain, branch):
+        """Bounded join, preserving AWS alternatives instead of dropping them.
+
+        For unknown/mixed values we abstain at the join, never silently
+        assigning a single privileged client.
+        """
+        for key in sorted(set().union(*(set(x) for x in paths))):
+            values = [x.get(key, "UNKNOWN") for x in paths]
+            if all(v == values[0] for v in values):
+                env[key] = values[0]
+                continue
+            flattened = []
+            for val in values:
+                flattened.extend(val.options if isinstance(val, AWSChoices) else [val])
+            unique = []
+            for val in flattened:
+                if val not in unique:
+                    unique.append(val)
+            if len(unique) <= 8 and all(
+                isinstance(v, AWSObject) and v.kind in {"client", "table", "session"}
+                for v in unique
+            ):
+                env[key] = AWSChoices(unique)
+            else:
+                if any(isinstance(v, (AWSObject, AWSChoices)) for v in values):
+                    self._gap(node, chain, branch, "AWS_CLIENT_ALTERNATIVES_UNRESOLVED")
+                env[key] = "UNKNOWN"
+
+    def _combine_exits(self, exits, node, chain, branch):
+        """Join return values for helpers with several reachable exits.
+
+        Unresolved return types must not become a fabricated SDK client.
+        """
+        if not exits:
+            return None
+        # A path which raises does not contribute a return value. In
+        # particular validation functions may raise on invalid arguments
+        # and return a symbolic AWS resource on the successful path.
+        returning = [x for x in exits if x.kind == "return"]
+        if returning:
+            values = [x.value for x in returning]
+            if all(v == values[0] for v in values):
+                return FlowExit("return", values[0])
+            flattened = []
+            for value in values:
+                flattened.extend(value.options if isinstance(value, AWSChoices) else [value])
+            if all(isinstance(v, AWSObject) for v in flattened) and len(flattened) <= 8:
+                return FlowExit("return", AWSChoices(flattened))
+            if any(isinstance(v, (AWSObject, AWSChoices)) for v in values):
+                self._gap(node, chain, branch, "DIVERGENT_CLIENT_RETURNS_UNRESOLVED")
+            return FlowExit("return")
+        if all(x.kind == "raise" for x in exits):
+            return FlowExit("raise")
+        if any(isinstance(x.value, (AWSObject, AWSChoices)) for x in exits):
+            self._gap(node, chain, branch, "MIXED_CLIENT_RETURN_AND_EXCEPTION")
+        return FlowExit("return")
+
     def statements(self, body, env, owner, chain, branch, depth, active):
-        returned = None
+        exits = []
         for stmt in body:
+            if not self._budget(stmt, chain, branch):
+                return None
             if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
                 value = self.expression(stmt.value, env, owner, chain, branch, depth, active)
                 targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
@@ -557,16 +788,40 @@ class Inspector:
                 node = getattr(stmt, "value", getattr(stmt, "exc", None))
                 result = self.expression(node, env, owner, chain, branch, depth, active)
                 if isinstance(stmt, ast.Return):
-                    returned = result
+                    return self._combine_exits(exits + [FlowExit("return", result)],
+                                               stmt, chain, branch)
+                if isinstance(stmt, ast.Raise):
+                    return self._combine_exits(exits + [FlowExit("raise")],
+                                               stmt, chain, branch)
             elif isinstance(stmt, ast.If):
                 self.expression(stmt.test, env, owner, chain, branch, depth, active)
+                # A literal boolean is an established branch, not a possible
+                # alternative. For dynamic tests both paths remain possible.
+                if isinstance(stmt.test, ast.Constant) and isinstance(stmt.test.value, bool):
+                    chosen = stmt.body if stmt.test.value else stmt.orelse
+                    outcome = self.statements(chosen, env, owner, chain,
+                                              branch + f"|if@{stmt.lineno}:literal",
+                                              depth, active)
+                    if isinstance(outcome, FlowExit):
+                        return self._combine_exits(exits + [outcome], stmt, chain, branch)
+                    continue
                 yes, no = dict(env), dict(env)
-                self.statements(stmt.body, yes, owner, chain,
-                                branch + f"|if@{stmt.lineno}:true", depth, active)
-                self.statements(stmt.orelse, no, owner, chain,
-                                branch + f"|if@{stmt.lineno}:false", depth, active)
-                for key in set(yes) | set(no):
-                    env[key] = yes.get(key) if yes.get(key) == no.get(key) else "UNKNOWN"
+                out_yes = self.statements(stmt.body, yes, owner, chain,
+                                          branch + f"|if@{stmt.lineno}:true", depth, active)
+                out_no = self.statements(stmt.orelse, no, owner, chain,
+                                         branch + f"|if@{stmt.lineno}:false", depth, active)
+                ongoing = [
+                    state for state, outcome in ((yes, out_yes), (no, out_no))
+                    if not isinstance(outcome, FlowExit)
+                ]
+                if ongoing:
+                    self._join_environments(env, ongoing, stmt, chain, branch)
+                    exits.extend(
+                        out for out in (out_yes, out_no) if isinstance(out, FlowExit)
+                    )
+                else:
+                    return self._combine_exits(exits + [out_yes, out_no],
+                                               stmt, chain, branch)
             elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
                 self.expression(stmt.iter if hasattr(stmt, "iter") else stmt.test,
                                 env, owner, chain, branch, depth, active)
@@ -578,26 +833,50 @@ class Inspector:
                     value = self.expression(item.context_expr, env, owner, chain, branch, depth, active)
                     if isinstance(item.optional_vars, ast.Name):
                         env[item.optional_vars.id] = value
-                self.statements(stmt.body, env, owner, chain, branch, depth, active)
+                outcome = self.statements(stmt.body, env, owner, chain, branch, depth, active)
+                if isinstance(outcome, FlowExit):
+                    return self._combine_exits(exits + [outcome], stmt, chain, branch)
             elif isinstance(stmt, (ast.Try, ast.TryStar)):
                 # Python's try block does NOT introduce a variable scope.
                 # Preserve assignments on the normal path for subsequent
                 # statements; exception handlers are inspected separately.
                 success = dict(env)
-                self.statements(stmt.body, success, owner, chain,
-                                branch + f"|try@{stmt.lineno}", depth, active)
-                self.statements(stmt.orelse, success, owner, chain, branch, depth, active)
+                normal = self.statements(stmt.body, success, owner, chain,
+                                         branch + f"|try@{stmt.lineno}", depth, active)
+                if not isinstance(normal, FlowExit):
+                    normal = self.statements(stmt.orelse, success, owner, chain, branch, depth, active)
+                outcomes = [(success, normal)]
                 for handler in stmt.handlers:
-                    self.statements(handler.body, dict(env), owner, chain,
-                                    branch + f"|except@{handler.lineno}", depth, active)
-                self.statements(stmt.finalbody, success, owner, chain, branch, depth, active)
-                env.update(success)
+                    exception_path = dict(env)
+                    out = self.statements(handler.body, exception_path, owner, chain,
+                                          branch + f"|except@{handler.lineno}", depth, active)
+                    outcomes.append((exception_path, out))
+                paths = [state for state, out in outcomes if not isinstance(out, FlowExit)]
+                if paths:
+                    merged = dict(env)
+                    self._join_environments(merged, paths, stmt, chain, branch + "|try-join")
+                    final = self.statements(stmt.finalbody, merged, owner, chain, branch, depth, active)
+                    env.update(merged)
+                    exits.extend(out for _, out in outcomes if isinstance(out, FlowExit))
+                    if isinstance(final, FlowExit):
+                        return self._combine_exits(exits + [final], stmt, chain, branch)
+                else:
+                    return self._combine_exits(
+                        exits + [out for _, out in outcomes if isinstance(out, FlowExit)],
+                        stmt, chain, branch
+                    )
             elif isinstance(stmt, ast.Match):
                 self.expression(stmt.subject, env, owner, chain, branch, depth, active)
                 for case in stmt.cases:
                     self.statements(case.body, dict(env), owner, chain,
                                     branch + f"|case@{stmt.lineno}", depth, active)
-        return returned
+        if exits:
+            # One or more earlier branches returned, but this path can fall
+            # through. Do not attribute a client as an unconditional return.
+            if any(isinstance(x.value, (AWSObject, AWSChoices)) for x in exits):
+                self._gap(body[-1], chain, branch, "MAY_FALL_THROUGH_WITHOUT_CLIENT_RETURN")
+            return FlowExit("return")
+        return None
 
     def analyze(self):
         for tool, name in sorted(self.tools.items()):
@@ -619,18 +898,41 @@ class Inspector:
                 for name, digest in sorted(self.source_digests.items())
             ],
             "tools": sorted(self.tools),
+            "tool_coverage": {
+                name: {
+                    "status": (
+                        "PARTIAL_UNRESOLVED"
+                        if any(x["tool"] == name for x in self.gaps)
+                        else "OBSERVATIONS_PARTIAL_COVERAGE"
+                        if any(x["tool"] == name for x in self.results)
+                        else "NO_AWS_OPERATION_PROVEN"
+                    ),
+                    "operation_count": sum(x["tool"] == name for x in self.results),
+                    "gap_count": sum(x["tool"] == name for x in self.gaps),
+                }
+                for name in sorted(self.tools)
+            },
             "tool_registration_status": (
                 "INCOMPLETE_DYNAMIC_REGISTRATION"
                 if any(x["reason"] in {
                     "IMPORTED_MCP_REGISTRATION_UNRESOLVED",
                     "DYNAMIC_MCP_TOOL_FACTORY_UNRESOLVED",
                     "NO_STATIC_MCP_HANDLERS_DISCOVERED",
+                    "DYNAMIC_PUBLIC_TOOL_NAME",
+                    "DUPLICATE_PUBLIC_TOOL_NAME",
+                    "IMPORTED_MCP_INSTANCE_UNVERIFIED",
                 } for x in self.gaps)
                 else "STATIC_PARTIAL_COVERAGE"
             ),
             "operations": sorted(self.results, key=lambda x: (x["tool"], x["line"], x["operation"])),
             "gaps": sorted(self.gaps, key=lambda x: (x["tool"], x["line"], x["reason"])),
             "assurance": "STATIC_CANDIDATE_ONLY",
+            "analysis_limits": {
+                "work_units": self.work_units,
+                "work_budget_exceeded": self.budget_exceeded,
+                "truncated_gaps": self.truncated_gaps,
+                "truncated_operations": self.truncated_operations,
+            },
             "warning": "Not a complete call graph, not an approved MCP contract or deployed workload proof.",
         }
 
