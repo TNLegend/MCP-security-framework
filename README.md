@@ -1980,8 +1980,15 @@ prove that a particular MCP process runs inside it. Scans stay PARTIAL.
 A new scan is required after changes to AWS IAM policies; any changed
 approved mapping, signed revision, account, endpoint or pinned workload role
 requires review. The implementation never grants AWS rights or alters OPA.
-The separate QA repository records mock-API tests and a blocked live AWS
-read-only verification: the audit profile cannot call ec2:DescribeInstances.
+The separate QA repository records HTTP/worker tests with AWS mocks and
+a successful REAL read-only IAM identity-policy comparison against the
+currently signed/approved MCP mapping. IMPORTANT: use the environment's
+configured STS-assumed audit role, not its base named profile, because
+their AWS permissions differ. The review is read-only and never claims
+effective IAM access or that a shared-role grant is unnecessary.
+The active backend on port 8000 still runs the original framework checkout;
+the new manual-IAM implementation remains on this feature branch until
+explicitly deployed or merged.
 
 ## Current Limitations
 
