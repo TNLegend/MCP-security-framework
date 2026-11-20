@@ -850,3 +850,17 @@ export async function fetchCloudScans(environmentId = null) {
 export async function fetchCloudScanDetail(scanId) {
   return request(`/control-plane/cloud-security/scans/${scanId}`);
 }
+
+// ZIP bytes are sent verbatim, not as JSON or multipart form data.
+export async function uploadTerraformZip(file) {
+  return request("/control-plane/cloud-security/iac/scans", {
+    method: "POST",
+    headers: { "Content-Type": "application/zip" },
+    body: file,
+    timeoutMs: 45000,
+  });
+}
+
+export async function fetchIaCScannerAvailability() {
+  return request("/control-plane/cloud-security/iac/scanners", { timeoutMs: 45000 });
+}

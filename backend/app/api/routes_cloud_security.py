@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.cloud_security import (
     CloudEnvironment, CloudEvidence, CloudFinding, CloudResource, CloudScan,
-    CloudScanEvent,
+    CloudScanEvent, new_id,
 )
 from app.schemas.cloud_security import (
     ConnectionTestPublic, EnvironmentCreate, EnvironmentPublic,
@@ -21,6 +21,10 @@ from app.schemas.cloud_security import (
 )
 from app.services.cloud_security import (
     CloudAuditError, _safe_error, check_connection, enqueue_scan,
+)
+from app.services.cloud_iac_security import (
+    IaCIntakeError, IAC_VERSION, MAX_ZIP_BYTES, discard_source,
+    enqueue_iac, scanner_availability, stage_archive,
 )
 from app.services.control_plane_audit import record_control_plane_audit
 from app.services.control_plane_auth import (
@@ -210,6 +214,69 @@ def start_scan(
                               message_code="WORKER_BUSY"))
         db.commit()
         raise HTTPException(status_code=503,detail="cloud_worker_busy")
+    db.refresh(scan)
+    return scan
+
+
+@router.get("/iac/scanners")
+def iac_scanner_status(
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+):
+    """Version-checked status; a missing engine is never silently passed."""
+    return scanner_availability()
+
+
+@router.post("/iac/scans", response_model=ScanPublic, status_code=202)
+async def upload_iac_scan(
+    request: Request,
+    actor: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    # Raw application/zip avoids multipart parsing and never accepts arbitrary
+    # user-selected local server paths.
+    if request.headers.get("content-type", "").split(";")[0].strip().lower() not in (
+        "application/zip", "application/x-zip-compressed",
+    ):
+        raise HTTPException(status_code=415, detail="IAC_ZIP_REQUIRED")
+    if request.headers.get("content-encoding", "identity").lower() != "identity":
+        raise HTTPException(status_code=415, detail="IAC_ENCODING_UNSUPPORTED")
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_ZIP_BYTES:
+            raise HTTPException(status_code=413, detail="IAC_ARCHIVE_SIZE_INVALID")
+    scan = CloudScan(
+        id=new_id(), environment_id=None, kind="IAC_CONFIG", status="QUEUED",
+        requested_by=actor.user.id, scanner_version=IAC_VERSION,
+    )
+    try:
+        fingerprint, count = stage_archive(bytes(body), scan.id)
+    except IaCIntakeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        body.clear()
+    try:
+        scan.source_fingerprint = fingerprint
+        scan.source_file_count = count
+        db.add(scan)
+        db.flush()
+        db.add(CloudScanEvent(scan_id=scan.id, event_type="STATE", message_code="QUEUED"))
+        _audit(db, request, actor, "IAC_SCAN_REQUESTED", "cloud_scan", scan.id, {
+            "kind": "IAC_CONFIG", "source_fingerprint": fingerprint, "file_count": count,
+        })
+        db.commit()
+    except Exception:
+        db.rollback()
+        discard_source(scan.id)
+        raise
+    if not enqueue_iac(scan.id):
+        discard_source(scan.id)
+        scan.status = "FAILED"
+        scan.error_code = "CLOUD_WORKER_BUSY"
+        scan.completed_at = datetime.utcnow()
+        db.add(CloudScanEvent(scan_id=scan.id, event_type="STATE", message_code="WORKER_BUSY"))
+        db.commit()
+        raise HTTPException(status_code=503, detail="cloud_worker_busy")
     db.refresh(scan)
     return scan
 

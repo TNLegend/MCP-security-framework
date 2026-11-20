@@ -1672,11 +1672,61 @@ The scanner is bounded to two concurrent in-process jobs, up to three
 regions, 250 resources and a 120-second approximate data-collection budget.
 This initial executor is intended for the locally managed single-backend
 installation; a distributed durable work queue, advanced IAM permissions
-comparison, full Prowler/Checkov/Trivy integration and deployment approval
-governance are **not yet implemented**. SHA-256 hashes cover normalized
+comparison, Prowler cloud auditing and deployment approval
+governance are **not yet implemented**. Terraform ZIP scanning is available
+separately with Checkov and Trivy as described below. SHA-256 hashes cover normalized
 safe observations; they are not AWS-signed remote attestations. The broader
 Cloud Security dashboard, filtering and detailed risk workflows are planned
 for the later GUI phase.
+
+## Deploy Security: Terraform configuration scans (step 3, 20 Nov 2026)
+
+The existing **Security center > Cloud security** page supports a second,
+account-independent workflow: **Scan infrastructure configuration**.
+
+- ADMIN uploads an application/zip archive of Terraform .tf or .tf.json files.
+  The browser never supplies an arbitrary server-side source path.
+- The backend validates the ZIP before extraction: 2 MiB compressed input,
+  60 files, 512 KiB per file and 8 MiB total expanded, bounded compression
+  ratio and path depth, duplicate Windows paths rejected, no symlinks or
+  extra file types. External/local Terraform module declarations and known
+  inline suppression directives are intentionally unsupported.
+- Checkov 3.4.6 is installed into a dedicated Python virtual environment
+  under .runtime/tools/checkov/venv; it is NOT installed into backend/.venv.
+  Provision or verify it using:
+
+  Windows: backend\\.venv\\Scripts\\python.exe scripts\\provision_checkov.py --install
+  Linux: backend/.venv/bin/python scripts/provision_checkov.py --install
+
+  --status performs an idempotent non-mutating version check. The installer
+  requires trusted package sources; third-party dependencies are wheel-only.
+  It does not run as a side effect of generic framework startup.
+- The existing pinned Trivy 0.74.0 installation is reused in configuration
+  scan mode. No Terraform code, providers or plans are executed or applied,
+  and no account-level AWS connection is needed.
+- Scanner processes have bounded execution, output and concurrency; their
+  subprocess environments exclude framework credentials and request no
+  arbitrary cloud APIs. A failed/unavailable scanner produces FAILED/PARTIAL
+  or UNKNOWN, never a false security PASS.
+- ZIP contents and raw scanner output are transient. PostgreSQL receives
+  normalized rule IDs, safe file paths, problem summaries, timestamps,
+  SHA-256 fingerprints and independent scanner evidence. Cross-scanner
+  observations are merged only when a verified same-resource rule mapping
+  exists; ambiguous equivalence is deliberately left separate.
+- The existing Cloud Security scan/history API and PostgreSQL tables are
+  reused. Idempotent additive upgrades allow account-independent IAC_CONFIG
+  scans without affecting older AWS_BASELINE scans. No new global launcher,
+  database or authentication system was introduced.
+
+**Important limits:** A local subprocess with scrubbed environment and disabled
+remote-module options is not a kernel-enforced network or resource sandbox.
+Deploy Security must be deployed inside an OS/container egress sandbox before
+scanning fully adversarial configuration files in an exposed multi-tenant
+service. Arbitrary Terraform modules, full environment-scale repositories,
+cross-cloud rules, Prowler and IAM-to-MCP comparison are outside this step.
+Rule severities not returned by a scanner remain UNKNOWN rather than guessed.
+A completed scan records successful scanner execution, not a blanket claim
+that the uploaded infrastructure is safe.
 
 ## Current Limitations
 
@@ -1693,7 +1743,7 @@ for the later GUI phase.
   this does not attest a remote MCP's behavior.
 - Runtime policy depends on OPA availability and fails closed when OPA is unavailable.
 - Scanner and DevSecOps analysis are not a complete production pipeline yet.
-- The AWS cloud-audit backend and basic Cloud security connection UI are available; a live scanner execution still requires a dedicated non-root AWS audit identity, and Prowler/Checkov/Trivy plus IAM-to-MCP comparison remain future work.
+- AWS baseline read-only inventory and a real connected audit have been demonstrated; a non-root audit identity remains required. Terraform ZIP scans with Checkov and Trivy are operational. Prowler, advanced IAM-to-MCP comparison and guided cross-account AWS onboarding remain future work.
 - No full audit report generation yet.
 - Control Plane authentication is intentionally minimal and local-first: ADMIN/VIEWER, HttpOnly sessions, CSRF protection, and audit.
 

@@ -55,6 +55,18 @@ TRIVY_EXE = TRIVY_DIR / ("trivy.exe" if os.name == "nt" else "trivy")
 TRIVY_CACHE_DIR = TRIVY_DIR / "cache"
 TRIVY_DOCKER_CONFIG_DIR = TRIVY_DIR / "docker-config"
 
+CHECKOV_VERSION = "3.4.6"
+CHECKOV_DIR = RUNTIME_TOOLS_DIR / "checkov"
+CHECKOV_VENV_DIR = CHECKOV_DIR / "venv"
+CHECKOV_EXE = (
+    CHECKOV_VENV_DIR / "Scripts" / "checkov.cmd"
+    if os.name == "nt" else CHECKOV_VENV_DIR / "bin" / "checkov"
+)
+CHECKOV_PYTHON = (
+    CHECKOV_VENV_DIR / "Scripts" / "python.exe"
+    if os.name == "nt" else CHECKOV_VENV_DIR / "bin" / "python"
+)
+
 
 def runtime_directories(
     project_root: Path | None = None,
@@ -82,6 +94,7 @@ def runtime_directories(
         runtime_tools_dir / "trivy",
         runtime_tools_dir / "trivy" / "cache",
         runtime_tools_dir / "trivy" / "docker-config",
+        runtime_tools_dir / "checkov",
         runtime_dir / "tmp",
         runtime_dir / "postgres",
         runtime_secrets_dir,

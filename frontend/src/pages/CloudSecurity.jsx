@@ -3,6 +3,7 @@ import {
   createCloudEnvironment, fetchCloudEnvironments, fetchCloudScans,
   fetchCloudScanDetail, startCloudScan, testCloudEnvironment,
   updateCloudEnvironment,
+  fetchIaCScannerAvailability, uploadTerraformZip,
   safeErrorMessage,
 } from "../api/client";
 
@@ -18,6 +19,15 @@ function cloudError(err) {
     cloud_connection_not_verified: "Verify the AWS connection before starting an audit.",
     cloud_scan_already_active: "An audit is already running for this environment. Check its progress.",
     cloud_worker_busy: "All audit workers are busy. Try again after the running scans finish.",
+    IAC_ZIP_REQUIRED: "Select a ZIP archive containing Terraform files.",
+    IAC_ARCHIVE_SIZE_INVALID: "The ZIP file must be smaller than 2 MB.",
+    IAC_UNSAFE_ARCHIVE_PATH: "The ZIP contains unsafe file paths.",
+    IAC_UNSUPPORTED_FILE: "Only Terraform .tf and .tf.json files are accepted.",
+    IAC_MODULES_UNSUPPORTED: "Terraform module declarations are not supported yet.",
+    IAC_SOURCE_LIMIT: "The Terraform project is too large for this scan.",
+    IAC_LINK_NOT_ALLOWED: "Symbolic links are not permitted inside the ZIP.",
+    IAC_INVALID_ARCHIVE: "The selected file is not a valid ZIP archive.",
+    IAC_NO_TERRAFORM_FILES: "The ZIP contains no Terraform configuration files.",
   };
   const key = Object.keys(messages).find((code) => raw.includes(code));
   return key ? messages[key] : raw;
@@ -39,6 +49,9 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [iacFile, setIacFile] = useState(null);
+  const [iacStatus, setIacStatus] = useState([]);
+  const [iacStatusError, setIacStatusError] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -56,6 +69,23 @@ export default function CloudSecurity({ isAdmin = false }) {
   }
 
   useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    fetchIaCScannerAvailability().then(setIacStatus).catch(() => setIacStatusError(true));
+  }, []);
+
+  // A queued scan progresses without requiring repeated manual Refresh clicks.
+  useEffect(() => {
+    if (!scans.some((scan) => ["QUEUED", "RUNNING"].includes(scan.status))) return undefined;
+    let active = true;
+    const timer = window.setInterval(() => {
+      fetchCloudScans().then((items) => {
+        if (active) setScans(items);
+      }).catch(() => {
+        if (active) setError("The latest scan status could not be refreshed. Try Refresh.");
+      });
+    }, 3000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [scans]);
 
   async function action(work, success) {
     setBusy(true);
@@ -120,6 +150,23 @@ export default function CloudSecurity({ isAdmin = false }) {
     if (updated) setEdit(null);
   }
 
+  async function uploadIaC(event) {
+    event.preventDefault();
+    if (!iacFile || !iacFile.name.toLowerCase().endsWith(".zip")) {
+      setError("Select a Terraform ZIP archive.");
+      return;
+    }
+    if (iacFile.size > 2 * 1024 * 1024) {
+      setError("The ZIP file must be smaller than 2 MB.");
+      return;
+    }
+    const result = await action(
+      () => uploadTerraformZip(iacFile),
+      (value) => "Terraform configuration scan queued (" + value.id + "). Refresh to follow its status.",
+    );
+    if (result) { setIacFile(null); setDetails(null); }
+  }
+
   async function showScan(scanId) {
     setError("");
     try { setDetails(await fetchCloudScanDetail(scanId)); }
@@ -127,7 +174,8 @@ export default function CloudSecurity({ isAdmin = false }) {
   }
 
   const current = environments.find((e) => e.id === selected);
-  const currentScans = scans.filter((s) => s.environment_id === selected);
+  const currentScans = scans.filter((s) => s.kind === "AWS_BASELINE" && s.environment_id === selected);
+  const iacScans = scans.filter((s) => s.kind === "IAC_CONFIG");
 
   return (
     <section className="page-panel">
@@ -263,6 +311,49 @@ export default function CloudSecurity({ isAdmin = false }) {
       </section>
 
       <section className="detail-panel">
+        <h3>Scan infrastructure configuration</h3>
+        <p>Upload a Terraform ZIP to identify configuration risks before deployment.
+          No AWS connection is required and Terraform code is never executed.</p>
+        <p>Limits: 2 MB ZIP, 60 files, .tf and .tf.json only, no module declarations.
+          Source files are deleted after scanning; only normalized findings and evidence hashes remain.</p>
+        {iacStatus.length > 0 && (
+          <p role="status">Scanners: {iacStatus.map((engine) =>
+            engine.scanner + ": " + (engine.available ? "Ready" : "Not installed")).join(" | ")}
+          </p>
+        )}
+        {iacStatusError && <p>Scanner availability could not be checked.</p>}
+        {isAdmin && (
+          <form className="contract-editor" onSubmit={uploadIaC}>
+            <label>Terraform ZIP archive
+              <input type="file" accept=".zip,application/zip" disabled={busy}
+                onChange={(event) => setIacFile(event.target.files?.[0] || null)} />
+            </label>
+            <button className="secondary-action" disabled={busy || !iacFile} type="submit">
+              {busy ? "Uploading..." : "Scan Terraform ZIP"}
+            </button>
+          </form>
+        )}
+        <h4>Configuration scan history</h4>
+        {iacScans.length === 0 ? <p>No Terraform scans yet.</p> : (
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>Started</th><th>Status</th><th>Files</th><th>Findings</th><th>Unknown</th><th>Details</th></tr></thead>
+              <tbody>
+                {iacScans.map((s) => (
+                  <tr key={s.id}>
+                    <td>{new Date(s.created_at).toLocaleString()}</td>
+                    <td>{s.status}</td><td>{s.source_file_count}</td>
+                    <td>{s.finding_count}</td><td>{s.unknown_checks}</td>
+                    <td><button type="button" className="tiny-action" onClick={() => showScan(s.id)}>View</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="detail-panel">
         <h3>Recent audits</h3>
         {currentScans.length === 0 ? <p>No audits yet. Connect an audit identity and start a scan.</p> : (
           <div className="table-scroll">
@@ -286,7 +377,7 @@ export default function CloudSecurity({ isAdmin = false }) {
       {details && (
         <section className="detail-panel">
           <h3>Audit details — {details.scan.status}</h3>
-          <p>Rule checks with insufficient AWS permissions are marked unknown or partial, never passed.</p>
+          <p>{details.scan.kind === "IAC_CONFIG" ? "Unfinished or unavailable scanners are UNKNOWN, never PASS. No uploaded source is retained." : "Rule checks with insufficient AWS permissions are marked unknown or partial, never passed."}</p>
           {details.scan.error_code && <p>Failure code: {details.scan.error_code}</p>}
           <h4>Findings ({details.findings.length})</h4>
           {details.findings.length ? details.findings.map((f) => (
@@ -300,7 +391,20 @@ export default function CloudSecurity({ isAdmin = false }) {
           {details.resources.map((r) => <p key={r.id}>{r.resource_type} — {r.display_name} ({r.region})</p>)}
           <h4>Audit history</h4>
           {details.events.map((e) => <p key={e.id}>{e.message_code} — {new Date(e.created_at).toLocaleString()}</p>)}
-          <p>{details.evidence.length} SHA-256 evidence records available for review.</p>
+          <details>
+            <summary>Evidence records ({details.evidence.length})</summary>
+            <p>SHA-256 integrity digests of normalized observations, not AWS-signed attestations.
+              Source contents and scanner raw output are not stored.</p>
+            {details.evidence.map((e) => (
+              <article key={e.id} className="detail-panel">
+                <p><strong>{e.rule_id} ? {e.outcome}</strong></p>
+                <p>SHA-256: <code>{e.evidence_sha256}</code></p>
+                {e.safe_summary?.scanner && <p>Scanner: {e.safe_summary.scanner}</p>}
+                {e.safe_summary?.file && <p>File: {e.safe_summary.file}
+                  {Number.isInteger(e.safe_summary.line) ? ", line " + e.safe_summary.line : ""}</p>}
+              </article>
+            ))}
+          </details>
         </section>
       )}
     </section>

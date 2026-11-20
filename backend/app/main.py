@@ -119,6 +119,8 @@ def initialize_analyzer_local_identity():
     # a previous process is never advertised as successfully completed.
     from app.services.cloud_security import mark_interrupted_scans
     mark_interrupted_scans()
+    from app.services.cloud_iac_security import discard_interrupted_archives
+    discard_interrupted_archives()
 
 
 @app.middleware('http')

@@ -291,6 +291,11 @@ def ensure_cloud_security_schema() -> None:
             """ALTER TABLE cloud_environments
             ADD COLUMN IF NOT EXISTS services JSON DEFAULT '["EC2","S3","IAM"]' NOT NULL"""
         ))
+        # IaC scans are account-independent. Existing AWS observations remain intact.
+        connection.execute(text("ALTER TABLE cloud_scans ALTER COLUMN environment_id DROP NOT NULL"))
+        connection.execute(text("ALTER TABLE cloud_resources ALTER COLUMN environment_id DROP NOT NULL"))
+        connection.execute(text("ALTER TABLE cloud_scans ADD COLUMN IF NOT EXISTS source_fingerprint VARCHAR(64)"))
+        connection.execute(text("ALTER TABLE cloud_scans ADD COLUMN IF NOT EXISTS source_file_count INTEGER DEFAULT 0 NOT NULL"))
         names = set(inspect(connection).get_table_names())
     if missing := {table.name for table in tables} - names:
         raise RuntimeError(f"cloud_schema_incomplete: {sorted(missing)}")

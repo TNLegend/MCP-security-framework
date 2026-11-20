@@ -90,7 +90,7 @@ class ConnectionTestPublic(BaseModel):
 
 class ScanPublic(BaseModel):
     id: str
-    environment_id: str
+    environment_id: str | None
     kind: str
     status: str
     created_at: datetime
@@ -101,6 +101,8 @@ class ScanPublic(BaseModel):
     finding_count: int
     unknown_checks: int
     scanner_version: str
+    source_fingerprint: str | None = None
+    source_file_count: int = 0
     model_config=ConfigDict(from_attributes=True, extra="forbid")
 
 

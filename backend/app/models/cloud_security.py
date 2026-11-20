@@ -54,7 +54,7 @@ class CloudScan(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    environment_id: Mapped[str] = mapped_column(ForeignKey("cloud_environments.id"), nullable=False)
+    environment_id: Mapped[str | None] = mapped_column(ForeignKey("cloud_environments.id"), nullable=True)
     kind: Mapped[str] = mapped_column(String(30), default="AWS_BASELINE", nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="QUEUED", nullable=False)
     requested_by: Mapped[str] = mapped_column(String(36), nullable=False)
@@ -65,6 +65,8 @@ class CloudScan(Base):
     resource_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     finding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     unknown_checks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     scanner_version: Mapped[str] = mapped_column(String(40), nullable=False, default="boto3-baseline-v1")
 
 
@@ -77,7 +79,7 @@ class CloudResource(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     scan_id: Mapped[str] = mapped_column(ForeignKey("cloud_scans.id"), nullable=False)
-    environment_id: Mapped[str] = mapped_column(ForeignKey("cloud_environments.id"), nullable=False)
+    environment_id: Mapped[str | None] = mapped_column(ForeignKey("cloud_environments.id"), nullable=True)
     resource_type: Mapped[str] = mapped_column(String(48), nullable=False)
     resource_arn: Mapped[str] = mapped_column(String(512), nullable=False)
     region: Mapped[str] = mapped_column(String(32), nullable=False)
