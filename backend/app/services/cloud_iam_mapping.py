@@ -30,6 +30,16 @@ def _declared(snapshot, endpoint):
     contracts=[c for c in snapshot.content.tool_security_contracts if c.server_ref==authority]
     if not contracts:
         raise MappingError("IAM_MCP_SIGNED_SERVER_CONTRACT_NOT_FOUND")
+    # A signed revision can contain contracts without an approved tool
+    # observation. Match the separately recorded observation approval to the
+    # exact signed contract hash before generating cloud permissions.
+    approved = {
+        (approval.server_ref, approval.contract_hash)
+        for approval in snapshot.content.tool_observation_approvals
+    }
+    if any((contract.server_ref, contract.contract_hash) not in approved
+           for contract in contracts):
+        raise MappingError("IAM_MCP_SIGNED_TOOL_APPROVAL_MISSING")
     effects={}
     for c in contracts:
         for e in c.effects:

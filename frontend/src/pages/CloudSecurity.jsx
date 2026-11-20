@@ -27,6 +27,7 @@ function cloudError(err) {
     PROWLER_AUDIT_ROLE_REQUIRED: "A temporary AWS audit role is required.",
     PROWLER_NOT_INSTALLED: "The advanced scanner is unavailable; no scan was performed.",
     IAM_MCP_SIGNED_SERVER_CONTRACT_NOT_FOUND: "No published signed MCP contract matches the selected server.",
+    IAM_MCP_SIGNED_TOOL_APPROVAL_MISSING: "A published MCP tool contract has no matching observation approval. Review and approve the tool before mapping cloud permissions.",
     IAM_MCP_INSTANCE_PROFILE_MISSING: "The EC2 instance has no readable IAM instance profile.",
     IAM_MCP_EC2_INSTANCE_UNVERIFIED: "The selected EC2 instance could not be verified in the AWS account.",
     IAC_ZIP_REQUIRED: "Select a ZIP archive containing Terraform files.",
@@ -77,7 +78,7 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [details, setDetails] = useState(null);
   const [edit, setEdit] = useState(null);
   const [selected, setSelected] = useState("");
-  const [name, setName] = useState("AWS Document Lab");
+  const [name, setName] = useState("My AWS environment");
   const [region, setRegion] = useState("eu-west-3");
   const [services, setServices] = useState(["EC2", "S3", "IAM"]);
   const [credentialMode, setCredentialMode] = useState("SDK_DEFAULT");
@@ -128,22 +129,29 @@ export default function CloudSecurity({ isAdmin = false }) {
   useEffect(() => {
     fetchProwlerAvailability().then(setProwlerStatus).catch(() => setProwlerStatusError(true));
   }, []);
-  useEffect(() => {
-    fetchServers().then((response) => {
+  async function loadRegisteredServers() {
+    try {
+      const response = await fetchServers();
       const data = Array.isArray(response) ? response : response?.servers || response?.items || [];
       const active = data.filter((server) => server.status === "active");
       setMcpServers(active);
-      if (active.length) setMcpServerId(String(active[0].id));
-    }).catch(() => setError("MCP server list could not be loaded."));
-  }, []);
+      setMcpServerId((old) => active.some((server) => String(server.id) === old)
+        ? old : (active.length ? String(active[0].id) : ""));
+    } catch {
+      setError("MCP server list could not be loaded. Use Refresh to retry.");
+    }
+  }
+  useEffect(() => { loadRegisteredServers(); }, []);
   useEffect(() => {
     if (!selected) { setIamMappings([]); setIamMappingId(""); return; }
     let cancelled = false;
     fetchIAMMappings(selected).then((items) => {
       if (cancelled) return;
       setIamMappings(items);
+      const preferred = items.find((item) => item.status === "APPROVED") || items[0];
       setIamMappingId((old) => items.some((item) => item.id === old) ? old :
-        (items.find((item) => item.status === "APPROVED")?.id || items[0]?.id || ""));
+        (preferred?.id || ""));
+      if (preferred) setMcpServerId(String(preferred.mcp_server_id));
     }).catch(() => { if (!cancelled) setIamMappings([]); });
     return () => { cancelled = true; };
   }, [selected]);
@@ -351,7 +359,7 @@ export default function CloudSecurity({ isAdmin = false }) {
           <h2>Cloud security</h2>
           <p>Connect a read-only AWS identity, inventory cloud resources and review evidence. MCP Discovery remains separate.</p>
         </div>
-        <button className="secondary-action" disabled={busy || loading} onClick={refresh} type="button">
+        <button className="secondary-action" disabled={busy || loading} onClick={() => { refresh(); loadRegisteredServers(); }} type="button">
           {loading ? "Loading..." : "Refresh"}
         </button>
       </header>
@@ -713,6 +721,8 @@ export default function CloudSecurity({ isAdmin = false }) {
           <label>Mapping configuration
             <select value={iamMappingId} onChange={(e) => {
               setIamMappingId(e.target.value); setApprovalConfirmed(false);
+              const chosen = iamMappings.find((mapping) => mapping.id === e.target.value);
+              if (chosen) setMcpServerId(String(chosen.mcp_server_id));
             }}>
               <option value="">Select a configured mapping</option>
               {iamMappings.map((mapping) => (

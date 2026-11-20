@@ -1891,7 +1891,9 @@ to phase-7 Step 6 governance; it must remain visible in risk decisions.
 
 Cloud Security now supports **reviewed permissions mappings** for registered
 MCP servers with corresponding *published, signed* Gateway contracts.
-The comparison engine contains no fixed MCP tool names, no implicit S3
+Each referenced contract must also have a matching published tool-observation
+approval (same server and exact contract hash); an unapproved signed contract
+cannot be mapped. The comparison engine contains no fixed MCP tool names, no implicit S3
 folder prefix and no demo-specific permissions.
 
 - For each signed MCP tool effect, administrators choose exact AWS IAM
