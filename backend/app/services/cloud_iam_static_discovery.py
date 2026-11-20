@@ -109,6 +109,70 @@ class Inspector:
                 handler = self.helper_name(node.args[0], owner)
                 if handler:
                     self.tools.setdefault(handler.rsplit(".", 1)[-1], handler)
+        self._flag_unresolved_tool_registration()
+
+    def _flag_unresolved_tool_registration(self):
+        """Flag dynamic registration without asserting SDK permissions.
+
+        A server object passed to an imported helper can receive tools via
+        code this parser cannot prove. Mark it incomplete rather than silently
+        reporting an empty clean result.
+        """
+        mcp_vars = set()
+        for stmt in self.tree.body:
+            if not isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = stmt.value
+            if not isinstance(value, ast.Call):
+                continue
+            fn = value.func
+            owner = None
+            if isinstance(fn, ast.Name):
+                owner = self.imports.get(fn.id, fn.id)
+            elif isinstance(fn, ast.Attribute):
+                owner = fn.attr
+            if owner not in {
+                "FastMCP", "MCPServer", "mcp.server.fastmcp.FastMCP",
+                "mcp.server.mcpserver.MCPServer"
+            }:
+                continue
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    mcp_vars.add(target.id)
+        previously = self.tool
+        self.tool = "__server__"
+        for call in ast.walk(self.tree):
+            if not isinstance(call, ast.Call):
+                continue
+            if (isinstance(call.func, ast.Name)
+                    and call.func.id in self.imports
+                    and call.func.id not in self.functions
+                    and any(isinstance(arg, ast.Name) and arg.id in mcp_vars
+                            for arg in call.args)):
+                self._gap(call, ("module",), "registration",
+                          "IMPORTED_MCP_REGISTRATION_UNRESOLVED")
+            if (isinstance(call.func, ast.Call)
+                    and isinstance(call.func.func, ast.Attribute)
+                    and call.func.func.attr == "tool"):
+                handler = self.helper_name(call.args[0], "") if call.args else None
+                if (handler is None and call.args
+                        and isinstance(call.args[0], ast.Attribute)
+                        and isinstance(call.args[0].value, ast.Name)
+                        and call.args[0].value.id == "self"):
+                    suffix = "." + call.args[0].attr
+                    if any(name.endswith(suffix) for name in self.functions):
+                        handler = suffix
+                if not handler:
+                    self._gap(call, ("module",), "registration",
+                              "DYNAMIC_MCP_TOOL_FACTORY_UNRESOLVED")
+        if not self.tools and not any(x["reason"].endswith("REGISTRATION_UNRESOLVED")
+                                      or x["reason"] == "DYNAMIC_MCP_TOOL_FACTORY_UNRESOLVED"
+                                      for x in self.gaps):
+            if mcp_vars:
+                self._gap(self.tree, ("module",), "registration",
+                          "NO_STATIC_MCP_HANDLERS_DISCOVERED")
+        self.tool = previously
 
     def _index_wrapper_constructors(self):
         """Collect literal boto3 clients assigned to self.FIELD in constructors.
@@ -555,6 +619,15 @@ class Inspector:
                 for name, digest in sorted(self.source_digests.items())
             ],
             "tools": sorted(self.tools),
+            "tool_registration_status": (
+                "INCOMPLETE_DYNAMIC_REGISTRATION"
+                if any(x["reason"] in {
+                    "IMPORTED_MCP_REGISTRATION_UNRESOLVED",
+                    "DYNAMIC_MCP_TOOL_FACTORY_UNRESOLVED",
+                    "NO_STATIC_MCP_HANDLERS_DISCOVERED",
+                } for x in self.gaps)
+                else "STATIC_PARTIAL_COVERAGE"
+            ),
             "operations": sorted(self.results, key=lambda x: (x["tool"], x["line"], x["operation"])),
             "gaps": sorted(self.gaps, key=lambda x: (x["tool"], x["line"], x["reason"])),
             "assurance": "STATIC_CANDIDATE_ONLY",
