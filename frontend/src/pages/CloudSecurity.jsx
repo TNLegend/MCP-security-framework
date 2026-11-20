@@ -6,6 +6,23 @@ import {
   safeErrorMessage,
 } from "../api/client";
 
+function cloudError(err) {
+  const raw = safeErrorMessage(err);
+  const messages = {
+    AWS_PROFILE_NOT_FOUND: "The AWS profile does not exist on this computer. Configure a temporary read-only audit profile, then test the connection.",
+    AWS_CREDENTIALS_UNAVAILABLE: "No AWS credentials are available. Connect a supported temporary audit identity.",
+    AWS_SESSION_EXPIRED: "The temporary AWS session expired. Sign in again and test the connection.",
+    ROOT_AWS_IDENTITY_FORBIDDEN: "The AWS root account cannot be used for security scans. Use a dedicated read-only audit identity.",
+    AWS_ACCESS_DENIED: "The AWS audit identity lacks a required read permission. Check its IAM policy.",
+    AWS_ACCOUNT_CHANGED: "The AWS profile now points to a different account. Reconnect the intended environment.",
+    cloud_connection_not_verified: "Verify the AWS connection before starting an audit.",
+    cloud_scan_already_active: "An audit is already running for this environment. Check its progress.",
+    cloud_worker_busy: "All audit workers are busy. Try again after the running scans finish.",
+  };
+  const key = Object.keys(messages).find((code) => raw.includes(code));
+  return key ? messages[key] : raw;
+}
+
 export default function CloudSecurity({ isAdmin = false }) {
   const [environments, setEnvironments] = useState([]);
   const [scans, setScans] = useState([]);
@@ -32,7 +49,7 @@ export default function CloudSecurity({ isAdmin = false }) {
       setScans(runs);
       if (!selected && envs.length) setSelected(envs[0].id);
     } catch (err) {
-      setError(safeErrorMessage(err));
+      setError(cloudError(err));
     } finally {
       setLoading(false);
     }
@@ -51,7 +68,7 @@ export default function CloudSecurity({ isAdmin = false }) {
       return result;
     } catch (err) {
       await refresh();
-      setError(safeErrorMessage(err));
+      setError(cloudError(err));
       return null;
     } finally {
       setBusy(false);
@@ -106,7 +123,7 @@ export default function CloudSecurity({ isAdmin = false }) {
   async function showScan(scanId) {
     setError("");
     try { setDetails(await fetchCloudScanDetail(scanId)); }
-    catch (err) { setError(safeErrorMessage(err)); }
+    catch (err) { setError(cloudError(err)); }
   }
 
   const current = environments.find((e) => e.id === selected);
