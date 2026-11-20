@@ -2005,6 +2005,45 @@ both Runtime and Deploy policies before enabling this feature in the running
 GUI; the feature is NOT deployed by the research branch.
 
 
+## Deploy Security Phase 6: advisory OPA governance (feature branch)
+
+Phase 6 now has a read-only governance path for approved MCP-to-IAM
+identity-policy comparisons, Terraform IaC scanning (Checkov and Trivy)
+and Prowler AWS observations. OPA never grants or revokes AWS permissions
+and never replaces the authoritative Runtime tools/call policy.
+
+- Policies are packaged as two independent Rego modules in policies/opa,
+  with a SHA-256 release manifest and a strict dual-policy verifier:
+  scripts/validate_deploy_opa_bundle.py. The Runtime result must remain
+  unchanged when Deploy is loaded.
+- Deploy governance is reconstructed only from bounded, verified,
+  normalized database evidence. Unresolved/missing/old scanner results
+  yield EVIDENCE_INCOMPLETE. A finding leads to REVIEW_REQUIRED; zero
+  observed findings leads only to OBSERVATION_ONLY, not a security PASS.
+- IaC/Prowler normalized evidence now includes the metadata needed
+  for hash/provenance validation. Older scans without enough provenance
+  cannot be retroactively certified.
+- ADMIN can evaluate and persist OPA decisions and request, approve,
+  reject or revoke time-limited review exceptions. The original
+  CloudFinding and CloudEvidence stay unchanged. Append-only tables,
+  PostgreSQL triggers and hash chains preserve their history.
+- The Cloud Security GUI shows governance assessments, decision history
+  and exception histories for IAM, IaC and Prowler scans.
+
+Live runtime safety: the framework launcher verifies the local policy
+manifest and that OPA exposes both Runtime and Deploy decision paths
+BEFORE applying database migrations. A Runtime-only externally running
+OPA service causes an explicit startup failure, not a fallback.
+
+This release is developed and qualified on a dedicated feature branch,
+NOT installed into the currently running backend/OPA/PostgreSQL service.
+The additive SQL migration must be tested and applied through the
+controlled deployment procedure. PostgreSQL triggers and full live
+scanner execution remain deployment qualification items.
+
+Independent report: mcp-security-qualification/
+docs/phase7_deploy_opa_phase6_final_20261120.md.
+
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework

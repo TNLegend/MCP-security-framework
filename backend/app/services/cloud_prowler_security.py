@@ -398,7 +398,19 @@ def _preflight_read_coverage(sdk, regions: list[str]) -> dict[str, str]:
 
 
 def _store(db, scan: CloudScan, rows: list[dict], overflow: int, result: str,
-           coverage: dict[str, str] | None = None) -> None:
+           coverage: dict[str, str] | None = None,
+           identity_binding: dict[str, object] | None = None) -> None:
+    if identity_binding is not None:
+        binding = {
+            "scanner": "prowler",
+            "account_sha256": _sha(identity_binding["account_id"]),
+            "audit_role_sha256": _sha(identity_binding["role_arn"]),
+            "regions_sha256": _sha(sorted(identity_binding["regions"])),
+        }
+        db.add(CloudEvidence(
+            scan_id=scan.id, rule_id="PROWLER_IDENTITY_BOUND",
+            outcome="PASS", evidence_sha256=_sha(binding), safe_summary=binding,
+        ))
     indexed: dict[str, CloudResource] = {}
     findings: set[str] = set()
     services: set[str] = set()
@@ -544,7 +556,10 @@ def _worker(scan_id: str) -> None:
             scan = db.get(CloudScan, scan_id)
             if scan is None or scan.status != "RUNNING":
                 return
-            _store(db, scan, rows, overflow, status, coverage)
+            _store(db, scan, rows, overflow, status, coverage, {
+                "account_id": account, "role_arn": config.role_arn,
+                "regions": config.regions,
+            })
     except Exception as exc:
         reason = str(exc) if isinstance(exc, ProwlerAuditError) else _safe_error(exc)
         if reason == "CLOUD_SCAN_INTERNAL_ERROR":

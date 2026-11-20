@@ -919,6 +919,38 @@ export async function startIAMMCPComparison(environmentId, mappingId) {
     });
 }
 
+export async function evaluateDeployGovernance(scanId) {
+  return request("/control-plane/cloud-security/scans/" +
+    encodeURIComponent(scanId) + "/deploy-governance/evaluations", {
+      method: "POST", timeoutMs: 15000,
+    });
+}
+
+export async function fetchDeployGovernanceHistory(scanId) {
+  return request("/control-plane/cloud-security/scans/" +
+    encodeURIComponent(scanId) + "/deploy-governance/history");
+}
+
+export async function fetchDeployExceptions(scanId) {
+  return request("/control-plane/cloud-security/scans/" +
+    encodeURIComponent(scanId) + "/deploy-exceptions");
+}
+
+export async function requestDeployException(scanId, data) {
+  return request("/control-plane/cloud-security/scans/" +
+    encodeURIComponent(scanId) + "/deploy-exceptions", {
+      method: "POST", body: JSON.stringify(data),
+    });
+}
+
+export async function decideDeployException(scanId, exceptionId, data) {
+  return request("/control-plane/cloud-security/scans/" +
+    encodeURIComponent(scanId) + "/deploy-exceptions/" +
+    encodeURIComponent(exceptionId) + "/decide", {
+      method: "POST", body: JSON.stringify(data),
+    });
+}
+
 export async function fetchDeployGovernance(scanId) {
   return request("/control-plane/cloud-security/scans/" +
     encodeURIComponent(scanId) + "/deploy-governance",

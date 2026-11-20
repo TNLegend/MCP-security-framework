@@ -1,4 +1,4 @@
-from app.models.cloud_security import (CloudEnvironment, CloudScan, CloudResource, CloudFinding, CloudEvidence, CloudIAMComparison, CloudScanEvent)
+from app.models.cloud_security import (CloudEnvironment, CloudScan, CloudResource, CloudFinding, CloudEvidence, CloudIAMComparison, CloudScanEvent, CloudIAMMapping, CloudDeployGovernanceDecision, CloudDeployExceptionEvent)
 from app.models.audit_event import AuditEvent
 from app.models.discovery_generation import MCPDiscoveryGeneration, MCPDiscoveryHead
 from app.models.discovery_analysis_stage import MCPDiscoveryAnalysisStage

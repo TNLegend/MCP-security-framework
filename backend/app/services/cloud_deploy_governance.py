@@ -7,6 +7,7 @@ enforces any MCP tool call. No raw IAM policy or cloud resource ARN is sent.
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timedelta
 import re
 
 from sqlalchemy import select
@@ -66,7 +67,9 @@ def build_deploy_iam_governance_input(db: Session, scan_id: str) -> dict:
         raise DeployGovernanceError("DEPLOY_SCAN_NOT_FOUND")
     fail = _untrusted_input(scan)
     if (scan.kind != "IAM_MCP" or scan.status != "PARTIAL"
-            or scan.completed_at is None or scan.error_code is not None):
+            or scan.completed_at is None or scan.error_code is not None
+            or scan.completed_at > datetime.utcnow() + timedelta(minutes=5)
+            or datetime.utcnow() - scan.completed_at > timedelta(hours=24)):
         return fail
 
     resources = db.scalars(select(CloudResource).where(

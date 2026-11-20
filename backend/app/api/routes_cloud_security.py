@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -41,6 +42,13 @@ from app.services.published_configuration import PublishedConfigurationProvider
 from app.models.mcp_server import MCPServer
 from app.services.cloud_deploy_governance import (
     DeployGovernanceError, build_deploy_iam_governance_input,
+)
+from app.services.cloud_deploy_scan_governance import (
+    build_deploy_cloud_governance_input,
+)
+from app.services.cloud_deploy_history import (
+    DeployHistoryError, _hash as governance_digest, list_deploy_decisions,
+    list_exception_history, record_deploy_decision, record_exception_event,
 )
 from app.services.cloud_deploy_opa_client import (
     DeployAdvisoryDecision, DeployOPAClient, DeployOPAError,
@@ -571,6 +579,128 @@ def list_iam_mcp_results(
         CloudIAMComparison.scan_id==scan_id).limit(250)).all()
 
 
+def _deploy_context(db: Session, scan_id: str, kind: str) -> dict:
+    if kind=="IAM_MCP":
+        return build_deploy_iam_governance_input(db,scan_id)
+    return build_deploy_cloud_governance_input(db,scan_id)
+
+
+class DeployExceptionCreate(BaseModel):
+    finding_id: str = Field(min_length=36,max_length=36)
+    reason: str = Field(min_length=20,max_length=1000)
+
+
+class DeployExceptionDecision(BaseModel):
+    operation: Literal["APPROVE","REJECT","REVOKE"]
+    reason: str = Field(min_length=20,max_length=1000)
+    expires_days: int | None = Field(default=None,ge=1,le=90)
+
+
+@router.post("/scans/{scan_id}/deploy-governance/evaluations",
+             response_model=DeployAdvisoryDecision)
+def evaluate_and_record_deploy_governance(
+    scan_id: str, request: Request,
+    actor: AuthenticatedControlPlaneUser=Depends(require_admin),
+    db: Session=Depends(get_db),
+):
+    scan=_scan(db,scan_id)
+    if scan.kind not in ("IAM_MCP","IAC_CONFIG","AWS_ADVANCED"):
+        raise HTTPException(status_code=404,detail="deploy_governance_scan_not_found")
+    try:
+        evidence=_deploy_context(db,scan_id,scan.kind)
+        result=DeployOPAClient(
+            base_url=settings.opa_base_url,
+            timeout_seconds=settings.opa_timeout_seconds,
+        ).evaluate(evidence)
+        # OPA I/O happened outside the database write lock. Rebuild under a
+        # scan row lock, and reject signed binding or evidence drift.
+        fresh=_deploy_context(db,scan_id,scan.kind)
+        if governance_digest(evidence)!=governance_digest(fresh):
+            raise DeployHistoryError("DEPLOY_EVIDENCE_CHANGED_DURING_EVALUATION")
+        recorded=record_deploy_decision(
+            db,scan_id,actor.user.id,fresh,result.model_dump(mode="json"))
+        _audit(db,request,actor,"DEPLOY_GOVERNANCE_EVALUATED","cloud_scan",
+               scan_id,{"decision_id":recorded.id,"classification":result.classification,
+                        "policy_revision":result.policy_revision,
+                        "entry_sha256":recorded.entry_sha256})
+        db.commit()
+        return result
+    except DeployOPAError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503,detail=str(exc)) from exc
+    except (DeployHistoryError,DeployGovernanceError,ValueError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+
+@router.get("/scans/{scan_id}/deploy-governance/history")
+def get_deploy_governance_history(
+    scan_id: str, _: AuthenticatedControlPlaneUser=Depends(require_authenticated_user),
+    db: Session=Depends(get_db),
+):
+    _scan(db,scan_id)
+    try:
+        return list_deploy_decisions(db,scan_id)
+    except DeployHistoryError as exc:
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+
+@router.get("/scans/{scan_id}/deploy-exceptions")
+def get_deploy_exceptions(
+    scan_id: str, _: AuthenticatedControlPlaneUser=Depends(require_authenticated_user),
+    db: Session=Depends(get_db),
+):
+    _scan(db,scan_id)
+    try:
+        return list_exception_history(db,scan_id)
+    except DeployHistoryError as exc:
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+
+@router.post("/scans/{scan_id}/deploy-exceptions",status_code=201)
+def request_deploy_exception(
+    scan_id: str,payload: DeployExceptionCreate,request: Request,
+    actor: AuthenticatedControlPlaneUser=Depends(require_admin),
+    db: Session=Depends(get_db),
+):
+    _scan(db,scan_id)
+    try:
+        result=record_exception_event(
+            db,scan_id,actor.user.id,"REQUEST",payload.reason,
+            finding_id=payload.finding_id)
+        _audit(db,request,actor,"DEPLOY_EXCEPTION_REQUESTED","cloud_scan",
+               scan_id,{"exception_id":result["exception_id"],
+                        "finding_id":result["finding_id"],
+                        "entry_sha256":result["entry_sha256"]})
+        db.commit()
+        return result
+    except DeployHistoryError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+
+@router.post("/scans/{scan_id}/deploy-exceptions/{exception_id}/decide")
+def decide_deploy_exception(
+    scan_id: str,exception_id: str,payload: DeployExceptionDecision,
+    request: Request,
+    actor: AuthenticatedControlPlaneUser=Depends(require_admin),
+    db: Session=Depends(get_db),
+):
+    _scan(db,scan_id)
+    try:
+        result=record_exception_event(
+            db,scan_id,actor.user.id,payload.operation,payload.reason,
+            exception_id=exception_id,expires_days=payload.expires_days)
+        _audit(db,request,actor,"DEPLOY_EXCEPTION_"+payload.operation,
+               "cloud_scan",scan_id,{"exception_id":exception_id,
+                                     "entry_sha256":result["entry_sha256"]})
+        db.commit()
+        return result
+    except DeployHistoryError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+
 @router.get("/scans/{scan_id}/deploy-governance",
             response_model=DeployAdvisoryDecision)
 def get_iam_deploy_governance(
@@ -584,11 +714,11 @@ def get_iam_deploy_governance(
     PostgreSQL scan records, not submitted by a caller.
     """
     scan=_scan(db,scan_id)
-    if scan.kind != "IAM_MCP":
+    if scan.kind not in ("IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"):
         raise HTTPException(status_code=404,detail="deploy_governance_scan_not_found")
     try:
-        evidence=build_deploy_iam_governance_input(db,scan_id)
-    except DeployGovernanceError as exc:
+        evidence=_deploy_context(db,scan_id,scan.kind)
+    except (DeployGovernanceError,ValueError) as exc:
         raise HTTPException(status_code=409,detail=str(exc)) from exc
     try:
         return DeployOPAClient(

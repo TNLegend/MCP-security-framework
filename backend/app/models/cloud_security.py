@@ -171,3 +171,38 @@ class CloudIAMMapping(Base):
     approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class CloudDeployGovernanceDecision(Base):
+    '''Append-only snapshot of OPA advisory classification for one scan.'''
+    __tablename__ = "cloud_deploy_governance_decisions"
+    __table_args__ = (Index("ix_cloud_deploy_decision_scan_time", "scan_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("cloud_scans.id"), nullable=False)
+    actor_user_id: Mapped[str] = mapped_column(ForeignKey("control_plane_users.id"), nullable=False)
+    classification: Mapped[str] = mapped_column(String(32), nullable=False)
+    policy_revision: Mapped[str] = mapped_column(String(80), nullable=False)
+    policy_bundle_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    input_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    output_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    previous_entry_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entry_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class CloudDeployExceptionEvent(Base):
+    '''Append-only exception lifecycle. Approval NEVER deletes the finding.'''
+    __tablename__ = "cloud_deploy_exception_events"
+    __table_args__ = (Index("ix_cloud_deploy_exception_trace", "exception_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    exception_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    scan_id: Mapped[str] = mapped_column(ForeignKey("cloud_scans.id"), nullable=False)
+    finding_id: Mapped[str] = mapped_column(ForeignKey("cloud_findings.id"), nullable=False)
+    actor_user_id: Mapped[str] = mapped_column(ForeignKey("control_plane_users.id"), nullable=False)
+    operation: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason: Mapped[str] = mapped_column(String(1000), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    previous_entry_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entry_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

@@ -537,7 +537,9 @@ def _store_results(db, scan: CloudScan, fingerprint: str,
                     "file":file, "resource_hash":item["resource_hash"], "line":item["line"]
                 }),
                 safe_summary={"scanner":tool,"version":version, "file":file,
-                              "line":item["line"],"source_fingerprint":fingerprint},
+                              "line":item["line"],"source_fingerprint":fingerprint,
+                              "rule":item["rule"],
+                              "resource_hash":item["resource_hash"]},
             ))
     if merged_equivalent:
         db.add(CloudScanEvent(scan_id=scan.id, event_type="SCANNER",

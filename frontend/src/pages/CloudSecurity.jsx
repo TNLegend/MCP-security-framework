@@ -9,7 +9,9 @@ import {
   fetchIaCScannerAvailability, uploadTerraformZip,
   fetchProwlerAvailability, startProwlerCloudScan,
   fetchProwlerPermissionPreview, startIAMMCPComparison, fetchIAMMCPResults,
-  fetchDeployGovernance,
+  fetchDeployGovernance, evaluateDeployGovernance as recordDeployGovernance,
+  fetchDeployGovernanceHistory, fetchDeployExceptions, requestDeployException,
+  decideDeployException,
   fetchIAMMappings, fetchIAMMappingContext, createIAMMapping, approveIAMMapping,
   fetchServers, safeErrorMessage,
 } from "../api/client";
@@ -159,6 +161,12 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [deployGovernance, setDeployGovernance] = useState(null);
   const [governanceError, setGovernanceError] = useState("");
   const [governanceLoading, setGovernanceLoading] = useState(false);
+  const [governanceHistory, setGovernanceHistory] = useState([]);
+  const [deployExceptions, setDeployExceptions] = useState([]);
+  const [exceptionReason, setExceptionReason] = useState("");
+  const [exceptionFinding, setExceptionFinding] = useState("");
+  const [reviewReason, setReviewReason] = useState("");
+  const [expiryDays, setExpiryDays] = useState(7);
 
   async function refresh() {
     setLoading(true);
@@ -406,26 +414,73 @@ export default function CloudSecurity({ isAdmin = false }) {
     setError("");
     setDeployGovernance(null);
     setGovernanceError("");
+    setGovernanceHistory([]);
+    setDeployExceptions([]);
+    setExceptionFinding("");
     try {
       const item = await fetchCloudScanDetail(scanId);
       setDetails(item);
       setIamRows(item.scan.kind === "IAM_MCP" ? await fetchIAMMCPResults(scanId) : []);
+      if (["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(item.scan.kind)) {
+        const [history, exceptions] = await Promise.allSettled([
+          fetchDeployGovernanceHistory(scanId), fetchDeployExceptions(scanId),
+        ]);
+        setGovernanceHistory(history.status === "fulfilled" ? history.value : []);
+        setDeployExceptions(exceptions.status === "fulfilled" ? exceptions.value : []);
+      }
     } catch (err) { setError(cloudError(err)); }
   }
 
   async function evaluateDeployGovernance() {
-    if (!details?.scan?.id || details.scan.kind !== "IAM_MCP") return;
+    if (!details?.scan?.id ||
+        !["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(details.scan.kind)) return;
     setGovernanceError("");
     setDeployGovernance(null);
     setGovernanceLoading(true);
     try {
-      const result = await fetchDeployGovernance(details.scan.id);
+      const result = await (isAdmin
+        ? recordDeployGovernance(details.scan.id)
+        : fetchDeployGovernance(details.scan.id));
       setDeployGovernance(result);
+      if (isAdmin) {
+        setGovernanceHistory(await fetchDeployGovernanceHistory(details.scan.id));
+      }
     } catch (err) {
       setGovernanceError(cloudError(err));
     } finally {
       setGovernanceLoading(false);
     }
+  }
+
+  async function requestExceptionReview() {
+    if (!isAdmin || !details?.scan?.id ||
+        !exceptionFinding || exceptionReason.trim().length < 20) return;
+    setGovernanceLoading(true);
+    setGovernanceError("");
+    try {
+      await requestDeployException(details.scan.id, {
+        finding_id: exceptionFinding, reason: exceptionReason.trim(),
+      });
+      setDeployExceptions(await fetchDeployExceptions(details.scan.id));
+      setExceptionFinding("");
+      setExceptionReason("");
+    } catch (err) { setGovernanceError(cloudError(err)); }
+    finally { setGovernanceLoading(false); }
+  }
+
+  async function actOnException(exceptionId, operation) {
+    if (!isAdmin || !details?.scan?.id || reviewReason.trim().length < 20) return;
+    setGovernanceLoading(true);
+    setGovernanceError("");
+    try {
+      await decideDeployException(details.scan.id, exceptionId, {
+        operation, reason: reviewReason.trim(),
+        expires_days: operation === "APPROVE" ? Number(expiryDays) : null,
+      });
+      setDeployExceptions(await fetchDeployExceptions(details.scan.id));
+      setReviewReason("");
+    } catch (err) { setGovernanceError(cloudError(err)); }
+    finally { setGovernanceLoading(false); }
   }
 
   const current = environments.find((e) => e.id === selected);
@@ -1045,31 +1100,104 @@ export default function CloudSecurity({ isAdmin = false }) {
               ? "Unfinished or unavailable scanners are UNKNOWN, never PASS. No uploaded source is retained."
               : "Rule checks with insufficient AWS permissions are marked unknown or partial, never passed."}</p>
           {details.scan.error_code && <p>Failure code: {details.scan.error_code}</p>}
-          {details.scan.kind === "IAM_MCP" && (
+          {["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(details.scan.kind) && (
             <div>
-              <h4>OPA Deploy governance (advisory only)</h4>
-              <p>This separate OPA policy reviews verified, signed scan evidence.
-                It never grants AWS access, blocks MCP tool calls, or certifies
-                effective IAM permissions. A role shared by other workloads
-                may legitimately retain grants outside this MCP mapping.</p>
-              <button className="secondary-action" type="button"
-                disabled={governanceLoading || details.scan.status !== "PARTIAL"}
+              <h4>OPA Deploy Security governance (advisory only)</h4>
+              <p>These decisions review verified audit evidence. They never
+                alter AWS rights, block MCP calls, or certify complete cloud security.</p>
+              <button type="button" className="secondary-action"
+                disabled={governanceLoading ||
+                  !["PARTIAL", "COMPLETED"].includes(details.scan.status)}
                 onClick={evaluateDeployGovernance}>
-                {governanceLoading ? "Checking OPA governance..." : "Evaluate governance with OPA"}
+                {governanceLoading ? "Evaluating..." : isAdmin
+                  ? "Evaluate and record governance" : "Preview governance"}
               </button>
-              {governanceError && <p role="alert">OPA governance unavailable:
-                {governanceError}. No compliance conclusion was produced.</p>}
-              {deployGovernance && (
-                <div role="status">
-                  <p><strong>OPA assessment:
-                    {deployGovernance.classification.replaceAll("_", " ")}</strong></p>
-                  <p>{deployGovernance.explanation}</p>
-                  <p>Recommended follow-up: {deployGovernance.obligations.join(", ")}.
-                    Runtime enforcement: disabled. Effective AWS access: not proven.</p>
-                  <small>Policy: {deployGovernance.policy_revision}.
-                    Rules: {deployGovernance.rule_ids.join(", ")}</small>
+              {governanceError && <p role="alert">{governanceError}</p>}
+              {deployGovernance && <div role="status">
+                <strong>{deployGovernance.classification.replaceAll("_", " ")}</strong>
+                <p>{deployGovernance.explanation}</p>
+                <p>Follow-up: {deployGovernance.obligations.join(", ")}.
+                  No automatic Runtime blocking or proof of effective AWS access.</p>
+              </div>}
+              <h4>Decision history ({governanceHistory.length})</h4>
+              {governanceHistory.length ? governanceHistory.map((item) => (
+                <p key={item.id}>{new Date(item.created_at).toLocaleString()}:
+                  <strong> {item.classification.replaceAll("_", " ")}</strong>
+                  {" | "}{item.policy_revision}
+                  {" | "}Evidence <code>{item.input_sha256.slice(0, 12)}...</code>
+                </p>
+              )) : <p>No persisted decisions.</p>}
+              <h4>Documented exceptions ({deployExceptions.length})</h4>
+              <p>Exceptions remain visible alongside the original findings
+                and never override Runtime authorization.</p>
+              {deployExceptions.map((exception) => (
+                <article key={exception.exception_id}>
+                  <strong>Finding {exception.finding_id.slice(0,12)}:
+                    {" "}{exception.state}</strong>
+                  {exception.expires_at && <p>Expires:
+                    {new Date(exception.expires_at).toLocaleString()}</p>}
+                  <details>
+                    <summary>Audit trail ({exception.events.length})</summary>
+                    {exception.events.map((item) => <p key={item.id}>
+                      {item.operation}: {item.reason}
+                    </p>)}
+                  </details>
+                  {isAdmin && ["REQUESTED", "APPROVED", "EXPIRED"].includes(exception.state) && (
+                    <div>
+                      <label>Review justification
+                        <textarea maxLength={1000} value={reviewReason}
+                          onChange={(e) => setReviewReason(e.target.value)} />
+                      </label>
+                      {exception.state === "REQUESTED" && <>
+                        <label>Approval duration (days)
+                          <input type="number" min={1} max={90} value={expiryDays}
+                            onChange={(e) => setExpiryDays(e.target.value)} />
+                        </label>
+                        <button type="button" disabled={governanceLoading ||
+                          reviewReason.trim().length < 20}
+                          onClick={() => actOnException(exception.exception_id, "APPROVE")}>
+                          Approve temporary exception
+                        </button>
+                        <button type="button" disabled={governanceLoading ||
+                          reviewReason.trim().length < 20}
+                          onClick={() => actOnException(exception.exception_id, "REJECT")}>
+                          Reject exception
+                        </button>
+                      </>}
+                      {["APPROVED", "EXPIRED"].includes(exception.state) &&
+                        <button type="button" disabled={governanceLoading ||
+                          reviewReason.trim().length < 20}
+                          onClick={() => actOnException(exception.exception_id, "REVOKE")}>
+                          Revoke exception
+                        </button>}
+                    </div>
+                  )}
+                </article>
+              ))}
+              {isAdmin && details.findings.length > 0 &&
+                ["COMPLETED", "PARTIAL"].includes(details.scan.status) && (
+                <div>
+                  <label>Finding to review
+                    <select value={exceptionFinding}
+                      onChange={(e) => setExceptionFinding(e.target.value)}>
+                      <option value="">Choose an existing finding</option>
+                      {details.findings.map((finding) => <option key={finding.id}
+                        value={finding.id}>{finding.rule_id}: {finding.title}</option>)}
+                    </select>
+                  </label>
+                  <label>Exception request justification
+                    <textarea maxLength={1000} value={exceptionReason}
+                      onChange={(e) => setExceptionReason(e.target.value)} />
+                  </label>
+                  <button type="button" disabled={governanceLoading ||
+                    !exceptionFinding || exceptionReason.trim().length < 20}
+                    onClick={requestExceptionReview}>Request exception</button>
                 </div>
               )}
+            </div>
+          )}
+          {details.scan.kind === "IAM_MCP" && (
+            <div>
               <h4>Bidirectional MCP and IAM permissions review ({iamRows.length})</h4>
               <p>Each IAM audit is a point-in-time snapshot. Re-run after changing
                 AWS role policies. A right outside this MCP mapping is not proof

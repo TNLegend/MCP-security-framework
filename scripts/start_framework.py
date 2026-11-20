@@ -7,6 +7,8 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = REPO_ROOT / "backend"
@@ -33,12 +35,47 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.runtime_paths import configure_runtime_environment  # noqa: E402
 from app.db.init_db import init_db  # noqa: E402
+from app.services.cloud_deploy_history import local_policy_sha256  # noqa: E402
 from common.project_environment import load_project_environment  # noqa: E402
 
 load_project_environment()
 
 from app.core.config import settings  # noqa: E402
 from app.services.local_runtime_manager import LocalRuntimeManager  # noqa: E402
+
+
+def _opa_dual_policy_ready(base_url: str) -> bool:
+    """A healthy OPA listener without Deploy policy must NOT be reused as ready."""
+    endpoints = (
+        ("/v1/data/mcp/security/runtime/decision", "runtime"),
+        ("/v1/data/mcp/security/deploy/decision", "deploy"),
+    )
+    for suffix, kind in endpoints:
+        try:
+            request = urllib.request.Request(
+                base_url.rstrip("/") + suffix,
+                method="POST",
+                data=b'{"input":{}}',
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=4) as response:
+                raw = response.read(65537)
+            if len(raw) > 65536:
+                return False
+            payload = json.loads(raw.decode("utf-8"))
+            result = payload.get("result") if isinstance(payload, dict) else None
+            if not isinstance(result, dict):
+                return False
+            if kind == "deploy" and (
+                result.get("classification") != "EVIDENCE_INCOMPLETE"
+                or result.get("runtime_enforcement") is not False
+                or result.get("effective_aws_authorization_proven") is not False
+            ):
+                return False
+        except (urllib.error.URLError, OSError, TimeoutError,
+                ValueError, UnicodeError, TypeError, AttributeError):
+            return False
+    return True
 
 
 def main() -> int:
@@ -58,12 +95,24 @@ def main() -> int:
         if database.status != "healthy":
             print(json.dumps({"ready": False, "database": database.as_dict()}, indent=2))
             return 1
-        init_db()
+        try:
+            local_policy_sha256()  # Verify pinned local Runtime + Deploy policy hashes.
+        except (OSError, ValueError, KeyError):
+            print(json.dumps({"ready": False,
+                              "error": "opa_local_policy_bundle_integrity_failed"}, indent=2))
+            return 1
 
         opa = manager.ensure_opa(auto_start=True)
         if opa.status != "healthy":
             print(json.dumps({"ready": False, "opa": opa.as_dict()}, indent=2))
             return 1
+        if not _opa_dual_policy_ready(settings.opa_base_url):
+            print(json.dumps({"ready": False, "error": "opa_runtime_or_deploy_policy_missing"}, indent=2))
+            return 1
+
+        # Only migrate after verifying both policies. A Runtime-only reused
+        # OPA must never trigger a partial Deploy rollout.
+        init_db()
 
         identity_provider = manager.ensure_identity_provider(
             auto_start=settings.local_runtime_autostart_identity_provider

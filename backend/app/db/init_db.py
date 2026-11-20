@@ -279,10 +279,12 @@ def ensure_cloud_security_schema() -> None:
     from app.models.cloud_security import (
         CloudEnvironment, CloudScan, CloudResource, CloudFinding,
         CloudEvidence, CloudIAMComparison, CloudScanEvent, CloudIAMMapping,
+        CloudDeployGovernanceDecision, CloudDeployExceptionEvent,
     )
     tables = [model.__table__ for model in (
         CloudEnvironment, CloudScan, CloudResource, CloudFinding,
         CloudEvidence, CloudIAMComparison, CloudScanEvent, CloudIAMMapping,
+        CloudDeployGovernanceDecision, CloudDeployExceptionEvent,
     )]
     Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
     with engine.begin() as connection:
@@ -303,6 +305,30 @@ def ensure_cloud_security_schema() -> None:
         connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS signed_revision INTEGER"))
         connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS identity_permission_status VARCHAR(48)"))
         connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS effective_permission_status VARCHAR(48)"))
+        if connection.dialect.name == "postgresql":
+            for table in ("cloud_deploy_governance_decisions", "cloud_deploy_exception_events"):
+                connection.execute(text("""
+                    CREATE OR REPLACE FUNCTION deploy_governance_append_only()
+                    RETURNS trigger LANGUAGE plpgsql AS $$
+                    BEGIN
+                        RAISE EXCEPTION 'deploy_governance_append_only';
+                    END;
+                    $$;
+                """))
+                connection.execute(text(f"""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_trigger
+                            WHERE tgname = 'trg_{table}_append_only'
+                        ) THEN
+                            CREATE TRIGGER trg_{table}_append_only
+                            BEFORE UPDATE OR DELETE ON {table}
+                            FOR EACH ROW EXECUTE FUNCTION deploy_governance_append_only();
+                        END IF;
+                    END;
+                    $$;
+                """))
         names = set(inspect(connection).get_table_names())
     if missing := {table.name for table in tables} - names:
         raise RuntimeError(f"cloud_schema_incomplete: {sorted(missing)}")
