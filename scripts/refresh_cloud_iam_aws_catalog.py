@@ -7,6 +7,7 @@ runtime fetching or IAM policy modification.
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import urlopen
@@ -37,7 +38,7 @@ def main():
     requested = {}
     for value in args.method:
         service, sep, method = value.partition(":")
-        if not sep or not service.isidentifier() or not method.isidentifier():
+        if not sep or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", service) or not method.isidentifier():
             parser.error("Invalid service:method")
         requested.setdefault(service, set()).add(method)
     mapping, mapping_digest = load_public_json(BASE + "mapping.json")

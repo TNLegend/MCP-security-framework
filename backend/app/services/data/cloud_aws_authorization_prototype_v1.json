@@ -63,6 +63,148 @@
       "source_url": "https://servicereference.us-east-1.amazonaws.com/v1/dynamodb/dynamodb.json",
       "unmapped_requested_methods": []
     },
+    "geo-places": {
+      "operations": {
+        "geocode": {
+          "api_operation": "Geocode",
+          "authorized_action_candidates": [
+            {
+              "action": "geo-places:Geocode",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "provider"
+              ]
+            }
+          ]
+        },
+        "get_place": {
+          "api_operation": "GetPlace",
+          "authorized_action_candidates": [
+            {
+              "action": "geo-places:GetPlace",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "provider"
+              ]
+            }
+          ]
+        },
+        "reverse_geocode": {
+          "api_operation": "ReverseGeocode",
+          "authorized_action_candidates": [
+            {
+              "action": "geo-places:ReverseGeocode",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "provider"
+              ]
+            }
+          ]
+        },
+        "search_nearby": {
+          "api_operation": "SearchNearby",
+          "authorized_action_candidates": [
+            {
+              "action": "geo-places:SearchNearby",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "provider"
+              ]
+            }
+          ]
+        },
+        "search_text": {
+          "api_operation": "SearchText",
+          "authorized_action_candidates": [
+            {
+              "action": "geo-places:SearchText",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "provider"
+              ]
+            }
+          ]
+        }
+      },
+      "service_version": "v1.5",
+      "source_sha256": "6f3c4e6c2cf5b6e43d8d54ec7bd1633ba873600df61c0f29b771d1b51450a914",
+      "source_url": "https://servicereference.us-east-1.amazonaws.com/v1/geo-places/geo-places.json",
+      "unmapped_requested_methods": []
+    },
+    "geo-routes": {
+      "operations": {
+        "calculate_routes": {
+          "api_operation": "CalculateRoutes",
+          "authorized_action_candidates": [
+            {
+              "action": "geo-routes:CalculateRoutes",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "provider"
+              ]
+            }
+          ]
+        },
+        "optimize_waypoints": {
+          "api_operation": "OptimizeWaypoints",
+          "authorized_action_candidates": [
+            {
+              "action": "geo-routes:OptimizeWaypoints",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "provider"
+              ]
+            }
+          ]
+        }
+      },
+      "service_version": "v1.5",
+      "source_sha256": "dca504326aa61ca1cda80049812219a0ae405f098e40e8a1d63cefa437a915e6",
+      "source_url": "https://servicereference.us-east-1.amazonaws.com/v1/geo-routes/geo-routes.json",
+      "unmapped_requested_methods": []
+    },
     "logs": {
       "operations": {
         "get_query_results": {

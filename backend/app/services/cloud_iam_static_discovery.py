@@ -1,4 +1,4 @@
-﻿"""Static, read-only AWS operation discovery from Python MCP sources.
+"""Static, read-only AWS operation discovery from Python MCP sources.
 
 Prototype scope: Python, boto3, FastMCP-style tools, same-module helpers.
 Does not execute/import inspected source or claim completeness or IAM authority.
@@ -52,6 +52,8 @@ class Inspector:
         self.results = []
         self.gaps = []
         self.tool = ""
+        self.wrapper_clients = {}
+        self.wrapper_ambiguous = set()
         self.external_contexts = {}
         self._index()
         self._index_external(external_modules or {})
@@ -81,6 +83,7 @@ class Inspector:
                             self.tools[item.name] = qname
         if len(self.functions) > MAX_FUNCTIONS:
             raise DiscoveryError("TOO_MANY_FUNCTIONS")
+        self._index_wrapper_constructors()
         for node in self.tree.body:
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -106,6 +109,62 @@ class Inspector:
                 handler = self.helper_name(node.args[0], owner)
                 if handler:
                     self.tools.setdefault(handler.rsplit(".", 1)[-1], handler)
+
+    def _index_wrapper_constructors(self):
+        """Collect literal boto3 clients assigned to self.FIELD in constructors.
+
+        Class bodies are parsed only. Distinct candidates for one attribute
+        stay unresolved rather than inventing a single AWS service.
+        """
+        for cls in self.tree.body:
+            if not isinstance(cls, ast.ClassDef):
+                continue
+            init = next((x for x in cls.body if isinstance(x, ast.FunctionDef)
+                         and x.name == "__init__"), None)
+            if init is None:
+                continue
+            choices = {}
+            for stmt in ast.walk(init):
+                if not isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                    continue
+                value = stmt.value
+                if not isinstance(value, ast.Call):
+                    continue
+                kind = self._sdk_constructor(value.func)
+                if kind not in {"client", "resource"}:
+                    continue
+                service = self._literal(value.args[0]) if value.args else None
+                for key in value.keywords:
+                    if key.arg == "service_name":
+                        service = self._literal(key.value)
+                if not service:
+                    continue
+                endpoints = [key for key in value.keywords if key.arg == "endpoint_url"]
+                destination = "AWS_DEFAULT"
+                if endpoints:
+                    endpoint = self._literal(endpoints[0].value)
+                    if endpoint and endpoint.startswith(
+                        ("http://localhost:", "http://127.0.0.1:", "http://[::1]:")
+                    ):
+                        destination = "LOCAL"
+                    else:
+                        destination = "UNKNOWN"
+                targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                for target in targets:
+                    if (isinstance(target, ast.Attribute)
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == "self"):
+                        choices.setdefault(target.attr, set()).add(
+                            (service, destination, kind))
+            known = {}
+            for field, alternatives in choices.items():
+                if len(alternatives) != 1:
+                    self.wrapper_ambiguous.add((cls.name, field))
+                else:
+                    service, destination, kind = next(iter(alternatives))
+                    known[field] = AWSObject(service, destination, kind)
+            if choices:
+                self.wrapper_clients[cls.name] = known
 
     def _index_external(self, external_modules):
         for module, (filename, text) in sorted(external_modules.items()):
@@ -176,6 +235,10 @@ class Inspector:
         if isinstance(node, ast.JoinedStr):
             return "".join(str(self.symbol(x.value, env)) if isinstance(x, ast.FormattedValue)
                            else str(self.symbol(x, env)) for x in node.values)
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in self.wrapper_clients):
+            return AWSObject(None, "UNKNOWN", "wrapper",
+                             self.wrapper_clients[node.func.id])
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             base = self.symbol(node.func.value, env)
             if base == "os.environ" and node.func.attr == "get" and node.args:
@@ -235,6 +298,12 @@ class Inspector:
             return node.value
         if isinstance(node, ast.Attribute):
             base = self.expression(node.value, env, owner, chain, branch, depth, active)
+            if isinstance(base, AWSObject) and base.kind == "wrapper":
+                found = base.value.get(node.attr)
+                if found is not None:
+                    return found
+                self._gap(node, chain, branch, "WRAPPER_CLIENT_ATTRIBUTE_UNKNOWN")
+                return None
             if isinstance(base, AWSObject) and base.kind == "resource" and node.attr == "meta":
                 return AWSObject(base.service, base.destination, "meta")
             if isinstance(base, AWSObject) and base.kind == "meta" and node.attr == "client":
@@ -243,6 +312,29 @@ class Inspector:
         if isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom, ast.Starred)):
             return self.expression(node.value, env, owner, chain, branch, depth, active)
         if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in self.wrapper_clients:
+                return AWSObject(None, "UNKNOWN", "wrapper",
+                                 self.wrapper_clients[node.func.id])
+            if (isinstance(node.func, ast.Attribute) and
+                    node.func.attr == "to_thread" and
+                    isinstance(node.func.value, ast.Name) and
+                    self.imports.get(node.func.value.id) == "asyncio" and node.args):
+                candidate = node.args[0]
+                if isinstance(candidate, ast.Attribute):
+                    base = self.expression(candidate.value, env, owner, chain, branch, depth, active)
+                    if isinstance(base, AWSObject) and base.kind in {"client", "table"}:
+                        params = self._parameters(node, env)
+                        if base.kind == "table":
+                            params = {"TableName": str(base.value), **params}
+                        self._record(node, chain, branch + "|asyncio.to_thread",
+                                     base, candidate.attr, params)
+                        return None
+                # Unresolved dynamic thread dispatch must not be treated
+                # as no AWS calls; other arguments may still be inspected.
+                for arg in node.args:
+                    self.expression(arg, env, owner, chain, branch, depth, active)
+                self._gap(node, chain, branch, "ASYNC_THREAD_TARGET_UNRESOLVED")
+                return None
             constructor = self._sdk_constructor(node.func)
             if constructor:
                 if constructor == "session":
