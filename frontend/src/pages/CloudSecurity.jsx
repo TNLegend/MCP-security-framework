@@ -397,7 +397,7 @@ export default function CloudSecurity({ isAdmin = false }) {
               Source contents and scanner raw output are not stored.</p>
             {details.evidence.map((e) => (
               <article key={e.id} className="detail-panel">
-                <p><strong>{e.rule_id} ? {e.outcome}</strong></p>
+                <p><strong>{e.rule_id} - {e.rule_id.startsWith("IAC_") && e.outcome === "PASS" ? "SCANNER EXECUTED" : e.outcome}</strong></p>
                 <p>SHA-256: <code>{e.evidence_sha256}</code></p>
                 {e.safe_summary?.scanner && <p>Scanner: {e.safe_summary.scanner}</p>}
                 {e.safe_summary?.file && <p>File: {e.safe_summary.file}
