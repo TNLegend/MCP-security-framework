@@ -1943,6 +1943,28 @@ The current implemented cloud provider is AWS only. Azure and GCP need
 separate identity and policy adapters. Unknown MCP tool capabilities
 without approved mappings remain unassessed, not compliant.
 
+## Experimental AWS IAM Candidate Discovery (Deploy 5.5 / Jalon A)
+
+A separate, read-only research prototype now inspects local Python MCP source
+via AST, follows basic boto3 clients, paginators and local/imported helpers,
+and suggests AWS actions from a pinned offline AWS Service Authorization
+Reference snapshot. It does not import or run inspected MCP source, call AWS,
+publish MCP contracts or approve IAM mappings. It never bypasses the existing
+ADMIN-approved mapping requirement for actual IAM comparison scans.
+
+From the framework root:
+
+    backend/.venv/Scripts/python.exe scripts/probe_cloud_iam_static.py --root . --source mcp-lab/aws_s3_document_server/server.py
+
+The JSON output includes candidate actions, source SHA-256 evidence, symbolic
+resource parameters, unresolved paths, catalogue provenance and explicit
+mapping_approved=false / audit_eligible=false. The checked-in research
+catalogue covers only selected S3, DynamoDB and CloudWatch operations and
+may contain context-dependent alternative IAM actions; no candidate is a
+verified effective AWS authorization. No GUI or runtime integration exists
+yet. Independent qualification and limitations are documented in the QA
+repository under the Deploy Jalon A report (2026-11-20).
+
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework

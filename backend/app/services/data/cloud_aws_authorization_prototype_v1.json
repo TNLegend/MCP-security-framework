@@ -1,0 +1,448 @@
+{
+  "disclaimer": "AuthorizedActions are possible IAM actions, not an unconditional list of required grants.",
+  "mapping_sha256": "987aab93535c075d56e6e2299ea92ff8888b93234d0e936644f79eeb14560617",
+  "mapping_url": "https://servicereference.us-east-1.amazonaws.com/v1/mapping.json",
+  "schema_version": "aws-sdk-action-candidates-prototype-v1",
+  "sdk": "Boto3",
+  "services": {
+    "dynamodb": {
+      "operations": {
+        "put_item": {
+          "api_operation": "PutItem",
+          "authorized_action_candidates": [
+            {
+              "action": "dynamodb:PutItem",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "table"
+              ]
+            },
+            {
+              "action": "dynamodb:WriteDataForReplication",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "table"
+              ]
+            }
+          ]
+        },
+        "query": {
+          "api_operation": "Query",
+          "authorized_action_candidates": [
+            {
+              "action": "dynamodb:Query",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "index",
+                "table"
+              ]
+            }
+          ]
+        }
+      },
+      "service_version": "v1.5",
+      "source_sha256": "b0e865d3107e77c9e71faffaf7969fffba2fc841a3463c972f77495aeec94bac",
+      "source_url": "https://servicereference.us-east-1.amazonaws.com/v1/dynamodb/dynamodb.json",
+      "unmapped_requested_methods": []
+    },
+    "logs": {
+      "operations": {
+        "get_query_results": {
+          "api_operation": "GetQueryResults",
+          "authorized_action_candidates": [
+            {
+              "action": "logs:FilterLogEvents",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "log-group"
+              ]
+            },
+            {
+              "action": "logs:GetQueryResults",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "log-group"
+              ]
+            },
+            {
+              "action": "logs:Unmask",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "log-group"
+              ]
+            }
+          ]
+        },
+        "start_query": {
+          "api_operation": "StartQuery",
+          "authorized_action_candidates": [
+            {
+              "action": "iam:PassRole",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "logs:DescribeLogGroups",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": true,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            },
+            {
+              "action": "logs:DescribeQueryDefinitions",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": true,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": []
+            },
+            {
+              "action": "logs:FilterLogEvents",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "log-group"
+              ]
+            },
+            {
+              "action": "logs:StartQuery",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "log-group"
+              ]
+            },
+            {
+              "action": "logs:Unmask",
+              "properties": {
+                "IsDataPlane": false,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "log-group"
+              ]
+            }
+          ]
+        }
+      },
+      "service_version": "v1.5",
+      "source_sha256": "3c39d1980daecdcd70b6facfcde895c6018266cedd5de3fa7ecc1f2b883cd31a",
+      "source_url": "https://servicereference.us-east-1.amazonaws.com/v1/logs/logs.json",
+      "unmapped_requested_methods": []
+    },
+    "s3": {
+      "operations": {
+        "delete_object": {
+          "api_operation": "DeleteObject",
+          "authorized_action_candidates": [
+            {
+              "action": "s3-object-lambda:DeleteObject",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "s3:BypassGovernanceRetention",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": true,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            },
+            {
+              "action": "s3:DeleteObject",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            },
+            {
+              "action": "s3:DeleteObjectVersion",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            }
+          ]
+        },
+        "get_object": {
+          "api_operation": "GetObject",
+          "authorized_action_candidates": [
+            {
+              "action": "s3-object-lambda:GetObject",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "s3:GetObject",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            },
+            {
+              "action": "s3:GetObjectLegalHold",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            },
+            {
+              "action": "s3:GetObjectRetention",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            },
+            {
+              "action": "s3:GetObjectTagging",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            },
+            {
+              "action": "s3:GetObjectVersion",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            }
+          ]
+        },
+        "list_objects_v2": {
+          "api_operation": "ListObjectsV2",
+          "authorized_action_candidates": [
+            {
+              "action": "s3-object-lambda:ListBucket",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "s3:GetObjectAcl",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            },
+            {
+              "action": "s3:ListBucket",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": true,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": false
+              },
+              "resource_types": [
+                "accesspoint",
+                "bucket"
+              ]
+            }
+          ]
+        },
+        "put_object": {
+          "api_operation": "PutObject",
+          "authorized_action_candidates": [
+            {
+              "action": "s3-object-lambda:PutObject",
+              "properties": {},
+              "resource_types": []
+            },
+            {
+              "action": "s3:PutObject",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            },
+            {
+              "action": "s3:PutObjectAcl",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": true,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            },
+            {
+              "action": "s3:PutObjectLegalHold",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            },
+            {
+              "action": "s3:PutObjectRetention",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": false,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            },
+            {
+              "action": "s3:PutObjectTagging",
+              "properties": {
+                "IsDataPlane": true,
+                "IsList": false,
+                "IsPermissionManagement": false,
+                "IsTaggingOnly": true,
+                "IsWrite": true
+              },
+              "resource_types": [
+                "accesspointobject",
+                "object"
+              ]
+            }
+          ]
+        }
+      },
+      "service_version": "v1.5",
+      "source_sha256": "42a0406559f357e77fad1e4a77c1d3d9aa62bc90da4dd990c13149ae92147c6d",
+      "source_url": "https://servicereference.us-east-1.amazonaws.com/v1/s3/s3.json",
+      "unmapped_requested_methods": []
+    }
+  }
+}
