@@ -1831,21 +1831,44 @@ calls, or independently certify the account's effective permissions.
   `/api/v1/control-plane/cloud-security/scans/{id}/iam-comparisons` shows
   per-tool results. The same workflow appears under Cloud Security.
 
-**Current AWS laboratory limitation:** the authenticated read-only audit
-role can read the EC2 instance's attached profile name, but is denied
-`iam:GetInstanceProfile`, `iam:GetRole`, `iam:ListRolePolicies` and
-`iam:ListAttachedRolePolicies`. A real comparison on 20 November 2026
-(run `62b44b81-6999-4349-b358-51a5714f776b`) therefore recorded four
-`UNKNOWN` tool results, a signed-revision proof and an AWS_ACCESS_DENIED
-coverage event. It did not invent a role-policy mismatch or an all-clear.
-A sample narrowly scoped *manual* read-only IAM policy is provided at
-`policies/cloud_security/aws_iam_mcp_readonly_extension.example.json`.
-After an AWS administrator approves the policy for **MCPDeployAuditRole**
-only, rerun the comparison; never attach it to MCPDocumentServerRole.
+**IAM audit follow-up (20 November 2026):** An AWS administrator has now
+attached reviewed read-only audit permissions to `MCPDeployAuditRole`. The
+backend successfully verified the EC2 instance profile and the actual
+`MCPDocumentServerRole`, then read its one inline policy and two attached
+managed policies (7 IAM statements total, no role permission boundary).
+Without changing the execution role or the published Gateway configuration,
+the signed revision 80 expectation comparison observed:
 
-The first real E2E scan above was initiated internally, not through an
-authenticated GUI session. An authenticated GUI-to-API retest and effective
-IAM scope qualification are pending; they are not represented as passed.
+- `read_document`: `s3:GetObject` for `guide-vpn.txt` versus an IAM
+  identity Allow over the bucket's object keys, except a separately denied
+  confidential key: **POTENTIAL_EXCESS**.
+- `upload_document`: `s3:PutObject` for `demo/mcp-demo.txt` versus the
+  broader `demo/*` prefix: **POTENTIAL_EXCESS**.
+- `delete_document`: `s3:DeleteObject` for `demo/mcp-demo.txt` versus
+  the broader `demo/*` prefix: **POTENTIAL_EXCESS**.
+- `list_documents`: `s3:ListBucket` has a matching identity-policy
+  Allow for the signed bucket, but the *effective* permission is still
+  **UNKNOWN**, since resource policies, SCPs and session restrictions
+  were not conclusively evaluated.
+
+These are read-only observations from the real AWS role. A potentially
+broader identity Allow is **not** proof an agent can bypass the Gateway
+or access all those objects. Additional conservative signals include
+`POTENTIAL_MISSING` (no matching identity Allow, but resource policies
+may still authorize) and `EXPLICIT_DENY` for unconditioned matching
+identity Denies. No automatic IAM changes or permissions remediation occur.
+
+The original PostgreSQL comparison
+(`62b44b81-6999-4349-b358-51a5714f776b`) correctly preserved its
+four **UNKNOWN** outcomes from *before* the read grants. The subsequent
+post-grant policy observations above were independently verified in
+read-only code, but have **not yet been submitted as a new authenticated
+Cloud Security GUI scan** because the browser's local control-plane
+login session expired. The new worker's PostgreSQL persistence is
+qualified by isolated integration tests with realistic IAM data.
+An operator must sign back into the GUI for the final real
+GUI ? backend ? AWS ? PostgreSQL ? GUI qualification. Do not treat
+the earlier UNKNOWN history as if it were updated.
 
 ## Current Limitations
 
@@ -1862,7 +1885,7 @@ IAM scope qualification are pending; they are not represented as passed.
   this does not attest a remote MCP's behavior.
 - Runtime policy depends on OPA availability and fails closed when OPA is unavailable.
 - Scanner and DevSecOps analysis are not a complete production pipeline yet.
-- AWS baseline read-only inventory and a real connected audit have been demonstrated; a non-root audit identity remains required. Terraform ZIP scans with Checkov and Trivy are operational. Prowler 5.51.0 advanced read-only audits work with bounded execution; unverified or manual checks are reported as incomplete; S3 is now covered in the selected AWS laboratory audit, but the account has not received an all-clear. Advanced IAM-to-MCP comparison and guided cross-account AWS onboarding remain future work.
+- AWS baseline read-only inventory and a real connected audit have been demonstrated; a non-root audit identity remains required. Terraform ZIP scans with Checkov and Trivy are operational. Prowler 5.51.0 advanced read-only audits work with bounded execution; unverified or manual checks are reported as incomplete; S3 is now covered in the selected AWS laboratory audit, but the account has not received an all-clear. IAM-to-MCP read-only comparison is implemented and policy reads were verified against the live AWS role; authenticated GUI-to-database qualification and cross-account onboarding remain incomplete.
 - No full audit report generation yet.
 - Control Plane authentication is intentionally minimal and local-first: ADMIN/VIEWER, HttpOnly sessions, CSRF protection, and audit.
 

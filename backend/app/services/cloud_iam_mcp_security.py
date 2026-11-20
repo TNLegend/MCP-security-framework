@@ -206,31 +206,45 @@ def _matches(policy_pattern, value: str) -> bool:
 
 def compare_policy(action: str, resource: str, statements: list[dict],
                    *, restrictions_unknown: bool = True) -> tuple[str, str, list[str]]:
-    """Detect clear unconditioned explicit Deny or broad Allow; never infer effective PASS."""
-    broad: list[str] = []
+    """Conservative *identity-policy* signals, not effective AWS permission verdicts.
+
+    A principal might also be subject to resource policies, permission boundaries,
+    SCPs, session restrictions, and conditions. No identity Allow means
+    POTENTIAL_MISSING, never a proven missing effective permission.
+    """
+    broad: set[str] = set()
     complex_seen = False
+    matching_allow = False
     for item in statements:
         if not isinstance(item, dict) or item.get("Condition") or "NotAction" in item or "NotResource" in item:
             complex_seen = True
             continue
-        if not _matches(item.get("Action", []), action):
-            continue
-        if not _matches(item.get("Resource", []), resource):
+        if not _matches(item.get("Action", []), action) or not _matches(item.get("Resource", []), resource):
             continue
         if item.get("Effect") == "Deny":
             return "EXPLICIT_DENY", "IAM_IDENTITY_EXPLICIT_DENY", []
-        if item.get("Effect") == "Allow":
-            patterns = item.get("Resource", [])
-            patterns = patterns if isinstance(patterns, list) else [patterns]
-            if any(isinstance(pattern, str) and ("*" in pattern or "?" in pattern)
-                   for pattern in patterns):
-                broad.append("IAM_BROAD_RESOURCE_ALLOW")
-            if _matches(item.get("Action"), "s3:*") or item.get("Action") == "*":
-                broad.append("IAM_BROAD_ACTION_ALLOW")
+        if item.get("Effect") != "Allow":
+            complex_seen = True
+            continue
+        matching_allow = True
+        patterns = item.get("Resource", [])
+        patterns = patterns if isinstance(patterns, list) else [patterns]
+        if any(isinstance(pattern, str) and
+               ("*" in pattern or "?" in pattern) and _matches(pattern,resource)
+               for pattern in patterns):
+            broad.add("IAM_BROAD_RESOURCE_ALLOW")
+        actions = item.get("Action", [])
+        actions = actions if isinstance(actions, list) else [actions]
+        if any(isinstance(pattern,str) and ("*" in pattern or "?" in pattern)
+               and _matches(pattern,action) for pattern in actions):
+            broad.add("IAM_BROAD_ACTION_ALLOW")
     if broad:
-        return "POTENTIAL_EXCESS", "IAM_ALLOW_SCOPE_BROADER_THAN_SIGNED_MCP", sorted(set(broad))
-    return "UNKNOWN", ("IAM_CONDITIONAL_OR_POLICY_CONTEXT_UNKNOWN" if complex_seen or restrictions_unknown
-                       else "IAM_NOT_PROVEN"), []
+        return "POTENTIAL_EXCESS", "IAM_ALLOW_SCOPE_BROADER_THAN_SIGNED_MCP", sorted(broad)
+    if matching_allow:
+        return "UNKNOWN", "IAM_EXACT_IDENTITY_ALLOW_EFFECTIVE_UNKNOWN", []
+    if complex_seen:
+        return "UNKNOWN", "IAM_COMPLEX_POLICY_UNRESOLVED", []
+    return "POTENTIAL_MISSING", "IAM_IDENTITY_ALLOW_NOT_FOUND_RESOURCE_POLICY_UNVERIFIED", []
 
 
 def _collect(scan_id: str, environment_id: str, mcp_server_id: int, instance_id: str) -> None:
@@ -314,15 +328,22 @@ def _collect(scan_id: str, environment_id: str, mcp_server_id: int, instance_id:
                         entry["action"], entry["resource"], iam_statements)
                 if status == "UNKNOWN":
                     unknown += 1
-                if status in ("EXPLICIT_DENY", "POTENTIAL_EXCESS"):
+                if status in ("EXPLICIT_DENY", "POTENTIAL_EXCESS", "POTENTIAL_MISSING"):
                     issues += 1
+                    titles = {
+                        "EXPLICIT_DENY": "AWS identity policy explicitly denies an approved MCP capability",
+                        "POTENTIAL_EXCESS": "IAM identity policy may permit more than the signed MCP contract",
+                        "POTENTIAL_MISSING": "No matching identity Allow found for a signed MCP capability",
+                    }
                     db.add(CloudFinding(scan_id=scan.id,resource_id=res.id,
-                         rule_id="IAM_MCP_"+status, severity="HIGH" if status=="EXPLICIT_DENY" else "MEDIUM",
+                         rule_id="IAM_MCP_"+status,
+                         severity="HIGH" if status=="EXPLICIT_DENY" else "MEDIUM",
                          result=status,
                          fingerprint=digest([scan.id,entry["tool"],status]),
-                         title=("AWS explicit denial of signed MCP capability" if status=="EXPLICIT_DENY"
-                                else "Potential AWS permission broader than MCP contract"),
-                         description="The IAM identity policy may not match the approved MCP tool scope.",
+                         title=titles[status],
+                         description=("This is an identity-policy signal, not verified "
+                                      "effective AWS authorization. Resource policies, SCPs, "
+                                      "boundaries and session policies may change the outcome."),
                          remediation="Review the IAM role, resource policies and effective authorization before changing any rights."))
                 summary = {"tool":entry["tool"], "action":entry["action"],
                            "resource":entry["resource"], "status":status,

@@ -42,6 +42,34 @@ function cloudError(err) {
   return key ? messages[key] : raw;
 }
 
+function iamAssessmentLabel(value) {
+  const labels = {
+    EXPLICIT_DENY: "Explicit IAM denial",
+    POTENTIAL_EXCESS: "Potentially broader AWS permissions",
+    POTENTIAL_MISSING: "Possible missing IAM permission",
+    UNKNOWN: "Not fully verified",
+  };
+  return labels[value] || "Not assessed";
+}
+
+function iamAssessmentExplanation(value) {
+  const explanations = {
+    IAM_IDENTITY_EXPLICIT_DENY:
+      "An unconditional IAM identity policy denies the expected action and resource.",
+    IAM_ALLOW_SCOPE_BROADER_THAN_SIGNED_MCP:
+      "A matching IAM grant covers more than the signed MCP contract. Effective access may still be restricted.",
+    IAM_IDENTITY_ALLOW_NOT_FOUND_RESOURCE_POLICY_UNVERIFIED:
+      "No matching IAM identity grant was found. Resource policies or other permissions could still apply.",
+    IAM_EXACT_IDENTITY_ALLOW_EFFECTIVE_UNKNOWN:
+      "A matching IAM identity grant exists, but effective access has not been established.",
+    IAM_ROLE_OR_POLICY_READ_UNAVAILABLE:
+      "The AWS role or policy documents could not be fully verified.",
+    IAM_COMPLEX_POLICY_UNRESOLVED:
+      "IAM conditions or alternative policy clauses require further evaluation.",
+  };
+  return explanations[value] || "This comparison needs additional verification.";
+}
+
 export default function CloudSecurity({ isAdmin = false }) {
   const [environments, setEnvironments] = useState([]);
   const [scans, setScans] = useState([]);
@@ -579,9 +607,12 @@ export default function CloudSecurity({ isAdmin = false }) {
                   <td>{item.tool_name || "Unknown tool"}</td>
                   <td>{item.expected_actions.join(", ") || "Unmapped"}</td>
                   <td><code>{item.expected_resource_arn || "Not verified"}</code></td>
-                  <td>{item.status}</td>
+                  <td>{iamAssessmentLabel(item.status)}</td>
                   <td>{item.role_arn ? item.role_arn.split("/").pop() : "Not verified"}</td>
-                  <td>{item.notes || "?"}</td>
+                  <td>{iamAssessmentExplanation(item.notes)}
+                    {item.signed_revision && <span> Signed contract revision: {item.signed_revision}.</span>}
+                    {item.policy_digest && <span> Policy evidence: <code>{item.policy_digest.slice(0, 16)}?</code></span>}
+                  </td>
                 </tr>)}</tbody>
               </table></div>
             </div>
