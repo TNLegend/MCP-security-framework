@@ -1887,6 +1887,60 @@ need additional attestation before any effective-authorization PASS can be
 claimed. That independent policy-depth limitation does not block proceeding
 to phase-7 Step 6 governance; it must remain visible in risk decisions.
 
+## Deploy Security: configurable AWS MCP permissions (step 5.5)
+
+Cloud Security now supports **reviewed permissions mappings** for registered
+MCP servers with corresponding *published, signed* Gateway contracts.
+The comparison engine contains no fixed MCP tool names, no implicit S3
+folder prefix and no demo-specific permissions.
+
+- For each signed MCP tool effect, administrators choose exact AWS IAM
+  actions and resource templates using ${scope} from a signed SELF
+  resource or ${scope:scope-id} from another signed scope belonging
+  to the same server. Unknown templates, wildcard resources, unsigned
+  effects and cross-server scopes are rejected. Unmapped signed effects
+  are explicitly UNKNOWN, not quietly skipped.
+- Map configurations follow DRAFT then explicit ADMIN APPROVED. The
+  mapping is bound to the published signed revision, the original
+  registered MCP endpoint and AWS account identity, plus an approval
+  SHA-256 fingerprint verified before each scan. Old mappings without
+  this account/endpoint binding cannot launch new scans; the GUI allows
+  copying them into a fresh reviewed draft. The approval is an auditable
+  administrator action, not a separate cryptographic mapping signature.
+  Editing a mapping requires a new draft and explicit reapproval.
+- Verified role discovery supports EC2 instance profiles, ECS RUNNING
+  task taskRoleArn (not executionRoleArn), Lambda function execution
+  roles, and EKS Pod Identity associations for an exact namespace and
+  service account. IRSA and cross-account EKS role chaining are not
+  attested by this resolver. The MCP-to-workload link is selected by
+  the operator and is not a cryptographic runtime attestation.
+- IAM identity-policy status is recorded independently of **effective
+  AWS access**. Matching identity Allows are not treated as security
+  PASS. SCPs, resource policies, sessions, conditional clauses and
+  role permissions boundaries are outside the signed-contract evidence.
+- API, PostgreSQL and GUI use the existing authenticated Cloud Security
+  system. A new additive cloud_iam_mappings table stores configurations
+  and approval hashes, and nullable identity/effective verdict fields
+  preserve all historic comparisons. No IAM writes or automatic access
+  remediation are performed.
+
+Examples include the actual signed AWS S3 document MCP, evaluated with
+real temporary STS audit credentials and an approved configured mapping.
+A second order-processing MCP using DynamoDB Query and PutItem actions
+is tested with its **own synthetic signed contracts and mocked AWS**;
+this does not constitute a second production AWS deployment test.
+
+API paths under /api/v1/control-plane/cloud-security:
+- GET /environments/{id}/iam-mapping-context?mcp_server_id=N
+- GET and POST /environments/{id}/iam-mappings
+- POST /environments/{id}/iam-mappings/{mapping_id}/approve
+- POST /environments/{id}/iam-comparisons with approved mapping_id
+- GET /scans/{scan_id}/iam-comparisons
+
+The current implemented cloud provider is AWS only. Azure and GCP need
+separate identity and policy adapters. Unknown MCP tool capabilities
+without approved mappings remain unassessed, not compliant.
+
 ## Current Limitations
 
 - Governance applies to MCP connections configured through the framework

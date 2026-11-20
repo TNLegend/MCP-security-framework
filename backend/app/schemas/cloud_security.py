@@ -155,14 +155,114 @@ class ScanDetailPublic(BaseModel):
     evidence: list[EvidencePublic]
     events: list[ScanEventPublic]
 
-class IAMComparisonRequest(BaseModel):
+class IAMMappingIdentity(BaseModel):
+    kind: Literal["EC2", "ECS", "LAMBDA", "EKS_POD_IDENTITY"]
+    region: str | None = Field(default=None, pattern=AWS_REGION.pattern)
+    instance_id: str | None = Field(default=None, max_length=19)
+    cluster: str | None = Field(default=None, max_length=100)
+    task: str | None = Field(default=None, max_length=255)
+    function_name: str | None = Field(default=None, max_length=64)
+    namespace: str | None = Field(default=None, max_length=63)
+    service_account: str | None = Field(default=None, max_length=63)
+    association_id: str | None = Field(default=None, max_length=64)
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def valid_workload(self):
+        required = {
+            "EC2": ("instance_id",),
+            "ECS": ("cluster", "task"),
+            "LAMBDA": ("function_name",),
+            "EKS_POD_IDENTITY": ("cluster", "namespace", "service_account", "association_id"),
+        }[self.kind]
+        values = {field: getattr(self, field) for field in (
+            "instance_id", "cluster", "task", "function_name", "namespace",
+            "service_account", "association_id")}
+        if any(bool(values[key]) != (key in required) for key in values):
+            raise ValueError("iam_mapping_identity_fields_invalid")
+        patterns = {
+            "instance_id": r"i-[0-9a-f]{8}(?:[0-9a-f]{9})?",
+            "cluster": r"[A-Za-z0-9_-]{1,100}",
+            "task": r"[A-Za-z0-9_:/-]{1,255}",
+            "function_name": r"[A-Za-z0-9_-]{1,64}",
+            "namespace": r"[a-z0-9]([-a-z0-9]*[a-z0-9])?",
+            "service_account": r"[a-z0-9]([-a-z0-9]*[a-z0-9])?",
+            "association_id": r"a-[a-z0-9]{12,40}",
+        }
+        if any(values[k] is not None and not re.fullmatch(patterns[k], values[k])
+               for k in values):
+            raise ValueError("iam_mapping_identity_format_invalid")
+        return self
+
+
+class IAMMappingEntry(BaseModel):
+    tool_name: str = Field(min_length=1, max_length=128,
+                           pattern=r"^[A-Za-z0-9_.-]+$")
+    effect_id: str = Field(min_length=1, max_length=160,
+                           pattern=r"^[A-Za-z0-9_.-]+$")
+    scope_id: str = Field(min_length=1, max_length=160,
+                          pattern=r"^[A-Za-z0-9_.-]+$")
+    action: str = Field(min_length=3, max_length=120,
+                        pattern=r"^[a-z0-9]+:[A-Za-z0-9]+$")
+    resource_template: str = Field(min_length=12, max_length=512)
+    model_config = ConfigDict(extra="forbid")
+
+
+class IAMMappingCreate(BaseModel):
+    name: str = Field(min_length=3, max_length=128)
     mcp_server_id: int = Field(gt=0, le=1000000)
-    instance_id: str = Field(pattern=r"^i-[0-9a-f]{8}(?:[0-9a-f]{9})?$")
+    identity: IAMMappingIdentity
+    entries: list[IAMMappingEntry] = Field(min_length=1, max_length=100)
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("name")
+    @classmethod
+    def valid_mapping_name(cls, value: str) -> str:
+        name = value.strip()
+        if len(name)<3 or any(ord(ch)<32 for ch in name):
+            raise ValueError("invalid_iam_mapping_name")
+        return name
+
+    @model_validator(mode="after")
+    def no_duplicate_mapping(self):
+        ids = [(e.tool_name, e.effect_id, e.action, e.scope_id,
+                e.resource_template) for e in self.entries]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate_iam_mcp_mapping")
+        return self
+
+
+class IAMMappingApprove(BaseModel):
+    confirm: Literal[True]
+    model_config = ConfigDict(extra="forbid")
+
+
+class IAMMappingPublic(BaseModel):
+    id: str
+    environment_id: str
+    mcp_server_id: int
+    name: str
+    configuration: dict
+    status: str
+    signed_revision: int
+    signed_content_hash: str
+    approval_digest: str | None
+    created_by: str
+    approved_by: str | None
+    created_at: datetime
+    approved_at: datetime | None
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class IAMComparisonRequest(BaseModel):
+    mapping_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
     model_config = ConfigDict(extra="forbid")
 
 
 class IAMComparisonPublic(BaseModel):
     id: str
+    identity_permission_status: str | None
+    effective_permission_status: str | None
     tool_name: str | None
     expected_resource_arn: str | None
     policy_digest: str | None

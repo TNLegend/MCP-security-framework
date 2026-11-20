@@ -12,12 +12,13 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.cloud_security import (
     CloudEnvironment, CloudEvidence, CloudFinding, CloudResource, CloudScan,
-    CloudScanEvent, CloudIAMComparison, new_id,
+    CloudScanEvent, CloudIAMComparison, CloudIAMMapping, new_id,
 )
 from app.schemas.cloud_security import (
     ConnectionTestPublic, EnvironmentCreate, EnvironmentPublic,
     EvidencePublic, FindingPublic, ResourcePublic, ScanDetailPublic,
     ScanEventPublic, ScanPublic, IAMComparisonRequest, IAMComparisonPublic,
+    IAMMappingCreate, IAMMappingApprove, IAMMappingPublic,
 )
 from app.services.cloud_security import (
     CloudAuditError, _safe_error, check_connection, enqueue_scan,
@@ -32,6 +33,11 @@ from app.services.cloud_prowler_security import (
     permission_preview,
 )
 from app.services.cloud_iam_mcp_security import VERSION as IAM_MCP_VERSION, enqueue_comparison
+from app.services.cloud_iam_mapping import (
+    MappingError, context_for_server, compile_expectations,
+    mapping_digest, verify_approved_mapping,
+)
+from app.services.published_configuration import PublishedConfigurationProvider
 from app.models.mcp_server import MCPServer
 from app.services.control_plane_audit import record_control_plane_audit
 from app.services.control_plane_auth import (
@@ -363,43 +369,174 @@ async def upload_iac_scan(
     return scan
 
 
-@router.post("/environments/{environment_id}/iam-comparisons",
-             response_model=ScanPublic, status_code=202)
-def request_iam_mcp_comparison(
-    environment_id: str, payload: IAMComparisonRequest, request: Request,
-    actor: AuthenticatedControlPlaneUser = Depends(require_admin),
-    db: Session = Depends(get_db),
+@router.get("/environments/{environment_id}/iam-mapping-context")
+def iam_mapping_context(
+    environment_id:str,mcp_server_id:int,
+    _:AuthenticatedControlPlaneUser=Depends(require_authenticated_user),
+    db:Session=Depends(get_db),
 ):
-    env = db.scalar(select(CloudEnvironment).where(
-        CloudEnvironment.id == environment_id).with_for_update())
+    _env(db,environment_id)
+    server=db.get(MCPServer,mcp_server_id)
+    if server is None or server.status!="active":
+        raise HTTPException(status_code=404,detail="mcp_server_not_found")
+    try:
+        snapshot=PublishedConfigurationProvider(db).load_active_snapshot()
+        return context_for_server(snapshot,server.endpoint)
+    except MappingError as exc:
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+
+@router.get("/environments/{environment_id}/iam-mappings",
+            response_model=list[IAMMappingPublic])
+def list_iam_mappings(
+    environment_id:str,
+    _:AuthenticatedControlPlaneUser=Depends(require_authenticated_user),
+    db:Session=Depends(get_db),
+):
+    _env(db,environment_id)
+    return db.scalars(select(CloudIAMMapping).where(
+        CloudIAMMapping.environment_id==environment_id
+    ).order_by(CloudIAMMapping.created_at.desc()).limit(100)).all()
+
+
+@router.post("/environments/{environment_id}/iam-mappings",
+             response_model=IAMMappingPublic,status_code=201)
+def create_iam_mapping(
+    environment_id:str,payload:IAMMappingCreate,request:Request,
+    actor:AuthenticatedControlPlaneUser=Depends(require_admin),
+    db:Session=Depends(get_db),
+):
+    env=_env(db,environment_id)
+    if env.status!="CONNECTED" or not env.account_id:
+        raise HTTPException(status_code=409,detail="cloud_connection_not_verified")
+    if payload.identity.region and payload.identity.region not in env.regions:
+        raise HTTPException(status_code=422,detail="iam_identity_region_not_connected")
+    server=db.get(MCPServer,payload.mcp_server_id)
+    if server is None or server.status!="active":
+        raise HTTPException(status_code=404,detail="mcp_server_not_found")
+    try:
+        snapshot=PublishedConfigurationProvider(db).load_active_snapshot()
+        configuration={"identity":payload.identity.model_dump(mode="json",exclude_none=True),
+                       "entries":[e.model_dump(mode="json") for e in payload.entries],
+                       "source_binding":{"account_id":env.account_id,
+                                         "server_endpoint":server.endpoint}}
+        compile_expectations(snapshot,server.endpoint,configuration["entries"])
+    except MappingError as exc:
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+    row=CloudIAMMapping(
+        environment_id=environment_id,mcp_server_id=server.id,
+        name=payload.name.strip(),configuration=configuration,status="DRAFT",
+        signed_revision=snapshot.revision_number,
+        signed_content_hash=snapshot.content_hash,created_by=actor.user.id,
+    )
+    db.add(row)
+    db.flush()
+    _audit(db,request,actor,"CLOUD_IAM_MAPPING_DRAFT_CREATED",
+           "cloud_iam_mapping",row.id,{
+               "environment_id":environment_id,"server_id":server.id,
+               "signed_revision":snapshot.revision_number,
+               "config_digest":mapping_digest(row),
+           })
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.post("/environments/{environment_id}/iam-mappings/{mapping_id}/approve",
+             response_model=IAMMappingPublic)
+def approve_iam_mapping(
+    environment_id:str,mapping_id:str,payload:IAMMappingApprove,request:Request,
+    actor:AuthenticatedControlPlaneUser=Depends(require_admin),
+    db:Session=Depends(get_db),
+):
+    _env(db,environment_id)
+    row=db.scalar(select(CloudIAMMapping).where(
+        CloudIAMMapping.id==mapping_id,
+        CloudIAMMapping.environment_id==environment_id).with_for_update())
+    if row is None:
+        raise HTTPException(status_code=404,detail="iam_mapping_not_found")
+    if row.status!="DRAFT":
+        raise HTTPException(status_code=409,detail="iam_mapping_already_approved")
+    server=db.get(MCPServer,row.mcp_server_id)
+    if server is None or server.status!="active":
+        raise HTTPException(status_code=409,detail="mcp_server_not_active")
+    try:
+        snapshot=PublishedConfigurationProvider(db).load_active_snapshot()
+        if row.signed_revision!=snapshot.revision_number or row.signed_content_hash!=snapshot.content_hash:
+            raise MappingError("IAM_MCP_MAPPING_SIGNED_REVISION_CHANGED")
+        if row.configuration.get("source_binding")!={"account_id":_env(db,environment_id).account_id,
+                                                      "server_endpoint":server.endpoint}:
+            raise MappingError("IAM_MCP_MAPPING_CLOUD_OR_SERVER_BINDING_CHANGED")
+        compile_expectations(snapshot,server.endpoint,row.configuration["entries"])
+    except MappingError as exc:
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+    row.status="APPROVED"
+    row.approved_by=actor.user.id
+    row.approved_at=datetime.utcnow()
+    row.approval_digest=mapping_digest(row)
+    _audit(db,request,actor,"CLOUD_IAM_MAPPING_APPROVED",
+           "cloud_iam_mapping",row.id,{
+               "environment_id":environment_id,
+               "signed_revision":row.signed_revision,
+               "approved_digest":row.approval_digest,
+           })
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.post("/environments/{environment_id}/iam-comparisons",
+             response_model=ScanPublic,status_code=202)
+def request_iam_mcp_comparison(
+    environment_id:str,payload:IAMComparisonRequest,request:Request,
+    actor:AuthenticatedControlPlaneUser=Depends(require_admin),
+    db:Session=Depends(get_db),
+):
+    env=db.scalar(select(CloudEnvironment).where(
+        CloudEnvironment.id==environment_id).with_for_update())
     if env is None:
-        raise HTTPException(status_code=404, detail="cloud_environment_not_found")
-    if env.status != "CONNECTED" or not env.account_id or not env.role_arn:
-        raise HTTPException(status_code=409, detail="cloud_connection_not_verified")
-    server = db.get(MCPServer, payload.mcp_server_id)
-    if server is None or server.status != "active":
-        raise HTTPException(status_code=404, detail="mcp_server_not_found")
-    active = db.scalar(select(CloudScan.id).where(
-        CloudScan.environment_id == env.id,
-        CloudScan.status.in_(("QUEUED", "RUNNING")),
-    ).limit(1))
+        raise HTTPException(status_code=404,detail="cloud_environment_not_found")
+    if env.status!="CONNECTED" or not env.account_id or not env.role_arn:
+        raise HTTPException(status_code=409,detail="cloud_connection_not_verified")
+    row=db.get(CloudIAMMapping,payload.mapping_id)
+    if row is None or row.environment_id!=environment_id:
+        raise HTTPException(status_code=404,detail="iam_mapping_not_found")
+    server=db.get(MCPServer,row.mcp_server_id)
+    if server is None or server.status!="active":
+        raise HTTPException(status_code=409,detail="mcp_server_not_active")
+    try:
+        snapshot=PublishedConfigurationProvider(db).load_active_snapshot()
+        verify_approved_mapping(row,snapshot,server.endpoint,env.account_id)
+    except MappingError as exc:
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+    active=db.scalar(select(CloudScan.id).where(
+        CloudScan.environment_id==env.id,
+        CloudScan.status.in_(("QUEUED","RUNNING"))).limit(1))
     if active is not None:
-        raise HTTPException(status_code=409, detail="cloud_scan_already_active")
-    scan = CloudScan(id=new_id(),environment_id=env.id,kind="IAM_MCP",
-                     status="QUEUED",scanner_version=IAM_MCP_VERSION,
-                     requested_by=actor.user.id)
+        raise HTTPException(status_code=409,detail="cloud_scan_already_active")
+    scan=CloudScan(id=new_id(),environment_id=env.id,kind="IAM_MCP",
+                   status="QUEUED",scanner_version=IAM_MCP_VERSION,
+                   source_fingerprint=row.approval_digest,
+                   requested_by=actor.user.id)
     db.add(scan)
     db.flush()
-    db.add(CloudScanEvent(scan_id=scan.id,event_type="STATE",message_code="QUEUED"))
+    db.add(CloudScanEvent(scan_id=scan.id,event_type="STATE",
+                          message_code="QUEUED"))
     _audit(db,request,actor,"CLOUD_IAM_MCP_COMPARISON_REQUESTED",
-           "cloud_scan",scan.id,{"environment_id":env.id,
-            "mcp_server_id":payload.mcp_server_id,"kind":"IAM_MCP"})
+           "cloud_scan",scan.id,{
+               "environment_id":env.id,
+               "mcp_server_id":row.mcp_server_id,
+               "iam_mapping_id":row.id,
+               "approved_digest":row.approval_digest,
+               "kind":"IAM_MCP",
+           })
     db.commit()
-    if not enqueue_comparison(scan.id,env.id,payload.mcp_server_id,payload.instance_id):
+    if not enqueue_comparison(scan.id,env.id,row.id):
         scan.status="FAILED"
         scan.error_code="CLOUD_WORKER_BUSY"
         scan.completed_at=datetime.utcnow()
-        db.add(CloudScanEvent(scan_id=scan.id,event_type="STATE",message_code="WORKER_BUSY"))
+        db.add(CloudScanEvent(scan_id=scan.id,event_type="STATE",
+                              message_code="WORKER_BUSY"))
         db.commit()
         raise HTTPException(status_code=503,detail="cloud_worker_busy")
     db.refresh(scan)

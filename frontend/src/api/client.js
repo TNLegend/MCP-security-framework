@@ -885,15 +885,38 @@ export async function fetchProwlerPermissionPreview(id) {
   );
 }
 
-export async function startIAMMCPComparison(environmentId, mcpServerId, instanceId) {
-  return request(
-    "/control-plane/cloud-security/environments/" + encodeURIComponent(environmentId) + "/iam-comparisons",
-    {
-      method: "POST",
-      body: JSON.stringify({ mcp_server_id: Number(mcpServerId), instance_id: instanceId }),
+export async function fetchIAMMappings(environmentId) {
+  return request("/control-plane/cloud-security/environments/" +
+    encodeURIComponent(environmentId) + "/iam-mappings");
+}
+
+export async function fetchIAMMappingContext(environmentId, serverId) {
+  return request("/control-plane/cloud-security/environments/" +
+    encodeURIComponent(environmentId) + "/iam-mapping-context?mcp_server_id=" +
+    encodeURIComponent(serverId));
+}
+
+export async function createIAMMapping(environmentId, data) {
+  return request("/control-plane/cloud-security/environments/" +
+    encodeURIComponent(environmentId) + "/iam-mappings", {
+      method: "POST", body: JSON.stringify(data), timeoutMs: 45000,
+    });
+}
+
+export async function approveIAMMapping(environmentId, mappingId) {
+  return request("/control-plane/cloud-security/environments/" +
+    encodeURIComponent(environmentId) + "/iam-mappings/" +
+    encodeURIComponent(mappingId) + "/approve", {
+      method: "POST", body: JSON.stringify({ confirm: true }), timeoutMs: 45000,
+    });
+}
+
+export async function startIAMMCPComparison(environmentId, mappingId) {
+  return request("/control-plane/cloud-security/environments/" +
+    encodeURIComponent(environmentId) + "/iam-comparisons", {
+      method: "POST", body: JSON.stringify({ mapping_id: mappingId }),
       timeoutMs: 45000,
-    },
-  );
+    });
 }
 
 export async function fetchIAMMCPResults(scanId) {

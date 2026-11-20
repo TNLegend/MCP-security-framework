@@ -134,6 +134,8 @@ class CloudIAMComparison(Base):
     expected_resource_arn: Mapped[str | None] = mapped_column(String(512), nullable=True)
     policy_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     signed_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    identity_permission_status: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    effective_permission_status: Mapped[str | None] = mapped_column(String(48), nullable=True)
 
 
 class CloudScanEvent(Base):
@@ -144,3 +146,28 @@ class CloudScanEvent(Base):
     event_type: Mapped[str] = mapped_column(String(48), nullable=False)
     message_code: Mapped[str] = mapped_column(String(96), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class CloudIAMMapping(Base):
+    """Versioned admin-reviewed mapping bound to a signed published MCP revision.
+
+    No runtime IAM mutations or cloud secrets are stored. Editing an approved
+    mapping requires creating a new draft with its own approval digest.
+    """
+    __tablename__ = "cloud_iam_mappings"
+    __table_args__ = (
+        Index("ix_cloud_iam_mapping_environment", "environment_id", "mcp_server_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    environment_id: Mapped[str] = mapped_column(ForeignKey("cloud_environments.id"), nullable=False)
+    mcp_server_id: Mapped[int] = mapped_column(ForeignKey("mcp_servers.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    configuration: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="DRAFT")
+    signed_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    signed_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    approval_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -278,11 +278,11 @@ def ensure_cloud_security_schema() -> None:
     """Add-only, repeatable migration for the seven new Deploy Security tables."""
     from app.models.cloud_security import (
         CloudEnvironment, CloudScan, CloudResource, CloudFinding,
-        CloudEvidence, CloudIAMComparison, CloudScanEvent,
+        CloudEvidence, CloudIAMComparison, CloudScanEvent, CloudIAMMapping,
     )
     tables = [model.__table__ for model in (
         CloudEnvironment, CloudScan, CloudResource, CloudFinding,
-        CloudEvidence, CloudIAMComparison, CloudScanEvent,
+        CloudEvidence, CloudIAMComparison, CloudScanEvent, CloudIAMMapping,
     )]
     Base.metadata.create_all(bind=engine, tables=tables, checkfirst=True)
     with engine.begin() as connection:
@@ -301,6 +301,8 @@ def ensure_cloud_security_schema() -> None:
         connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS expected_resource_arn VARCHAR(512)"))
         connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS policy_digest VARCHAR(64)"))
         connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS signed_revision INTEGER"))
+        connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS identity_permission_status VARCHAR(48)"))
+        connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS effective_permission_status VARCHAR(48)"))
         names = set(inspect(connection).get_table_names())
     if missing := {table.name for table in tables} - names:
         raise RuntimeError(f"cloud_schema_incomplete: {sorted(missing)}")

@@ -10,7 +10,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from hashlib import sha256
-import fnmatch
 import json
 import logging
 import re
@@ -21,33 +20,15 @@ from sqlalchemy import select
 from app.db.database import SessionLocal
 from app.models.cloud_security import (
     CloudEnvironment, CloudScan, CloudScanEvent, CloudIAMComparison,
-    CloudEvidence, CloudFinding, CloudResource, new_id,
+    CloudEvidence, CloudFinding, CloudResource, CloudIAMMapping, new_id,
 )
 from app.services.cloud_security import check_connection, _safe_error
 from app.services.published_configuration import PublishedConfigurationProvider
 
-VERSION = "iam-mcp-signed-v1"
+VERSION = "iam-mcp-generic-v2"
 log = logging.getLogger(__name__)
 _POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cloud-iam-mcp")
 _CAPACITY = BoundedSemaphore(1)
-_INSTANCE_ID = re.compile(r"^i-[0-9a-f]{8}(?:[0-9a-f]{9})?$")
-_ACTIONS = {
-    "read_document": "s3:GetObject",
-    "upload_document": "s3:PutObject",
-    "delete_document": "s3:DeleteObject",
-    "list_documents": "s3:ListBucket",
-}
-_CAPABILITIES = {
-    "read_document": "cloud.object.read",
-    "upload_document": "cloud.object.write",
-    "delete_document": "cloud.object.delete",
-    "list_documents": "cloud.object.read",
-}
-_REQUIRED_READ = (
-    "iam:GetInstanceProfile", "iam:GetRole", "iam:ListRolePolicies",
-    "iam:GetRolePolicy", "iam:ListAttachedRolePolicies",
-    "iam:GetPolicy", "iam:GetPolicyVersion",
-)
 _MAX_POLICY_DOCS = 25
 _MAX_POLICY_STATEMENTS = 300
 
@@ -59,98 +40,6 @@ class ComparisonError(ValueError):
 def digest(value: object) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                              ensure_ascii=True).encode("utf-8")).hexdigest()
-
-
-def _server_ref(endpoint: str) -> str:
-    return "streamable_http:" + endpoint
-
-
-def _signed_expectations(snapshot, endpoint: str) -> tuple[list[dict], str]:
-    """Read actual signed contracts and narrow scopes, never construct demo contracts."""
-    content = snapshot.content
-    server_ref = _server_ref(endpoint)
-    contracts = [c for c in content.tool_security_contracts if c.server_ref == server_ref]
-    if not contracts:
-        raise ComparisonError("IAM_MCP_SIGNED_SERVER_CONTRACT_NOT_FOUND")
-    scopes = [s for s in content.authority_resource_scopes if s.authority == server_ref]
-    expectations = []
-    for contract in contracts:
-        if contract.tool_name not in _ACTIONS or len(contract.effects) != 1:
-            # An unrecognized tool cannot be mapped to AWS by guessing.
-            expectations.append({"tool": contract.tool_name, "action": None,
-                                 "resource": None, "status": "UNKNOWN",
-                                 "reason": "UNSUPPORTED_MCP_TOOL"})
-            continue
-        effect = contract.effects[0]
-        tool = contract.tool_name
-        expected_path = ["key"] if tool == "read_document" else ["filename"]
-        precision = getattr(effect.declared_reference_precision, "value",
-                            effect.declared_reference_precision)
-        bindings = list(effect.resource_bindings)
-        if tool == "list_documents":
-            shape_verified = (not bindings and effect.fixed_resource is not None
-                              and effect.fixed_resource.resource_type == "cloud_object")
-        else:
-            shape_verified = (effect.fixed_resource is None and len(bindings) == 1
-                              and list(bindings[0].path) == expected_path
-                              and bindings[0].resource_type == "cloud_object"
-                              and bindings[0].role == "RESOURCE")
-        if precision != "EXPLICIT" or not shape_verified:
-            expectations.append({"tool":tool, "action":None,
-                                 "resource":None,"status":"UNKNOWN",
-                                 "reason":"MCP_EFFECT_SHAPE_UNVERIFIED"})
-            continue
-        if effect.capability != _CAPABILITIES[tool]:
-            expectations.append({"tool": tool, "action": None, "resource": None,
-                                 "status": "UNKNOWN", "reason": "MCP_CAPABILITY_MISMATCH"})
-            continue
-        if tool == "list_documents":
-            fixed = effect.fixed_resource
-            matches = ([s for s in scopes if fixed is not None and
-                        s.canonical_value == fixed.canonical_value and
-                        s.match_mode == "SELF"])
-        else:
-            # Each signed effect has its own signed scope-id in this release.
-            # If the mapping cannot be proven, we return UNKNOWN.
-            token = effect.effect_id.split(".", 1)[0]
-            if not token.startswith("tool-"):
-                matches = []
-            else:
-                part = token[5:]
-                matches = [scope for scope in scopes
-                           if scope.match_mode == "SELF"
-                           and scope.scope_id.startswith("cloud-storage-" + part + "-")]
-        if len(matches) != 1:
-            expectations.append({"tool": tool, "action": _ACTIONS[tool],
-                                 "resource": None, "status": "UNKNOWN",
-                                 "reason": "MCP_SCOPE_UNVERIFIED"})
-            continue
-        raw = matches[0].canonical_value
-        # The fixed S3 bucket name is independently part of the signed list tool.
-        list_contract = next((c for c in contracts if c.tool_name == "list_documents"), None)
-        bucket = (list_contract.effects[0].fixed_resource.canonical_value
-                  if list_contract and list_contract.effects and
-                  list_contract.effects[0].fixed_resource else None)
-        if not bucket or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{2,62}", bucket):
-            expectations.append({"tool": tool, "action": _ACTIONS[tool],
-                                 "resource": None, "status": "UNKNOWN",
-                                 "reason": "MCP_BUCKET_UNVERIFIED"})
-            continue
-        if tool == "list_documents":
-            resource = "arn:aws:s3:::" + bucket
-        else:
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,180}", raw) or ".." in raw:
-                expectations.append({"tool": tool, "action": _ACTIONS[tool],
-                                     "resource": None, "status": "UNKNOWN",
-                                     "reason": "MCP_OBJECT_SCOPE_INVALID"})
-                continue
-            # The real MCP server enforces demo/ for write/delete filenames.
-            key = "demo/" + raw if tool in ("upload_document", "delete_document") else raw
-            resource = "arn:aws:s3:::" + bucket + "/" + key
-        expectations.append({"tool": tool, "action": _ACTIONS[tool],
-                             "resource": resource, "status": "READY",
-                             "reason": "SIGNED_EXACT_SCOPE"})
-    return expectations, snapshot.content_hash
 
 
 def _iam_profile_role(iam, profile_name: str) -> str:
@@ -198,10 +87,43 @@ def _policy_statements(iam, role_name: str) -> tuple[list[dict], list[str], bool
     return statements, codes, incomplete
 
 
-def _matches(policy_pattern, value: str) -> bool:
-    patterns = policy_pattern if isinstance(policy_pattern, list) else [policy_pattern]
-    return any(isinstance(p, str) and fnmatch.fnmatchcase(value.lower(), p.lower())
-               for p in patterns)
+def _matches(policy_pattern, value: str, *, action: bool = False) -> bool:
+    """Bounded IAM wildcard matching with only * and ? (no regex execution).
+
+    The matcher is case-insensitive for AWS action names but preserves the
+    case-sensitive resource portions of ARNs (S3 keys, DynamoDB tables).
+    """
+    patterns=policy_pattern if isinstance(policy_pattern,list) else [policy_pattern]
+    if len(value)>1024:
+        return False
+    for candidate in patterns[:200]:
+        if not isinstance(candidate,str) or len(candidate)>1024:
+            continue
+        pattern=candidate.lower() if action else candidate
+        target=value.lower() if action else value
+        i=j=0
+        star=-1
+        matched=0
+        while j<len(target):
+            if i<len(pattern) and (pattern[i]=="?" or pattern[i]==target[j]):
+                i+=1
+                j+=1
+            elif i<len(pattern) and pattern[i]=="*":
+                star=i
+                i+=1
+                matched=j
+            elif star>=0:
+                i=star+1
+                matched+=1
+                j=matched
+            else:
+                break
+        else:
+            while i<len(pattern) and pattern[i]=="*":
+                i+=1
+            if i==len(pattern):
+                return True
+    return False
 
 
 def compare_policy(action: str, resource: str, statements: list[dict],
@@ -219,7 +141,7 @@ def compare_policy(action: str, resource: str, statements: list[dict],
         if not isinstance(item, dict) or item.get("Condition") or "NotAction" in item or "NotResource" in item:
             complex_seen = True
             continue
-        if not _matches(item.get("Action", []), action) or not _matches(item.get("Resource", []), resource):
+        if not _matches(item.get("Action", []), action, action=True) or not _matches(item.get("Resource", []), resource):
             continue
         if item.get("Effect") == "Deny":
             return "EXPLICIT_DENY", "IAM_IDENTITY_EXPLICIT_DENY", []
@@ -236,7 +158,7 @@ def compare_policy(action: str, resource: str, statements: list[dict],
         actions = item.get("Action", [])
         actions = actions if isinstance(actions, list) else [actions]
         if any(isinstance(pattern,str) and ("*" in pattern or "?" in pattern)
-               and _matches(pattern,action) for pattern in actions):
+               and _matches(pattern,action,action=True) for pattern in actions):
             broad.add("IAM_BROAD_ACTION_ALLOW")
     if broad:
         return "POTENTIAL_EXCESS", "IAM_ALLOW_SCOPE_BROADER_THAN_SIGNED_MCP", sorted(broad)
@@ -247,168 +169,233 @@ def compare_policy(action: str, resource: str, statements: list[dict],
     return "POTENTIAL_MISSING", "IAM_IDENTITY_ALLOW_NOT_FOUND_RESOURCE_POLICY_UNVERIFIED", []
 
 
-def _collect(scan_id: str, environment_id: str, mcp_server_id: int, instance_id: str) -> None:
-    """Worker keeps AWS calls outside DB transactions and stores only normalized observations."""
+def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
+    """Verified signed contract + admin-approved mapping + read-only AWS role."""
+    from app.services.cloud_iam_mapping import verify_approved_mapping, MappingError
+    from app.services.cloud_iam_workloads import resolve_workload, IdentityResolutionError
     try:
         with SessionLocal.begin() as db:
-            scan = db.get(CloudScan, scan_id)
-            if scan is None or scan.status != "QUEUED":
+            scan=db.get(CloudScan,scan_id)
+            if scan is None or scan.status!="QUEUED":
                 return
-            scan.status = "RUNNING"
-            scan.started_at = datetime.utcnow()
-            db.add(CloudScanEvent(scan_id=scan_id, event_type="STATE", message_code="STARTED"))
+            scan.status="RUNNING"
+            scan.started_at=datetime.utcnow()
+            db.add(CloudScanEvent(scan_id=scan_id,event_type="STATE",message_code="STARTED"))
         with SessionLocal() as db:
             from app.models.mcp_server import MCPServer
-            env = db.get(CloudEnvironment, environment_id)
-            server = db.get(MCPServer, mcp_server_id)
-            if env is None or server is None:
-                raise ComparisonError("IAM_MCP_LINK_MISSING")
-            snapshot = PublishedConfigurationProvider(db).load_active_snapshot()
-            expected, signature_hash = _signed_expectations(snapshot, server.endpoint)
-            revision_number = snapshot.revision_number
+            env=db.get(CloudEnvironment,environment_id)
+            mapping=db.get(CloudIAMMapping,mapping_id)
+            if env is None or mapping is None or mapping.environment_id!=environment_id:
+                raise ComparisonError("IAM_MCP_MAPPING_OR_ENVIRONMENT_MISSING")
+            server=db.get(MCPServer,mapping.mcp_server_id)
+            if server is None or server.status!="active":
+                raise ComparisonError("IAM_MCP_SERVER_NOT_ACTIVE")
+            snapshot=PublishedConfigurationProvider(db).load_active_snapshot()
+            expected=verify_approved_mapping(mapping,snapshot,server.endpoint,env.account_id)
+            revision_number=snapshot.revision_number
+            signature_hash=snapshot.content_hash
+            approved_hash=mapping.approval_digest
+            server_id=server.id
             from types import SimpleNamespace
-            config = SimpleNamespace(credential_mode=env.credential_mode,
-                 profile_name=env.profile_name, role_arn=env.role_arn,
-                 regions=list(env.regions), account_id=env.account_id)
-        sdk, account, _ = check_connection(config)
-        profile = None
-        role_arn = None
-        iam_statements: list[dict] = []
-        read_errors = []
-        instance = sdk.client("ec2", region_name=config.regions[0]).describe_instances(
-            InstanceIds=[instance_id])
-        found = [x for res in instance.get("Reservations", [])
-                 for x in res.get("Instances", []) if x.get("InstanceId") == instance_id]
-        if len(found) != 1:
-            raise ComparisonError("IAM_MCP_EC2_INSTANCE_UNVERIFIED")
-        profile_link = found[0].get("IamInstanceProfile") or {}
-        profile_arn = profile_link.get("Arn")
-        if isinstance(profile_arn, str) and ":instance-profile/" in profile_arn:
-            profile = profile_arn.split(":instance-profile/", 1)[-1].rsplit("/",1)[-1]
-        if not profile:
-            read_errors.append("IAM_MCP_INSTANCE_PROFILE_MISSING")
-        else:
-            iam = sdk.client("iam")
+            config=SimpleNamespace(
+                credential_mode=env.credential_mode,
+                profile_name=env.profile_name,
+                role_arn=env.role_arn,
+                regions=list(env.regions),
+                account_id=env.account_id,
+            )
+            workload=dict(mapping.configuration["identity"])
+        sdk,account,_=check_connection(config)
+        selected_region=workload.get("region") or config.regions[0]
+        if selected_region not in config.regions:
+            raise ComparisonError("IAM_MCP_REGION_NOT_IN_ENVIRONMENT")
+        identity=None
+        read_errors=[]
+        iam_statements=[]
+        policy_codes=[]
+        try:
+            identity=resolve_workload(sdk,account,selected_region,workload)
+        except IdentityResolutionError as exc:
+            read_errors.append(str(exc))
+        except Exception as exc:
+            read_errors.append(_safe_error(exc))
+        if identity is not None:
             try:
-                role_arn = _iam_profile_role(iam, profile)
-                if not role_arn.startswith(f"arn:aws:iam::{account}:role/"):
-                    raise ComparisonError("IAM_MCP_ROLE_ACCOUNT_MISMATCH")
-                role_name = role_arn.rsplit("/",1)[-1]
-                iam_statements, policy_codes, _ = _policy_statements(iam, role_name)
-                read_errors.extend(policy_codes)
+                iam_statements,policy_codes,_=_policy_statements(
+                    sdk.client("iam"),identity["role_name"])
             except ComparisonError as exc:
                 read_errors.append(str(exc))
             except Exception as exc:
                 read_errors.append(_safe_error(exc))
-        policy_hash = digest(iam_statements) if iam_statements and not read_errors else None
+        policy_hash=digest(iam_statements) if identity and not read_errors else None
         with SessionLocal.begin() as db:
-            scan = db.get(CloudScan, scan_id)
-            if scan is None or scan.status != "RUNNING":
+            scan=db.get(CloudScan,scan_id)
+            if scan is None or scan.status!="RUNNING":
                 return
-            unknown = 0
-            issues = 0
-            res = CloudResource(id=new_id(),scan_id=scan.id,environment_id=environment_id,
-                  resource_type="MCP_EC2_SERVER",resource_arn=f"ec2-instance://{instance_id}",
-                  display_name="MCP server EC2 instance",region=config.regions[0],
-                  safe_attributes={"instance_id": instance_id,
-                    "role_link_verified":role_arn is not None,
-                    "mcp_host_association":"OPERATOR_SELECTED",
+            unknown=0
+            issues=0
+            role_arn=identity["role_arn"] if identity else None
+            res=CloudResource(
+                id=new_id(),scan_id=scan.id,environment_id=environment_id,
+                resource_type="MCP_CLOUD_WORKLOAD",
+                resource_arn=(identity["resource"] if identity else
+                              "aws-workload://identity-unverified/"+mapping_id),
+                display_name="Configured MCP cloud workload",
+                region=selected_region,
+                safe_attributes={
+                    "workload_type":workload["kind"],
+                    "identity_verified":bool(identity),
+                    "mcp_workload_association":"OPERATOR_SELECTED",
                     "signed_revision":revision_number,
-                    "signed_revision_hash":signature_hash})
+                    "signed_revision_hash":signature_hash,
+                    "approved_mapping_id":mapping_id,
+                    "approved_mapping_digest":approved_hash,
+                    "identity_policy_coverage_codes":policy_codes,
+                },
+            )
             db.add(res)
             db.flush()
             for entry in expected:
-                ready = entry["status"] == "READY"
-                if not ready or read_errors or not role_arn or not iam_statements:
-                    status, reason, warnings = ("UNKNOWN", (
-                        entry["reason"] if not ready else
-                        "IAM_ROLE_OR_POLICY_READ_UNAVAILABLE"), [])
+                ready=entry["status"]=="READY"
+                if not ready or read_errors or not identity:
+                    status="UNKNOWN"
+                    reason=(entry["reason"] if not ready
+                            else "IAM_ROLE_OR_POLICY_READ_UNAVAILABLE")
+                    warnings=[]
                 else:
-                    status, reason, warnings = compare_policy(
-                        entry["action"], entry["resource"], iam_statements)
-                if status == "UNKNOWN":
-                    unknown += 1
-                if status in ("EXPLICIT_DENY", "POTENTIAL_EXCESS", "POTENTIAL_MISSING"):
-                    issues += 1
-                    titles = {
-                        "EXPLICIT_DENY": "AWS identity policy explicitly denies an approved MCP capability",
-                        "POTENTIAL_EXCESS": "IAM identity policy may permit more than the signed MCP contract",
-                        "POTENTIAL_MISSING": "No matching identity Allow found for a signed MCP capability",
-                    }
-                    db.add(CloudFinding(scan_id=scan.id,resource_id=res.id,
-                         rule_id="IAM_MCP_"+status,
-                         severity="HIGH" if status=="EXPLICIT_DENY" else "MEDIUM",
-                         result=status,
-                         fingerprint=digest([scan.id,entry["tool"],status]),
-                         title=titles[status],
-                         description=("This is an identity-policy signal, not verified "
-                                      "effective AWS authorization. Resource policies, SCPs, "
-                                      "boundaries and session policies may change the outcome."),
-                         remediation="Review the IAM role, resource policies and effective authorization before changing any rights."))
-                summary = {"tool":entry["tool"], "action":entry["action"],
-                           "resource":entry["resource"], "status":status,
-                           "reason_code":reason, "warning_codes":warnings,
-                           "role_link_verified":role_arn is not None,
-                           "signed_revision":revision_number,
-                           "signed_revision_hash":signature_hash}
-                db.add(CloudIAMComparison(scan_id=scan.id,mcp_server_id=mcp_server_id,
-                    role_arn=role_arn,status=status,
-                    tool_name=entry["tool"][:128],
+                    status,reason,warnings=compare_policy(
+                        entry["action"],entry["resource"],iam_statements)
+                if status=="UNKNOWN":
+                    unknown+=1
+                if status in ("EXPLICIT_DENY","POTENTIAL_EXCESS","POTENTIAL_MISSING"):
+                    issues+=1
+                    title={
+                        "EXPLICIT_DENY":"IAM policy explicitly denies an approved MCP capability",
+                        "POTENTIAL_EXCESS":"IAM permissions may exceed the approved MCP contract",
+                        "POTENTIAL_MISSING":"IAM identity Allow may be missing for an approved MCP capability",
+                    }[status]
+                    db.add(CloudFinding(
+                        scan_id=scan.id,resource_id=res.id,
+                        rule_id="IAM_MCP_"+status,
+                        severity="HIGH" if status=="EXPLICIT_DENY" else "MEDIUM",
+                        result=status,
+                        fingerprint=digest([scan.id,entry["tool"],
+                                            entry["effect_id"],entry["action"],
+                                            entry["resource"],status]),
+                        title=title,
+                        description=("Identity-policy observation only. Effective authorization "
+                                     "depends on resource policies, conditions, session restrictions "
+                                     "and organization-level controls."),
+                        remediation="Review signed MCP contract and cloud identity policies before any access changes.",
+                    ))
+                identity_permission_status=(
+                    "PRESENT_BROADER_THAN_CONTRACT" if status=="POTENTIAL_EXCESS"
+                    else "NO_MATCHING_IDENTITY_ALLOW" if status=="POTENTIAL_MISSING"
+                    else "EXPLICIT_IDENTITY_DENY" if status=="EXPLICIT_DENY"
+                    else "PRESENT_EXACT_IDENTITY_ALLOW"
+                    if reason=="IAM_EXACT_IDENTITY_ALLOW_EFFECTIVE_UNKNOWN"
+                    else "UNKNOWN")
+                # A role's identity allow does not establish effective access
+                # because of SCPs, resource policies, session conditions etc.
+                effective_permission_status=(
+                    "DENIED_BY_EXPLICIT_IDENTITY_POLICY" if status=="EXPLICIT_DENY"
+                    else "UNKNOWN")
+                summary={
+                    "identity_permission_status":identity_permission_status,
+                    "effective_permission_status":effective_permission_status,
+                    "tool":entry["tool"],"effect_id":entry["effect_id"],
+                    "action":entry["action"],"resource":entry["resource"],
+                    "status":status,"reason_code":reason,"warning_codes":warnings,
+                    "role_link_verified":bool(identity),
+                    "signed_revision":revision_number,
+                    "signed_revision_hash":signature_hash,
+                    "approved_mapping_digest":approved_hash,
+                    "workload_type":workload["kind"],
+                }
+                db.add(CloudIAMComparison(
+                    scan_id=scan.id,mcp_server_id=server_id,role_arn=role_arn,
+                    status=status,tool_name=entry["tool"][:128],
+                    identity_permission_status=identity_permission_status,
+                    effective_permission_status=effective_permission_status,
                     expected_resource_arn=entry["resource"],
-                    policy_digest=policy_hash,
-                    signed_revision=revision_number,
+                    policy_digest=policy_hash,signed_revision=revision_number,
                     expected_actions=[entry["action"]] if entry["action"] else [],
                     observed_actions=sorted({
                         item for statement in iam_statements
-                        if statement.get("Effect") == "Allow"
-                        for item in (statement.get("Action")
-                                    if isinstance(statement.get("Action"), list)
-                                    else [statement.get("Action")])
-                        if isinstance(item, str) and
-                        re.fullmatch(r"(?:s3|kms|sts):[A-Za-z*?]{1,60}", item)
-                    })[:20] if role_arn and not read_errors else [],
-                    notes=reason))
-                db.add(CloudEvidence(scan_id=scan.id,resource_id=res.id,
-                       rule_id="IAM_MCP_"+entry["tool"].upper(),
-                       outcome="UNKNOWN" if status=="UNKNOWN" else "FAIL",
-                       evidence_sha256=digest(summary),safe_summary=summary))
-            for issue in sorted(set(read_errors)):
-                db.add(CloudScanEvent(scan_id=scan.id,event_type="COVERAGE",
-                    message_code=("IAM_MCP_"+issue)[:96]))
-            db.add(CloudEvidence(scan_id=scan.id,rule_id="IAM_MCP_SIGNED_REVISION",
-                 outcome="PASS",evidence_sha256=digest([revision_number,signature_hash]),
-                 safe_summary={"signed_revision":revision_number,
-                               "signed_revision_hash":signature_hash,
-                               "signed_source":"PUBLISHED_VERIFIED"}))
-            scan.resource_count = 1
-            scan.finding_count = issues
-            scan.unknown_checks = unknown
-            # Never claim comprehensive effective IAM compliance based on identity policies.
-            scan.status = "PARTIAL"
-            scan.completed_at = datetime.utcnow()
-            db.add(CloudScanEvent(scan_id=scan.id,event_type="STATE",message_code="PARTIAL"))
+                        if statement.get("Effect")=="Allow"
+                        for item in (statement.get("Action") if isinstance(
+                                     statement.get("Action"),list)
+                                     else [statement.get("Action")])
+                        if isinstance(item,str) and
+                        re.fullmatch(r"[a-z0-9]+:[A-Za-z*?]{1,60}",item)
+                    })[:20] if identity and not read_errors else [],
+                    notes=reason,
+                ))
+                # Truncate rule identifiers with a digest to distinguish multiple
+                # actions for the same MCP tool without collisions.
+                rule="IAM_MCP_"+re.sub(r"[^A-Z0-9_]","_",entry["tool"].upper())[:45]
+                rule+="_"+digest([entry["effect_id"],entry["action"],
+                                   entry["resource"]])[:12].upper()
+                db.add(CloudEvidence(
+                    scan_id=scan.id,resource_id=res.id,rule_id=rule,
+                    outcome="UNKNOWN" if status=="UNKNOWN" else "FAIL",
+                    evidence_sha256=digest(summary),safe_summary=summary,
+                ))
+            for issue in sorted(set(read_errors+policy_codes)):
+                db.add(CloudScanEvent(
+                    scan_id=scan.id,event_type="COVERAGE",
+                    message_code=("IAM_MCP_"+issue)[:96],
+                ))
+            db.add(CloudEvidence(
+                scan_id=scan.id,rule_id="IAM_MCP_SIGNED_REVISION",outcome="PASS",
+                evidence_sha256=digest([revision_number,signature_hash]),
+                safe_summary={"signed_revision":revision_number,
+                              "signed_revision_hash":signature_hash,
+                              "signed_source":"PUBLISHED_VERIFIED"},
+            ))
+            approval_summary={"mapping_id":mapping_id,
+                              "approved_digest":approved_hash,
+                              "signed_revision_hash":signature_hash}
+            db.add(CloudEvidence(
+                scan_id=scan.id,rule_id="IAM_MCP_ADMIN_APPROVAL",outcome="PASS",
+                evidence_sha256=digest(approval_summary),
+                safe_summary=approval_summary,
+            ))
+            scan.resource_count=1
+            scan.finding_count=issues
+            scan.unknown_checks=unknown
+            # Never assert effective IAM PASS by identity-policy Allow alone.
+            scan.status="PARTIAL"
+            scan.completed_at=datetime.utcnow()
+            db.add(CloudScanEvent(scan_id=scan.id,event_type="STATE",
+                                  message_code="PARTIAL"))
     except Exception as exc:
-        reason = str(exc) if isinstance(exc, ComparisonError) else _safe_error(exc)
+        from app.services.cloud_iam_mapping import MappingError
+        from app.services.cloud_iam_workloads import IdentityResolutionError
+        reason=(str(exc) if isinstance(exc,(ComparisonError,MappingError,
+                                            IdentityResolutionError))
+                else _safe_error(exc))
         try:
             with SessionLocal.begin() as db:
-                scan = db.get(CloudScan, scan_id)
+                scan=db.get(CloudScan,scan_id)
                 if scan and scan.status in ("QUEUED","RUNNING"):
-                    scan.status = "FAILED"
-                    scan.error_code = reason[:80]
-                    scan.completed_at = datetime.utcnow()
-                    db.add(CloudScanEvent(scan_id=scan.id,event_type="STATE",message_code="FAILED"))
+                    scan.status="FAILED"
+                    scan.error_code=reason[:80]
+                    scan.completed_at=datetime.utcnow()
+                    db.add(CloudScanEvent(scan_id=scan.id,event_type="STATE",
+                                          message_code="FAILED"))
         except Exception:
-            log.error("IAM comparison failure persistence issue")
-        log.warning("IAM comparison failed with code %s", reason)
+            log.error("IAM comparison result persistence failure")
+        log.warning("IAM comparison failed with code %s",reason)
     finally:
         _CAPACITY.release()
 
 
-def enqueue_comparison(scan_id: str, environment_id: str, mcp_server_id: int, instance_id: str) -> bool:
+def enqueue_comparison(scan_id: str, environment_id: str, mapping_id: str) -> bool:
     if not _CAPACITY.acquire(blocking=False):
         return False
     try:
-        _POOL.submit(_collect, scan_id, environment_id, mcp_server_id, instance_id)
+        _POOL.submit(_collect,scan_id,environment_id,mapping_id)
     except Exception:
         _CAPACITY.release()
         raise

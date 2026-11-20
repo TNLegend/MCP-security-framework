@@ -6,6 +6,7 @@ import {
   fetchIaCScannerAvailability, uploadTerraformZip,
   fetchProwlerAvailability, startProwlerCloudScan,
   fetchProwlerPermissionPreview, startIAMMCPComparison, fetchIAMMCPResults,
+  fetchIAMMappings, fetchIAMMappingContext, createIAMMapping, approveIAMMapping,
   fetchServers, safeErrorMessage,
 } from "../api/client";
 
@@ -94,7 +95,15 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [permissionPreview, setPermissionPreview] = useState(null);
   const [mcpServers, setMcpServers] = useState([]);
   const [mcpServerId, setMcpServerId] = useState("");
-  const [instanceId, setInstanceId] = useState("");
+  const [identityKind, setIdentityKind] = useState("EC2");
+  const [identityInputs, setIdentityInputs] = useState({});
+  const [mappingName, setMappingName] = useState("Cloud tool permissions");
+  const [mappingContext, setMappingContext] = useState(null);
+  const [mappingRows, setMappingRows] = useState([]);
+  const [iamMappings, setIamMappings] = useState([]);
+  const [iamMappingId, setIamMappingId] = useState("");
+  const [approvalConfirmed, setApprovalConfirmed] = useState(false);
+  const [mappingContextError, setMappingContextError] = useState("");
   const [iamRows, setIamRows] = useState([]);
 
   async function refresh() {
@@ -127,6 +136,101 @@ export default function CloudSecurity({ isAdmin = false }) {
       if (active.length) setMcpServerId(String(active[0].id));
     }).catch(() => setError("MCP server list could not be loaded."));
   }, []);
+  useEffect(() => {
+    if (!selected) { setIamMappings([]); setIamMappingId(""); return; }
+    let cancelled = false;
+    fetchIAMMappings(selected).then((items) => {
+      if (cancelled) return;
+      setIamMappings(items);
+      setIamMappingId((old) => items.some((item) => item.id === old) ? old :
+        (items.find((item) => item.status === "APPROVED")?.id || items[0]?.id || ""));
+    }).catch(() => { if (!cancelled) setIamMappings([]); });
+    return () => { cancelled = true; };
+  }, [selected]);
+
+  useEffect(() => {
+    if (!selected || !mcpServerId) {
+      setMappingContext(null); setMappingRows([]); return;
+    }
+    let cancelled = false;
+    setMappingContextError("");
+    fetchIAMMappingContext(selected, mcpServerId).then((ctx) => {
+      if (cancelled) return;
+      setMappingContext(ctx);
+      setMappingRows(ctx.effects.map((effect) => ({
+        tool_name: effect.tool_name, effect_id: effect.effect_id,
+        scope_id: "", action: "", resource_template: "",
+      })));
+    }).catch(() => {
+      if (!cancelled) {
+        setMappingContext(null); setMappingRows([]);
+        setMappingContextError("No approved and published MCP contracts were found for this server.");
+      }
+    });
+    return () => { cancelled = true; };
+  }, [selected, mcpServerId]);
+
+  async function reloadIAMMappings(environmentId = selected) {
+    const items = await fetchIAMMappings(environmentId);
+    setIamMappings(items);
+    return items;
+  }
+
+  function updateMappingRow(index, field, value) {
+    setMappingRows((old) => old.map((entry, i) =>
+      i === index ? { ...entry, [field]: value } : entry));
+  }
+
+  async function saveMappingDraft() {
+    if (!current || !mappingContext) return;
+    const config = {
+      name: mappingName.trim(),
+      mcp_server_id: Number(mcpServerId),
+      identity: {
+        kind: identityKind,
+        region: identityInputs.region || current.regions[0],
+        ...(identityKind === "EC2" ? { instance_id: identityInputs.instance_id || "" } : {}),
+        ...(identityKind === "ECS" ? {
+          cluster: identityInputs.cluster || "", task: identityInputs.task || "",
+        } : {}),
+        ...(identityKind === "LAMBDA" ? {
+          function_name: identityInputs.function_name || "",
+        } : {}),
+        ...(identityKind === "EKS_POD_IDENTITY" ? {
+          cluster: identityInputs.cluster || "",
+          namespace: identityInputs.namespace || "",
+          service_account: identityInputs.service_account || "",
+          association_id: identityInputs.association_id || "",
+        } : {}),
+      },
+      entries: mappingRows.filter((r) => r.action.trim() && r.scope_id &&
+        r.resource_template.trim()).map((r) => ({
+          ...r, action: r.action.trim(), resource_template: r.resource_template.trim(),
+        })),
+    };
+    const created = await action(
+      () => createIAMMapping(current.id, config),
+      () => "Mapping draft saved. Review it and approve explicitly before any scan.",
+    );
+    if (created) {
+      await reloadIAMMappings();
+      setIamMappingId(created.id);
+      setApprovalConfirmed(false);
+    }
+  }
+
+  async function approveSelectedMapping() {
+    if (!current || !iamMappingId || !approvalConfirmed) return;
+    const approved = await action(
+      () => approveIAMMapping(current.id, iamMappingId),
+      () => "Mapping approved for its signed MCP revision. Ready for an audit.",
+    );
+    if (approved) {
+      await reloadIAMMappings();
+      setApprovalConfirmed(false);
+    }
+  }
+
   // A diagnostic is only valid for the environment that was probed.
   useEffect(() => { setPermissionPreview(null); }, [selected]);
 
@@ -471,9 +575,10 @@ export default function CloudSecurity({ isAdmin = false }) {
 
       <section className="detail-panel">
         <h3>Compare MCP tool permissions with AWS</h3>
-        <p>Compare the published, signed MCP tool contracts with the AWS IAM
-          policies of the selected EC2 instance. This is read-only. Unavailable
-          IAM policies, unverified roles and complex effective permissions remain UNKNOWN.</p>
+        <p>Choose a registered MCP server, link its verified AWS workload, then
+          describe which cloud permissions each published MCP contract needs.
+          Save a draft, review it and explicitly approve it before scanning.
+          This only reads AWS permissions; it never grants or changes them.</p>
         <div className="contract-editor">
           <label>MCP server
             <select value={mcpServerId} disabled={!mcpServers.length}
@@ -484,24 +589,200 @@ export default function CloudSecurity({ isAdmin = false }) {
               </option>)}
             </select>
           </label>
-          <label>AWS EC2 instance ID hosting this server
-            <input value={instanceId} onChange={(event) => setInstanceId(event.target.value.trim())}
-              placeholder="i-0123456789abcdef0" maxLength={19} />
-          </label>
-          <p>Choose the actual host instance. Its IAM instance profile must be
-            verified before any role policy is attributed to the MCP server.
-            The audit role must have IAM read permissions; this action never grants them.</p>
-          {isAdmin && current && (
-            <button type="button" className="secondary-action"
-              disabled={busy || current.status !== "CONNECTED" || !mcpServerId
-                || !/^i-[0-9a-f]{8}([0-9a-f]{9})?$/.test(instanceId)}
-              onClick={() => action(
-                () => startIAMMCPComparison(current.id, mcpServerId, instanceId),
-                (result) => "IAM and MCP comparison queued (" + result.id + ").",
-              )}>
-              Compare AWS and MCP permissions
-            </button>
+          {mappingContextError && <p role="status">{mappingContextError}</p>}
+          {mappingContext && (
+            <div>
+              <p>Published signed MCP revision: {mappingContext.signed_revision}.
+                Approved tool capabilities: {mappingContext.effects.length}.
+                Permissions are configured per cloud action; unknown effects are
+                never silently treated as safe.</p>
+              {isAdmin && (
+                <div className="contract-editor">
+                  <label>Configuration name
+                    <input maxLength={128} value={mappingName}
+                      onChange={(e) => setMappingName(e.target.value)} />
+                  </label>
+                  <label>Cloud hosting type
+                    <select value={identityKind}
+                      onChange={(e) => { setIdentityKind(e.target.value); setIdentityInputs({}); }}>
+                      <option value="EC2">AWS EC2 instance</option>
+                      <option value="ECS">AWS ECS running task</option>
+                      <option value="LAMBDA">AWS Lambda function</option>
+                      <option value="EKS_POD_IDENTITY">AWS EKS Pod Identity</option>
+                    </select>
+                  </label>
+                  <label>AWS region
+                    <select value={identityInputs.region || current?.regions?.[0] || ""}
+                      onChange={(e) => setIdentityInputs((old) => ({ ...old, region: e.target.value }))}>
+                      {(current?.regions || []).map((r) => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </label>
+                  {(identityKind === "EC2" ? [
+                    ["instance_id", "EC2 instance ID", "i-0123456789abcdef0"],
+                  ] : identityKind === "ECS" ? [
+                    ["cluster", "ECS cluster name", "cluster-name"],
+                    ["task", "ECS running task ID or ARN", "task-id"],
+                  ] : identityKind === "LAMBDA" ? [
+                    ["function_name", "Lambda function name", "my-function"],
+                  ] : [
+                    ["cluster", "EKS cluster name", "cluster-name"],
+                    ["namespace", "Kubernetes namespace", "default"],
+                    ["service_account", "Kubernetes service account", "my-mcp"],
+                    ["association_id", "EKS Pod Identity association ID", "a-xxxxxxxxxxxxxxxxx"],
+                  ]).map(([field, label, placeholder]) => (
+                    <label key={field}>{label}
+                      <input value={identityInputs[field] || ""} placeholder={placeholder}
+                        onChange={(e) => setIdentityInputs((old) =>
+                          ({ ...old, [field]: e.target.value.trim() }))} />
+                    </label>
+                  ))}
+                  <p>Cloud access mappings are reviewed, not inferred from tool names.
+                    Use signed SELF scopes only. Resource templates must include
+                    <code> {"${scope}"} </code>, optionally referring to another
+                    signed scope using <code> {"${scope:scope-id}"} </code>.
+                    Example: <code> {"arn:aws:s3:::bucket-name/path/${scope}"} </code>
+                    or <code> {"arn:aws:dynamodb:eu-west-3:123456789012:table/${scope}"} </code>.
+                  </p>
+                  {mappingRows.map((entry, index) => {
+                    const currentEffect = mappingContext.effects.find((item) =>
+                      item.tool_name === entry.tool_name && item.effect_id === entry.effect_id);
+                    const allowedScopes = mappingContext.scopes.filter((sc) =>
+                      sc.resource_type === currentEffect?.resource_type);
+                    return <div className="detail-panel" key={index}>
+                      <label>Approved MCP tool capability
+                        <select value={entry.tool_name + "|" + entry.effect_id}
+                          onChange={(e) => {
+                            const chosen = mappingContext.effects.find((ef) =>
+                              ef.tool_name + "|" + ef.effect_id === e.target.value);
+                            if (!chosen) return;
+                            setMappingRows((old) => old.map((row, i) => i === index
+                              ? { ...row, tool_name: chosen.tool_name, effect_id: chosen.effect_id, scope_id: "" }
+                              : row));
+                          }}>
+                          {mappingContext.effects.map((effect) => (
+                            <option key={effect.tool_name + "|" + effect.effect_id}
+                              value={effect.tool_name + "|" + effect.effect_id}>
+                              {effect.tool_name} : {effect.capability}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p>Signed capability: {currentEffect?.capability || "unavailable"}</p>
+                      <label>AWS action, for example s3:GetObject
+                        <input value={entry.action} placeholder="service:Action"
+                          onChange={(e) => updateMappingRow(index, "action", e.target.value)} />
+                      </label>
+                      <label>Signed resource scope
+                        <select value={entry.scope_id}
+                          onChange={(e) => updateMappingRow(index, "scope_id", e.target.value)}>
+                          <option value="">Choose an approved scope</option>
+                          {allowedScopes.map((sc) => <option key={sc.scope_id} value={sc.scope_id}>
+                            {sc.scope_id}: {sc.canonical_value}
+                          </option>)}
+                        </select>
+                      </label>
+                      <label>Cloud resource ARN template
+                        <input value={entry.resource_template}
+                          placeholder="arn:aws:s3:::bucket-name/path/${scope}"
+                          maxLength={512}
+                          onChange={(e) => updateMappingRow(index, "resource_template", e.target.value)} />
+                      </label>
+                      <button type="button" className="tiny-action"
+                        onClick={() => setMappingRows((old) => old.filter((_, i) => i !== index))}>
+                        Remove this action
+                      </button>
+                    </div>;
+                  })}
+                  <button type="button" className="secondary-action"
+                    onClick={() => {
+                      const effect = mappingContext.effects[0];
+                      if (effect) setMappingRows((old) => [...old, {
+                        tool_name: effect.tool_name, effect_id: effect.effect_id,
+                        scope_id: "", action: "", resource_template: "",
+                      }]);
+                    }}>
+                    Add another AWS action
+                  </button>
+                  <button type="button" disabled={busy || !mappingRows.some((r) =>
+                    r.action && r.scope_id && r.resource_template)}
+                    onClick={saveMappingDraft}>Save mapping draft</button>
+                </div>
+              )}
+            </div>
           )}
+          <label>Mapping configuration
+            <select value={iamMappingId} onChange={(e) => {
+              setIamMappingId(e.target.value); setApprovalConfirmed(false);
+            }}>
+              <option value="">Select a configured mapping</option>
+              {iamMappings.map((mapping) => (
+                <option key={mapping.id} value={mapping.id}>
+                  {mapping.name} ({mapping.status}, revision {mapping.signed_revision})
+                </option>
+              ))}
+            </select>
+          </label>
+          {(() => {
+            const chosen = iamMappings.find((m) => m.id === iamMappingId);
+            const registered = mcpServers.find((server) => server.id === chosen?.mcp_server_id);
+            const bound = chosen?.configuration?.source_binding;
+            const validBinding = Boolean(current && registered && bound &&
+              bound.account_id === current.account_id &&
+              bound.server_endpoint === registered.endpoint);
+            const currentRevision = chosen?.signed_revision === mappingContext?.signed_revision &&
+              chosen?.signed_content_hash === mappingContext?.signed_content_hash;
+            return chosen && (
+              <div>
+                <p>Mapping: {chosen.status}. Linked MCP server ID: {chosen.mcp_server_id}.
+                  Hosting: {chosen.configuration?.identity?.kind}. Approved
+                  mapping digest: {chosen.approval_digest?.slice(0, 16) || "Pending approval"}.
+                  New published contract revisions require new mapping approval.</p>
+                {(!validBinding || !currentRevision) && (
+                  <p role="status">This older configuration is not bound to the
+                    current AWS account, registered MCP endpoint and signed
+                    revision. Create a new reviewed draft before scanning.</p>
+                )}
+                {isAdmin && chosen.mcp_server_id === Number(mcpServerId) && mappingContext && (
+                  <button type="button" className="tiny-action"
+                    disabled={busy}
+                    onClick={() => {
+                      const cfg = chosen.configuration || {};
+                      setMappingName(chosen.name + " reviewed");
+                      setIdentityKind(cfg.identity?.kind || "EC2");
+                      setIdentityInputs({ ...(cfg.identity || {}) });
+                      setMappingRows((cfg.entries || []).map((entry) => ({ ...entry })));
+                      setApprovalConfirmed(false);
+                      setMessage("Configuration copied into the editor. Review all permissions and save a new draft.");
+                    }}>
+                    Copy configuration into new draft
+                  </button>
+                )}
+                {isAdmin && chosen.status === "DRAFT" && validBinding && currentRevision && (
+                  <div>
+                    <label>
+                      <input type="checkbox" checked={approvalConfirmed}
+                        onChange={(e) => setApprovalConfirmed(e.target.checked)} />
+                      I have reviewed the signed contract, AWS actions, resources and
+                      selected workload. Approve this version for read-only scans.
+                    </label>
+                    <button type="button" className="secondary-action"
+                      disabled={busy || !approvalConfirmed}
+                      onClick={approveSelectedMapping}>Approve mapping</button>
+                  </div>
+                )}
+                {isAdmin && chosen.status === "APPROVED" && validBinding && currentRevision && (
+                  <button type="button" className="secondary-action"
+                    disabled={busy || current?.status !== "CONNECTED"}
+                    onClick={() => action(
+                      () => startIAMMCPComparison(current.id, chosen.id),
+                      (result) => "IAM and MCP comparison queued (" + result.id + ").",
+                    )}>
+                    Compare AWS and MCP permissions
+                  </button>
+                )}
+              </div>
+            );
+          })()}
         </div>
         <h4>Permissions comparison history</h4>
         {iamScans.length === 0 ? <p>No IAM permission comparisons yet.</p> : (
@@ -596,10 +877,12 @@ export default function CloudSecurity({ isAdmin = false }) {
           {details.scan.kind === "IAM_MCP" && (
             <div>
               <h4>Signed MCP contracts versus IAM permissions ({iamRows.length})</h4>
-              <p>UNKNOWN means AWS permissions or the host identity were not fully
-                established. Potential excess is not proof of effective access,
-                because resource policies, boundaries and organization controls
-                may restrict it. No role or MCP contract is changed.</p>
+              <p>The IAM identity-permission column reports evidence of an
+                identity-policy Allow or Deny. Effective AWS access is assessed
+                separately: a present identity grant is not proof that the
+                workload can actually use the permission. Organization,
+                resource and session policies may restrict it. No cloud
+                role or published MCP contract is changed.</p>
               {iamRows.some((item) => item.notes === "IAM_ROLE_OR_POLICY_READ_UNAVAILABLE") && (
                 <p>AWS IAM read permissions are insufficient for this scan.
                   Review iam:GetInstanceProfile, iam:GetRole, iam:ListRolePolicies,
@@ -608,13 +891,18 @@ export default function CloudSecurity({ isAdmin = false }) {
               )}
               <div className="table-scroll"><table>
                 <thead><tr><th>MCP tool</th><th>Expected AWS action</th>
-                  <th>Expected S3 resource</th><th>Assessment</th>
+                  <th>Expected cloud resource</th><th>Assessment</th>
+                  <th>Identity IAM permission</th><th>Effective AWS access</th>
                   <th>IAM role</th><th>Reason</th></tr></thead>
                 <tbody>{iamRows.map((item) => <tr key={item.id}>
                   <td>{item.tool_name || "Unknown tool"}</td>
                   <td>{item.expected_actions.join(", ") || "Unmapped"}</td>
                   <td><code>{item.expected_resource_arn || "Not verified"}</code></td>
                   <td>{iamAssessmentLabel(item.status)}</td>
+                  <td>{(item.identity_permission_status || "Not recorded")
+                    .replaceAll("_", " ").toLowerCase()}</td>
+                  <td>{(item.effective_permission_status || "UNKNOWN")
+                    .replaceAll("_", " ").toLowerCase()}</td>
                   <td>{item.role_arn ? item.role_arn.split("/").pop() : "Not verified"}</td>
                   <td>{iamAssessmentExplanation(item.notes)}
                     {item.signed_revision && <span> Signed contract revision: {item.signed_revision}.</span>}
@@ -642,7 +930,9 @@ export default function CloudSecurity({ isAdmin = false }) {
               Source contents and scanner raw output are not stored.</p>
             {details.evidence.map((e) => (
               <article key={e.id} className="detail-panel">
-                <p><strong>{e.rule_id} - {e.rule_id === "IAM_MCP_SIGNED_REVISION" && e.outcome === "PASS"
+                <p><strong>{e.rule_id} - {e.rule_id === "IAM_MCP_ADMIN_APPROVAL" && e.outcome === "PASS"
+                  ? "ADMIN MAPPING APPROVAL VERIFIED"
+                  : e.rule_id === "IAM_MCP_SIGNED_REVISION" && e.outcome === "PASS"
                   ? "SIGNED CONFIG VERIFIED"
                   : (e.rule_id.startsWith("IAC_") || e.rule_id === "PROWLER_EXECUTION") && e.outcome === "PASS"
                     ? "SCANNER EXECUTED" : e.outcome}</strong></p>
