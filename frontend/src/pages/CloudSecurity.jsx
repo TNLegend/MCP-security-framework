@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   createCloudEnvironment, fetchCloudEnvironments, fetchCloudScans,
   fetchCloudScanDetail, startCloudScan, testCloudEnvironment,
+  updateCloudEnvironment,
   safeErrorMessage,
 } from "../api/client";
 
@@ -9,6 +10,7 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [environments, setEnvironments] = useState([]);
   const [scans, setScans] = useState([]);
   const [details, setDetails] = useState(null);
+  const [edit, setEdit] = useState(null);
   const [selected, setSelected] = useState("");
   const [name, setName] = useState("AWS Document Lab");
   const [region, setRegion] = useState("eu-west-3");
@@ -71,6 +73,34 @@ export default function CloudSecurity({ isAdmin = false }) {
       (result) => `Environment "${result.name}" created. Test its AWS connection next.`,
     );
     if (created) setSelected(created.id);
+  }
+
+  function beginEdit(env) {
+    setEdit({
+      name: env.name, regions: env.regions.join(", "), services: [...env.services],
+      credential_mode: env.credential_mode,
+      profile_name: env.profile_name || "", role_arn: env.role_arn || "",
+    });
+    setMessage("");
+    setError("");
+  }
+
+  async function saveEdit(event) {
+    event.preventDefault();
+    if (!current || !edit) return;
+    const payload = {
+      name: edit.name.trim(),
+      regions: edit.regions.split(",").map((r) => r.trim()).filter(Boolean),
+      services: edit.services,
+      credential_mode: edit.credential_mode,
+      profile_name: edit.credential_mode === "NAMED_PROFILE" ? edit.profile_name.trim() : null,
+      role_arn: edit.role_arn.trim() || null,
+    };
+    const updated = await action(
+      () => updateCloudEnvironment(current.id, payload),
+      (result) => `Environment "${result.name}" updated. Test the AWS connection again if its identity or region changed.`,
+    );
+    if (updated) setEdit(null);
   }
 
   async function showScan(scanId) {
@@ -141,7 +171,7 @@ export default function CloudSecurity({ isAdmin = false }) {
       <section className="detail-panel">
         <h3>Environments</h3>
         <label>Select AWS environment
-          <select disabled={loading || !environments.length} value={selected} onChange={(e) => { setSelected(e.target.value); setDetails(null); }}>
+          <select disabled={loading || !environments.length} value={selected} onChange={(e) => { setSelected(e.target.value); setDetails(null); setEdit(null); }}>
             {!environments.length && <option value="">No environments configured</option>}
             {environments.map((env) => (
               <option key={env.id} value={env.id}>{env.name} — {env.status}</option>
@@ -154,6 +184,10 @@ export default function CloudSecurity({ isAdmin = false }) {
             {current.last_error_code && <p>Last connection issue: {current.last_error_code}</p>}
             {isAdmin && (
               <div className="button-row">
+                <button className="secondary-action" disabled={busy} type="button"
+                  onClick={() => edit ? setEdit(null) : beginEdit(current)}>
+                  {edit ? "Cancel editing" : "Edit AWS connection"}
+                </button>
                 <button className="secondary-action" disabled={busy} onClick={() =>
                   action(() => testCloudEnvironment(current.id),
                     (result) => `AWS connection verified for account ${result.account_id}.`)} type="button">Test connection</button>
@@ -161,6 +195,51 @@ export default function CloudSecurity({ isAdmin = false }) {
                   action(() => startCloudScan(current.id),
                     (result) => `AWS scan queued (${result.id}). Refresh to follow its status.`)} type="button">Start read-only audit</button>
               </div>
+            )}
+            {isAdmin && edit && (
+              <form className="contract-editor" onSubmit={saveEdit}>
+                <h4>Edit selected AWS environment</h4>
+                <p>Only a name, region, service selection and credential reference are saved. No AWS keys or tokens.</p>
+                <label>Environment name
+                  <input required maxLength={128} value={edit.name}
+                    onChange={(e) => setEdit((x) => ({...x,name:e.target.value}))} />
+                </label>
+                <label>AWS regions (maximum 3)
+                  <input required value={edit.regions}
+                    onChange={(e) => setEdit((x) => ({...x,regions:e.target.value}))} />
+                </label>
+                <fieldset><legend>Services to audit</legend>
+                  {["EC2","S3","IAM"].map((service) => (
+                    <label key={service} style={{display:"inline-flex",alignItems:"center",gap:"0.4rem",marginRight:"1rem"}}>
+                      <input type="checkbox" checked={edit.services.includes(service)}
+                        onChange={(e) => setEdit((x) => ({...x,services:e.target.checked
+                          ? [...x.services,service] : x.services.filter((s) => s!==service)}))} />
+                      {service}
+                    </label>
+                  ))}
+                </fieldset>
+                <label>Credential source
+                  <select value={edit.credential_mode} onChange={(e) =>
+                    setEdit((x) => ({...x,credential_mode:e.target.value}))}>
+                    <option value="SDK_DEFAULT">SDK identity (role / temporary environment credentials)</option>
+                    <option value="NAMED_PROFILE">Existing local AWS profile</option>
+                  </select>
+                </label>
+                {edit.credential_mode === "NAMED_PROFILE" && (
+                  <label>Profile name
+                    <input required maxLength={64} value={edit.profile_name}
+                      onChange={(e) => setEdit((x) => ({...x,profile_name:e.target.value}))} />
+                  </label>
+                )}
+                <label>Audit role ARN (optional)
+                  <input value={edit.role_arn} onChange={(e) =>
+                    setEdit((x) => ({...x,role_arn:e.target.value}))}
+                    placeholder="arn:aws:iam::123456789012:role/CloudAuditRole" />
+                </label>
+                <button type="submit" className="secondary-action" disabled={busy || !edit.services.length}>
+                  {busy ? "Saving..." : "Save AWS environment"}
+                </button>
+              </form>
             )}
           </div>
         )}

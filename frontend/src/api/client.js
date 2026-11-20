@@ -823,6 +823,13 @@ export async function createCloudEnvironment(payload) {
   });
 }
 
+export async function updateCloudEnvironment(id, payload) {
+  return request(`/control-plane/cloud-security/environments/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function testCloudEnvironment(id) {
   return request(`/control-plane/cloud-security/environments/${id}/test`, {
     method: "POST", timeoutMs: 45000,

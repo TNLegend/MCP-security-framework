@@ -1636,8 +1636,11 @@ The **Cloud security** page of the existing Security Center is a separate featur
 **MCP tools / Discovery**. ADMIN users can register a named AWS environment,
 choose up to three regions and the EC2/S3/IAM services to inspect, test a
 least-privilege AWS identity, and start a bounded read-only baseline audit.
-VIEWER users may inspect environment records and audit results but cannot add
-environments, test credentials, or start scans.
+VIEWER users may inspect environment records and audit results but cannot add,
+modify or reconfigure environments, test credentials, or start scans. ADMIN may
+edit a named environment without erasing previous audit runs; changing its
+credential reference or region resets it to UNVERIFIED and requires a new
+successful identity test before scanning.
 
 The backend uses `boto3==1.44.7` and the AWS SDK credential chain (EC2 instance
 role, short-lived environment credentials, or a named profile). Optionally, an

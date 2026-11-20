@@ -85,6 +85,65 @@ def create_environment(
     return env
 
 
+@router.patch("/environments/{environment_id}",response_model=EnvironmentPublic)
+def update_environment(
+    environment_id: str,
+    payload: EnvironmentCreate,
+    request: Request,
+    actor: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Change an AWS credential reference without losing the audit history.
+
+    Updates are serialized against starting a scan for this environment.
+    Any meaningful connection change must be reverified before the next scan.
+    """
+    env = db.scalar(
+        select(CloudEnvironment).where(CloudEnvironment.id == environment_id)
+        .with_for_update()
+    )
+    if env is None:
+        raise HTTPException(status_code=404,detail="cloud_environment_not_found")
+    active = db.scalar(select(CloudScan.id).where(
+        CloudScan.environment_id == env.id,
+        CloudScan.status.in_(("QUEUED", "RUNNING")),
+    ).limit(1))
+    if active is not None:
+        raise HTTPException(status_code=409,detail="cloud_scan_already_active")
+    new_values = {
+        "name": payload.name,
+        "regions": payload.regions,
+        "services": payload.services,
+        "credential_mode": payload.credential_mode,
+        "profile_name": payload.profile_name,
+        "role_arn": payload.role_arn,
+    }
+    changed_keys = sorted(k for k, v in new_values.items() if getattr(env,k) != v)
+    changed = bool(changed_keys)
+    connection_changed = any(
+        getattr(env, k) != new_values[k] for k in
+        ("regions", "credential_mode", "profile_name", "role_arn")
+    )
+    for k,v in new_values.items():
+        setattr(env,k,v)
+    if connection_changed:
+        env.account_id = None
+        env.status = "UNVERIFIED"
+        env.last_error_code = None
+        env.last_checked_at = None
+    try:
+        if changed:
+            _audit(db,request,actor,"CLOUD_ENVIRONMENT_UPDATED","cloud_environment",
+                   env.id,{"fields_changed":changed_keys,
+                           "connection_reverification_required":connection_changed})
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409,detail="cloud_environment_name_exists") from exc
+    db.refresh(env)
+    return env
+
+
 @router.post("/environments/{environment_id}/test",response_model=ConnectionTestPublic)
 def test_environment(
     environment_id:str,request:Request,
