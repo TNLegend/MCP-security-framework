@@ -1,3 +1,4 @@
+import { formatServerTime } from "../utils/serverTime.js";
 import { useEffect, useRef, useState } from "react";
 
 import { fetchAuditEventPage, safeErrorMessage } from "../api/client";
@@ -264,11 +265,7 @@ function AuditJson({ title, value }) {
 }
 
 function formatDate(value) {
-  if (!value) {
-    return "-";
-  }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  return formatServerTime(value);
 }
 
 function shorten(value, maxLength = 22) {

@@ -1,3 +1,4 @@
+import { formatServerTime } from "../utils/serverTime.js";
 import "./workflowPages.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1276,16 +1277,7 @@ function Badge({ value }) {
 }
 
 function formatDate(value) {
-  if (!value) {
-    return "\u2014";
-  }
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return String(value);
-  }
-
-  return date.toLocaleString();
+  return formatServerTime(value);
 }
 
 function formatJson(value) {

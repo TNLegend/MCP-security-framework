@@ -4,7 +4,7 @@
   "policy_revision": "opa-deploy-security-advisory-v1",
   "policy_sha256": {
     "deploy_security.rego": "0ee5038acf961a619c62ce3130a470bc127d9c442deb2ab5d14e8905ba488990",
-    "runtime_policy.rego": "1d4768a4e472406b53c4b74fe71fbaf0cc6ca88d6987b5cb23d58cdb47554613"
+    "runtime_policy.rego": "ce2989525744b18b698fe63520230f741ce397e0ad7428dc1701f34921fa3e42"
   },
   "runtime_decision_path": "data.mcp.security.runtime.decision"
 }

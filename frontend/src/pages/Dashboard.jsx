@@ -1,3 +1,4 @@
+import { formatServerTime, isServerTimeFuture } from "../utils/serverTime.js";
 function StatCard({ label, value, tone = "" }) {
   return (
     <div className={`stat-card ${tone}`}>
@@ -32,7 +33,7 @@ function Dashboard({
     ),
   );
   const blockedTools = tools.filter((tool) => tool.analysis_status === "BLOCKED");
-  const activeDenies = emergencyDenies.filter((deny) => new Date(deny.expires_at) > new Date());
+  const activeDenies = emergencyDenies.filter((deny) => isServerTimeFuture(deny.expires_at));
   // A pre-execution audit intent and its completion are two events, but
   // one logical tool call. Keep intents in logs; exclude them from KPIs.
   const recentAllows = runtimeLogs.filter(
@@ -227,11 +228,7 @@ function shorten(value) {
 }
 
 function formatDate(value) {
-  if (!value) {
-    return "-";
-  }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  return formatServerTime(value);
 }
 
 export default Dashboard;

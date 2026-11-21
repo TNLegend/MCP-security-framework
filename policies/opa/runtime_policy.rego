@@ -753,29 +753,147 @@ v2_scope_matches(scope, reference) if {
 	object.get(scope, "canonical_value", "") in ancestors
 }
 
-generic_v2_allow_decision := v2_decision(
+# These diagnostic predicates reuse the exact gates that authorize model V2.
+# They are explanatory evidence, NOT an alternative authorization engine.
+# Never include raw arguments, paths, credentials or policy document contents.
+v2_failed_checks contains "IDENTITY_NOT_VERIFIED" if {
+	identity_status != "verified"
+}
+v2_failed_checks contains "SESSION_NOT_ACTIVE" if {
+	session_status != "active"
+}
+v2_failed_checks contains "SUBJECT_AUTHORIZATION_NOT_RESOLVED" if {
+	authorization_status != "resolved"
+}
+v2_failed_checks contains "SERVER_NOT_TRUSTED" if {
+	is_unknown_or_blocked_server
+}
+v2_failed_checks contains "ARGUMENTS_INVALID" if {
+	not arguments_valid
+}
+v2_failed_checks contains "TOOL_ANALYSIS_NOT_APPROVED" if {
+	not analysis_status in {"APPROVED", "ADMIN_ALLOWED"}
+}
+v2_failed_checks contains "CRITICAL_DETERMINISTIC_FINDING" if {
+	deterministic_critical_finding
+}
+v2_failed_checks contains "REVIEW_NOT_APPROVED" if {
+	not review_status in {"APPROVED", "ADMIN_ALLOWED"}
+}
+v2_failed_checks contains "SENSITIVE_RESOURCE" if {
+	v2_sensitive_reference_exists
+}
+v2_failed_checks contains "SIGNED_CONTRACT_BINDING_INVALID" if {
+	not v2_snapshot_binding_valid
+}
+v2_failed_checks contains "TOOL_APPROVAL_BINDING_INVALID" if {
+	not v2_approval_valid
+}
+v2_failed_checks contains "NORMALIZED_REQUEST_INVALID" if {
+	not v2_normalized_request_valid
+}
+v2_failed_checks contains "EFFECT_SET_MISMATCH" if {
+	not v2_effect_sets_match
+}
+v2_failed_checks contains "EFFECT_NOT_AUTHORIZED" if {
+	some effect in v2_contract_effects
+	not v2_effect_authorized(effect)
+}
+
+# Bounded, non-sensitive per-effect diagnostics identify *which* capability,
+# observation, cardinality or resource-scope test failed.
+v2_failed_effects contains {
+	"effect_id": object.get(effect, "effect_id", ""),
+	"capability": capability_id,
+	"check": "CAPABILITY_NOT_GRANTED",
+} if {
+	some effect in v2_contract_effects
+	capability_id := object.get(effect, "capability", "")
+	not v2_subject_has_capability(capability_id)
+}
+v2_failed_effects contains {
+	"effect_id": object.get(effect, "effect_id", ""),
+	"capability": capability_id,
+	"check": "CAPABILITY_NOT_ACTIVE_OR_UNKNOWN",
+} if {
+	some effect in v2_contract_effects
+	capability_id := object.get(effect, "capability", "")
+	not v2_active_catalog_capability(capability_id)
+}
+v2_failed_effects contains {
+	"effect_id": object.get(effect, "effect_id", ""),
+	"capability": capability_id,
+	"check": "EFFECT_FACT_MISSING_OR_INCONSISTENT",
+} if {
+	some effect in v2_contract_effects
+	capability_id := object.get(effect, "capability", "")
+	not v2_effect_fact_consistent(effect)
+}
+v2_failed_effects contains {
+	"effect_id": object.get(effect, "effect_id", ""),
+	"capability": capability_id,
+	"check": "RESOURCE_CARDINALITY_EXCEEDED",
+} if {
+	some effect in v2_contract_effects
+	capability_id := object.get(effect, "capability", "")
+	fact := v2_fact_for_effect(object.get(effect, "effect_id", ""))
+	not v2_cardinality_valid(effect, fact)
+}
+v2_failed_effects contains {
+	"effect_id": object.get(effect, "effect_id", ""),
+	"capability": capability_id,
+	"check": "RESOURCE_BINDING_OR_SCOPE_UNAUTHORIZED",
+} if {
+	some effect in v2_contract_effects
+	capability_id := object.get(effect, "capability", "")
+	capability := v2_catalog_capability(capability_id)
+	fact := v2_fact_for_effect(object.get(effect, "effect_id", ""))
+	not v2_resource_semantics_valid(effect, fact, capability)
+}
+
+v2_active_catalog_capability(capability_id) if {
+	capability := v2_catalog_capability(capability_id)
+	object.get(capability, "lifecycle", "") == "ACTIVE"
+}
+v2_effect_fact_consistent(effect) if {
+	capability_id := object.get(effect, "capability", "")
+	capability := v2_catalog_capability(capability_id)
+	fact := v2_fact_for_effect(object.get(effect, "effect_id", ""))
+	object.get(fact, "capability_id", "") == capability_id
+	object.get(fact, "effective_reference_precision", "OPAQUE") == "EXPLICIT"
+	object.get(fact, "requires_resource", null) == object.get(capability, "requires_resource", null)
+}
+
+v2_explanation := {
+	"explanation_version": 1,
+	"scope": "runtime_security_model_v2",
+	"failed_checks": sort([code | some code in v2_failed_checks]),
+	"failed_effects": sort([item | some item in v2_failed_effects]),
+}
+
+generic_v2_allow_decision := object.union(v2_decision(
 	"ALLOW",
 	"ALLOW",
 	"allow_generic_security_model_v2",
 	"All generic security model effects are authorized.",
 	"low",
-)
+), {"evidence": object.union(v2_explanation, {"failed_checks": [], "failed_effects": []})})
 
-generic_v2_block_decision := v2_decision(
+generic_v2_block_decision := object.union(v2_decision(
 	"DENY",
 	"BLOCK",
 	"deny_generic_security_model_v2",
-	"Generic security model authorization requirements were not satisfied.",
+	"Authorization or resource scope requirements failed. Review the individual checks in the evidence.",
 	"high",
-)
+), {"evidence": v2_explanation, "recommended_action": "Inspect failed runtime checks and the approved capability/resource scopes."})
 
-generic_v2_sensitive_resource_block_decision := v2_decision(
+generic_v2_sensitive_resource_block_decision := object.union(v2_decision(
 	"DENY",
 	"BLOCK",
 	"deny_sensitive_resource",
 	"Sensitive resource access is forbidden.",
 	"critical",
-)
+), {"evidence": v2_explanation, "recommended_action": "Review the sensitive resource and approved scope before retrying."})
 
 v2_decision(effect, runtime_decision, rule_id, reason, severity) := {
 	"effect": effect,

@@ -1,3 +1,4 @@
+import { formatServerTime, isServerTimeFuture } from "../utils/serverTime.js";
 import { useEffect, useRef, useState } from "react";
 import { createEmergencyDeny, revokeEmergencyDeny } from "../api/client";
 import { Pagination, usePagination } from "../components/Pagination";
@@ -316,13 +317,14 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
               <th>Reason</th>
               <th>Created</th>
               <th>Expires</th>
+              <th>Current status</th>
               <th>Action</th>
             </tr>
           </thead>
           <tbody>
             {visibleDenies.length === 0 ? (
               <tr>
-                <td colSpan="6">{scopeFilter ? "No block records match this scope." : "No Emergency Deny records."}</td>
+                <td colSpan="7">{scopeFilter ? "No block records match this scope." : "No Emergency Deny records."}</td>
               </tr>
             ) : (
               denyPagination.pageItems.map((deny) => (
@@ -332,11 +334,12 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
                   <td>{deny.reason}</td>
                   <td>{formatDate(deny.created_at)}</td>
                   <td>{formatDate(deny.expires_at)}</td>
+                  <td>{isServerTimeFuture(deny.expires_at) ? "Active" : "Expired"}</td>
                   <td>
                     {isAdmin ? (
                       <button
                         className="tiny-action"
-                        disabled={busy}
+                        disabled={busy || !isServerTimeFuture(deny.expires_at)}
                         onClick={() => revoke(deny)}
                         type="button"
                       >
@@ -382,11 +385,7 @@ function FieldError({ id, message }) {
 }
 
 function formatDate(value) {
-  if (!value) {
-    return "-";
-  }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  return formatServerTime(value);
 }
 
 export default EmergencyDeny;

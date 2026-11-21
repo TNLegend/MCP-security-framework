@@ -1,4 +1,4 @@
-﻿"""Conservative reverse review of role identity policy grants vs approved MCP needs.
+"""Conservative reverse review of role identity policy grants vs approved MCP needs.
 
 Only identity-policy Allow statements are inspected. This never establishes
 effective IAM permissions or whether a shared role's grant is excessive for
@@ -55,7 +55,10 @@ def reverse_identity_policy(statements: list[dict], expected: list[dict]) -> lis
         if key in seen:
             return
         seen.add(key)
-        result.append(Delta(status, reason, action, resource, index, evidence))
+        # Examine one extra distinct result before claiming that a bounded
+        # response is complete. Reserve a slot for the truncation marker.
+        if len(result) <= _MAX_RESULTS:
+            result.append(Delta(status, reason, action, resource, index, evidence))
 
     if len(statements) > 300:
         return [Delta("UNKNOWN", "IAM_REVERSE_STATEMENT_LIMIT", None, None, -1, "STATEMENT_LIMIT")]
@@ -63,8 +66,7 @@ def reverse_identity_policy(statements: list[dict], expected: list[dict]) -> lis
     # Imported here to avoid a module-level circular dependency with worker.
     from app.services.cloud_iam_mcp_security import _matches
     for idx, statement in enumerate(statements):
-        if len(result) >= _MAX_RESULTS:
-            add("UNKNOWN", "IAM_REVERSE_RESULT_LIMIT", None, None, idx, "TRUNCATED")
+        if len(result) > _MAX_RESULTS:
             break
         if not isinstance(statement, dict) or statement.get("Effect") != "Allow":
             continue
@@ -77,13 +79,13 @@ def reverse_identity_policy(statements: list[dict], expected: list[dict]) -> lis
             add("UNKNOWN", "IAM_REVERSE_POLICY_SHAPE_UNKNOWN", None, None, idx, "INVALID_POLICY_SHAPE")
             continue
         for action in actions:
-            if len(result) >= _MAX_RESULTS:
+            if len(result) > _MAX_RESULTS:
                 break
             if not _ACTION.fullmatch(action):
                 add("UNKNOWN", "IAM_REVERSE_ACTION_UNSUPPORTED", None, None, idx, "ACTION_INVALID")
                 continue
-            action_matches = {resource for expected_action, resource in approved
-                              if _matches(action, expected_action, action=True)}
+            action_matches = {approved_resource for expected_action, approved_resource in approved
+                              if _matches(expected_action, action, action=True)}
             if "*" in action or "?" in action:
                 # Wildcards can cover unseen actions, even if one signed need
                 # happens to match. Forward comparison already marks broad
@@ -92,16 +94,16 @@ def reverse_identity_policy(statements: list[dict], expected: list[dict]) -> lis
                     None, idx, "WILDCARD_ACTION")
                 continue
             for resource in resources:
-                if len(result) >= _MAX_RESULTS:
+                if len(result) > _MAX_RESULTS:
                     break
                 if len(resource) > 512:
                     add("UNKNOWN", "IAM_REVERSE_RESOURCE_UNSUPPORTED", action,
                         None, idx, "RESOURCE_TOO_LARGE")
                     continue
                 if "*" in resource or "?" in resource:
-                    if resource in action_matches:
-                        # A GLOBAL signed effect explicitly approved for "*" is
-                        # not an unexplained IAM resource wildcard by itself.
+                    if resource in action_matches or "*" in action_matches:
+                        # Identical approved glob, or unrestricted approved
+                        # resource scope: no unsupported extra access inferred.
                         continue
                     if not action_matches:
                         # Action not used anywhere in the approved mapping,
@@ -112,9 +114,18 @@ def reverse_identity_policy(statements: list[dict], expected: list[dict]) -> lis
                         add("UNKNOWN", "IAM_REVERSE_WILDCARD_RESOURCE_SCOPE",
                             action, resource, idx, "RESOURCE_GLOB_NOT_SUBSET_PROVEN")
                     continue
-                if resource not in action_matches:
+                if not any(_matches(approved_resource, resource)
+                           for approved_resource in action_matches):
                     reason = ("IAM_ACTION_NOT_IN_APPROVED_MCP_MAPPING" if not action_matches
                               else "IAM_RESOURCE_NOT_IN_APPROVED_MCP_MAPPING")
                     add("OUTSIDE_MCP_MAPPING", reason, action, resource,
                         idx, "IDENTITY_POLICY_ALLOW_ONLY")
+        if len(result) > _MAX_RESULTS:
+            break
+    if len(result) > _MAX_RESULTS:
+        # An extra distinct observation was really found. Do not suppress the
+        # evidence that the return value is intentionally incomplete.
+        result = result[:_MAX_RESULTS - 1] + [
+            Delta("UNKNOWN", "IAM_REVERSE_RESULT_LIMIT", None, None, -1, "TRUNCATED")
+        ]
     return result

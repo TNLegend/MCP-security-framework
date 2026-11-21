@@ -26,6 +26,11 @@ export default defineConfig(({ mode }) => {
       host: env.FRONTEND_HOST || "127.0.0.1",
       port: parsePort(env.FRONTEND_PORT, 5173),
       strictPort: true,
+      // The explanation catalog lives outside frontend/. Expose only this
+      // exact JSON file, never the rest of the source tree or .runtime/.
+      fs: {
+        allow: [frontendRoot, resolve(repoRoot, "shared", "explanation_catalog.json")],
+      },
     },
   };
 });

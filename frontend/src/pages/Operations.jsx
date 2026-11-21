@@ -1,3 +1,4 @@
+import { formatServerTime } from "../utils/serverTime.js";
 import { useRef, useState } from "react";
 
 import { cleanupRuntimeLogs, safeErrorMessage } from "../api/client";
@@ -294,9 +295,7 @@ function formatPercent(value) {
 
 
 function formatDate(value) {
-  if (!value) return "-";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  return formatServerTime(value);
 }
 
 

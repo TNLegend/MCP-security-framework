@@ -170,6 +170,56 @@ def compare_policy(action: str, resource: str, statements: list[dict],
     return "POTENTIAL_MISSING", "IAM_IDENTITY_ALLOW_NOT_FOUND_RESOURCE_POLICY_UNVERIFIED", []
 
 
+def matching_identity_policy_evidence(
+    action: str, resource: str, statements: list[dict], *, limit: int = 5
+) -> dict:
+    """Explain the exact identity-policy patterns behind forward IAM matching.
+
+    Do not claim an AWS effective-permission result. Only report unconditional
+    matching Allow/Deny clauses; omit raw policy JSON and sensitive conditions.
+    """
+    matches: list[dict] = []
+    total = 0
+    for index, statement in enumerate(statements[:_MAX_POLICY_STATEMENTS]):
+        if not isinstance(statement, dict) or statement.get("Effect") not in ("Allow", "Deny"):
+            continue
+        if any(key in statement for key in ("Condition", "NotAction", "NotResource")):
+            continue
+        actions = statement.get("Action", [])
+        resources = statement.get("Resource", [])
+        actions = [actions] if isinstance(actions, str) else actions
+        resources = [resources] if isinstance(resources, str) else resources
+        if not isinstance(actions, list) or not isinstance(resources, list):
+            continue
+        for action_pattern in actions[:200]:
+            if not isinstance(action_pattern, str) or len(action_pattern) > 128:
+                continue
+            if not _matches(action_pattern, action, action=True):
+                continue
+            for resource_pattern in resources[:200]:
+                if not isinstance(resource_pattern, str) or len(resource_pattern) > 512:
+                    continue
+                if not _matches(resource_pattern, resource):
+                    continue
+                total += 1
+                if len(matches) >= limit:
+                    continue
+                matches.append({
+                    "statement_number": index + 1,
+                    "policy_effect": statement["Effect"],
+                    "action_pattern": action_pattern,
+                    "resource_pattern": resource_pattern,
+                    "action_broader": action_pattern.lower() != action.lower(),
+                    "resource_broader": resource_pattern != resource,
+                })
+    return {
+        "matching_unconditional_clauses": matches,
+        "matching_clause_count": total,
+        "clause_examples_truncated": total > len(matches),
+        "identity_policy_statements_inspected": min(len(statements), _MAX_POLICY_STATEMENTS),
+    }
+
+
 def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
     """Verified signed contract + admin-approved mapping + read-only AWS role."""
     from app.services.cloud_iam_mapping import verify_approved_mapping, MappingError
@@ -341,6 +391,18 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     "role_usage_operator_declared":mapping.configuration.get("role_usage","UNKNOWN"),
                     "role_arn_admin_pinned":bool(workload.get("expected_role_arn")),
                     "identity_policy_digest":policy_hash,
+                    "identity_policy_match_evidence": (
+                        matching_identity_policy_evidence(
+                            entry["action"], entry["resource"], iam_statements,
+                        )
+                        if ready and identity and not read_errors else None
+                    ),
+                    "effective_access_limitations": [
+                        "ORGANIZATION_SCP_NOT_EVALUATED",
+                        "PERMISSIONS_BOUNDARY_OR_SESSION_POLICY_NOT_FULLY_EVALUATED",
+                        "RESOURCE_POLICY_NOT_EVALUATED",
+                        "CLOUD_RUNTIME_IDENTITY_ACCESS_NOT_SIMULATED",
+                    ],
                 }
                 db.add(CloudIAMComparison(
                     scan_id=scan.id,mcp_server_id=server_id,role_arn=role_arn,

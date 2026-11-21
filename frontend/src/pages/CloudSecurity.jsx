@@ -1,3 +1,4 @@
+import { formatServerTime } from "../utils/serverTime.js";
 import { useEffect, useRef, useState } from "react";
 import "./cloudSecurity.css";
 import {
@@ -71,7 +72,7 @@ function CloudScanTable({ scans, onOpen, empty, loading, metric, label, mixed = 
         <th scope="col">Details</th>
       </tr></thead>
       <tbody>{scans.map((scan) => {
-        const started = new Date(scan.created_at).toLocaleString();
+        const started = formatServerTime(scan.created_at);
         return <tr key={scan.id}>
           <td><time dateTime={scan.created_at}>{started}</time></td>
           {mixed && <td>{scanKinds[scan.kind] || scan.kind}</td>}
@@ -1374,7 +1375,7 @@ export default function CloudSecurity({ isAdmin = false }) {
                 Assessment history could not be verified: {governanceHistoryError}
               </p>}
               {governanceHistory.length ? governanceHistory.map((item) => (
-                <p key={item.id}>{new Date(item.created_at).toLocaleString()}:
+                <p key={item.id}>{formatServerTime(item.created_at)}:
                   <strong> {item.classification.replaceAll("_", " ")}</strong>
                   {" | "}{item.policy_revision}
                   {" | "}Evidence <code>{item.input_sha256.slice(0, 12)}...</code>
@@ -1393,7 +1394,7 @@ export default function CloudSecurity({ isAdmin = false }) {
                   <strong>Finding {exception.finding_id.slice(0,12)}:
                     {" "}{exception.state}</strong>
                   {exception.expires_at && <p>Expires:
-                    {new Date(exception.expires_at).toLocaleString()}</p>}
+                    {formatServerTime(exception.expires_at)}</p>}
                   <details>
                     <summary>Audit trail ({exception.events.length})</summary>
                     {exception.events.map((item) => <p key={item.id}>
@@ -1525,7 +1526,7 @@ export default function CloudSecurity({ isAdmin = false }) {
           <h4>Resources ({details.resources.length})</h4>
           {details.resources.map((r) => <p key={r.id}>{r.resource_type} — {r.display_name} ({r.region})</p>)}
           <h4>Audit history</h4>
-          {details.events.map((e) => <p key={e.id}>{e.message_code} — {new Date(e.created_at).toLocaleString()}</p>)}
+          {details.events.map((e) => <p key={e.id}>{e.message_code} — {formatServerTime(e.created_at)}</p>)}
           <details>
             <summary>Evidence records ({details.evidence.length})</summary>
             <p>SHA-256 integrity digests of normalized observations, not AWS-signed attestations.

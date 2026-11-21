@@ -57,6 +57,10 @@ REQUIRED_BUILD_SECURITY_TABLES = {
 }
 
 REQUIRED_RUNTIME_CALL_COLUMNS = {
+    "explanation",
+    "policy_revision",
+    "decision_basis",
+    "dispatch_state",
     "control_plane_revision_id",
     "control_plane_revision_number",
     "control_plane_content_hash",

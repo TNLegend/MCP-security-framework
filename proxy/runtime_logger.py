@@ -23,25 +23,12 @@ STATUS_BY_DECISION = {
 # Only framework-authored, fixed diagnostic codes may reach persistent
 # audit error fields. Data originating from remote MCP messages, HTTP errors,
 # provider diagnostics or exception strings is never a safe audit payload.
-SAFE_RUNTIME_ERROR_CODES = frozenset({
-    "request_preparation_error", "invalid_tool_arguments",
-    "identity_verification_unexpected_error", "policy_error",
-    "canonical_arguments_changed_before_execution",
-    "cross_call_data_exfiltration_guard",
-    "upstream_mcp_http_error", "upstream_mcp_protocol_error",
-    "agent_identity_binding_not_found", "agent_identity_binding_unavailable",
-    "agent_identity_assertion_invalid", "agent_identity_binding_mismatch",
-    "upstream_auth_error", "upstream_credential_unavailable",
-    "upstream_credential_invalid", "upstream_credential_ref_invalid",
-    "upstream_oauth_configuration_invalid", "upstream_oauth_resource_binding_mismatch",
-    "upstream_oauth_reauthorization_required",
-    "upstream_oauth_token_exchange_failed",
-    "upstream_oauth_token_response_invalid",
-    "upstream_oauth_token_expiry_invalid",
-    "runtime_audit_unavailable", "audit_completion_failed",
-    "schema_profile_mismatch", "unsupported_mcp_protocol_profile",
-    "blocked_by_emergency_deny", "invalid_execution_contract",
-})
+from shared.explanation_catalog import (
+    SAFE_RUNTIME_ERROR_CODES,
+    RUNTIME_EXPLANATION_CHECKS,
+    RUNTIME_EFFECT_CHECKS,
+)
+
 
 
 def safe_runtime_error_code(error: object) -> str:
@@ -144,6 +131,71 @@ def summarize_tool_result(result: dict[str, Any] | None) -> str | None:
     )
 
 
+# Only store bounded, enumerated OPA diagnostics. The complete policy
+# evidence may contain resource names and must not be copied into audit logs.
+
+
+
+def summarize_policy_evidence(decision: dict[str, Any]) -> dict[str, Any] | None:
+    """Preserve verifiable, low-sensitivity failure codes, never raw MCP data."""
+    evidence = decision.get("evidence")
+    if not isinstance(evidence, dict) or evidence.get("explanation_version") != 1:
+        return None
+    if evidence.get("scope") != "runtime_security_model_v2":
+        return None
+    checks = evidence.get("failed_checks")
+    effects = evidence.get("failed_effects")
+    if not isinstance(checks, list) or len(checks) > 32:
+        return None
+    if not isinstance(effects, list) or len(effects) > 32:
+        return None
+    if not all(isinstance(item, str) and item in RUNTIME_EXPLANATION_CHECKS
+               for item in checks):
+        return None
+    safe_effects = []
+    for item in effects:
+        if not isinstance(item, dict):
+            return None
+        code = item.get("check")
+        identifier = item.get("effect_id")
+        capability = item.get("capability")
+        if code not in RUNTIME_EFFECT_CHECKS:
+            return None
+        if not all(isinstance(value, str) and 0 < len(value) <= 128
+                   and all(char in "abcdefghijklmnopqrstuvwxyz0123456789._-"
+                           for char in value)
+                   for value in (identifier, capability)):
+            return None
+        safe_effects.append({
+            "check": code, "effect_id": identifier, "capability": capability,
+        })
+    return {
+        "explanation_version": 1,
+        "scope": "runtime_security_model_v2",
+        "failed_checks": sorted(set(checks)),
+        "failed_effects": safe_effects,
+    }
+
+
+def safe_runtime_decision_reason(decision: dict[str, Any]) -> str:
+    # Error strings can contain external URLs, headers and token fragments.
+    # For these two paths the reason is known from the trusted rule ID.
+    if decision.get("rule_id") == "policy_error":
+        return "Runtime policy evaluation failed; call blocked as a precaution."
+    if decision.get("rule_id") == "inventory_error":
+        return "Tool inventory verification failed; call blocked as a precaution."
+    value = decision.get("reason")
+    if not isinstance(value, str) or not value or len(value) > 512:
+        return "Runtime decision details unavailable."
+    lower = value.lower()
+    if any(token in lower for token in (
+        "authorization:", "access_token", "secret_key", "password=",
+        "bearer ", "http://", "https://", "traceback", "\n", "\r",
+    )):
+        return "Runtime decision details withheld for security."
+    return value
+
+
 def build_runtime_log(
     tool_call: dict[str, Any],
     decision: dict[str, Any],
@@ -156,6 +208,38 @@ def build_runtime_log(
     status: str | None = None,
 ) -> dict[str, Any]:
     decision_value = decision.get("decision", "LOG_ONLY")
+    argument_summary = summarize_arguments(tool_call)
+    explanation = summarize_policy_evidence(decision)
+    if execution_status == "upstream_outcome_unknown":
+        dispatch_state = "SENT_OUTCOME_UNKNOWN"
+    elif execution_status == "authorized_pending_execution":
+        dispatch_state = "PENDING"
+    elif executed:
+        dispatch_state = "SENT_CONFIRMED"
+    else:
+        dispatch_state = "NOT_SENT"
+    # Only a safe fixed policy-revision identifier may be retained.
+    revision = decision.get("policy_revision")
+    if not (isinstance(revision, str) and
+            0 < len(revision) <= 96 and
+            all(char in "abcdefghijklmnopqrstuvwxyz0123456789._-"
+                for char in revision)):
+        revision = None
+    basis = (
+        "EMERGENCY" if decision.get("rule_id") in {
+            "emergency_deny_active", "blocked_by_emergency_deny"
+        } else
+        "FAIL_CLOSED_TECHNICAL" if decision.get("rule_id") in {
+            "opa_unavailable", "opa_timeout", "subject_authorization_unavailable",
+            "dispatch_admission_unavailable", "trusted_identity_unavailable",
+            "policy_error", "inventory_error", "invalid_policy_decision",
+        } else
+        "GUARD" if decision.get("rule_id") in {
+            "canonical_arguments_changed_before_execution",
+            "cross_call_data_exfiltration_guard", "unsafe_tool_result_blocked",
+        } else
+        "POLICY" if revision is not None else "UNKNOWN"
+    )
     return {
         # Generated by the trusted Proxy for every logical tools/call. Reuse
         # the identifier for intent and outcome, not individual log writes.
@@ -169,11 +253,15 @@ def build_runtime_log(
         "server_id": server_id if server_id is not None else tool_call.get("server_id"),
         "tool_name": tool_call.get("tool_name", "unknown_tool"),
         "tool_fingerprint": tool_call.get("_runtime_authorized_tool_fingerprint"),
-        "arguments_summary": summarize_arguments(tool_call),
-        "status": status or STATUS_BY_DECISION.get(decision_value, "allowed"),
+        "arguments_summary": argument_summary,
+        "status": status or STATUS_BY_DECISION.get(decision_value, "unknown_decision"),
         "decision": decision_value,
         "rule_id": decision.get("rule_id"),
-        "decision_reason": decision.get("reason"),
+        "decision_reason": safe_runtime_decision_reason(decision),
+        "explanation": explanation,
+        "policy_revision": revision,
+        "decision_basis": basis,
+        "dispatch_state": dispatch_state,
         "severity": decision.get("severity"),
         "control_plane_revision_id": tool_call.get("control_plane_revision_id"),
         "control_plane_revision_number": tool_call.get("control_plane_revision_number"),

@@ -299,26 +299,45 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
     setBusy(true);
     setError("");
     setMessage("");
+    // Publishing and reanalysis are separate, non-atomic operations.
+    // Never represent a successful publication as failed when a later step fails.
+    let published = false;
     try {
       await publishConfigRevision(contractDraft.revision_id, changeSummary.trim());
-      const result = await reanalyzeToolContract(tool.id);
-      setMessage(`Published and reanalyzed: ${result.analysis_statuses.join(", ")}.`);
+      published = true;
       setContractDraft(null);
       setDraftRevisionId(null);
-      const [nextCatalog, nextSuggestions, nextGuidance] = await Promise.all([
-        fetchSecurityPacks(),
-        fetchToolTemplateSuggestions(tool.id),
-        fetchToolAdapterGuidance(tool.id),
-      ]);
-      setCatalog(nextCatalog);
-      setSuggestions(nextSuggestions);
-      setAdapterGuidance(nextGuidance);
-      await onComplete?.();
+      setMessage("Security configuration published. Reanalysing the tool...");
     } catch (err) {
-      setError(safeErrorMessage(err));
-    } finally {
-      setBusy(false);
+      setError("Publication was not confirmed. Check the active security revision before retrying: " + safeErrorMessage(err));
     }
+    if (published) {
+      try {
+        const result = await reanalyzeToolContract(tool.id);
+        setMessage("Configuration published; reanalysis completed: " + result.analysis_statuses.join(", ") + ".");
+      } catch (err) {
+        setError("Configuration WAS published, but tool reanalysis failed: " + safeErrorMessage(err) +
+          ". Reanalyse this tool from Security review; do not publish the revision again.");
+        setMessage("Security configuration was published successfully.");
+      }
+      try {
+        const [nextCatalog, nextSuggestions, nextGuidance] = await Promise.all([
+          fetchSecurityPacks(),
+          fetchToolTemplateSuggestions(tool.id),
+          fetchToolAdapterGuidance(tool.id),
+        ]);
+        setCatalog(nextCatalog);
+        setSuggestions(nextSuggestions);
+        setAdapterGuidance(nextGuidance);
+        await onComplete?.();
+      } catch (err) {
+        setError((previous) => [previous,
+          "Configuration remains published, but the interface could not refresh: " +
+          safeErrorMessage(err) + ". Refresh this page to see the latest state.",
+        ].filter(Boolean).join(" "));
+      }
+    }
+    setBusy(false);
   }
 
   if (loading) return <div className="empty-state">Loading Security Packs...</div>;

@@ -1,3 +1,4 @@
+import { formatServerTime } from "../utils/serverTime.js";
 import "./workflowPages.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -1322,9 +1323,7 @@ function shortHash(value) {
 }
 
 function formatDate(value) {
-  if (!value) return "-";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  return formatServerTime(value);
 }
 
 function humanize(value) {

@@ -1,3 +1,4 @@
+import { formatServerTime } from "../utils/serverTime.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Pagination, usePagination } from "../components/Pagination";
@@ -623,11 +624,7 @@ function FieldError({ id, message }) {
 }
 
 function formatDate(value) {
-  if (!value) {
-    return "-";
-  }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  return formatServerTime(value);
 }
 
 export default Users;

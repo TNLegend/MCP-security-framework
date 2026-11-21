@@ -3,6 +3,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.runtime_explanation import RuntimeExplanation
+
 
 class RuntimeCallCreate(BaseModel):
     # Optional solely for historical signed service log producers. New Proxy
@@ -18,6 +20,11 @@ class RuntimeCallCreate(BaseModel):
             raise ValueError("runtime_intent_status_invalid")
         if self.event_phase == "outcome" and self.execution_status == "authorized_pending_execution":
             raise ValueError("runtime_outcome_status_invalid")
+        if self.executed and self.dispatch_state in {"PENDING", "NOT_SENT"}:
+            raise ValueError("runtime_dispatch_state_conflicts_with_execution")
+        if (self.dispatch_state == "SENT_OUTCOME_UNKNOWN" and
+                self.execution_status != "upstream_outcome_unknown"):
+            raise ValueError("runtime_dispatch_uncertainty_status_mismatch")
         return self
 
     agent_id: str
@@ -30,6 +37,10 @@ class RuntimeCallCreate(BaseModel):
     decision: str | None = None
     rule_id: str | None = None
     decision_reason: str | None = None
+    explanation: RuntimeExplanation | None = None
+    policy_revision: str | None = Field(default=None, max_length=96)
+    decision_basis: Literal["POLICY", "FAIL_CLOSED_TECHNICAL", "GUARD", "EMERGENCY", "UNKNOWN"] | None = None
+    dispatch_state: Literal["PENDING", "NOT_SENT", "SENT_CONFIRMED", "SENT_OUTCOME_UNKNOWN"] | None = None
     severity: str | None = None
     control_plane_revision_id: str | None = None
     control_plane_revision_number: int | None = None
@@ -51,6 +62,8 @@ class RuntimeCallCreate(BaseModel):
     upstream_duration_ms: float | None = None
     result_guard_duration_ms: float | None = None
 
+    model_config = ConfigDict(extra="forbid")
+
 
 class RuntimeCallRead(BaseModel):
     operation_id: str | None = None
@@ -66,6 +79,10 @@ class RuntimeCallRead(BaseModel):
     decision: str | None = None
     rule_id: str | None = None
     decision_reason: str | None = None
+    explanation: RuntimeExplanation | None = None
+    policy_revision: str | None = Field(default=None, max_length=96)
+    decision_basis: Literal["POLICY", "FAIL_CLOSED_TECHNICAL", "GUARD", "EMERGENCY", "UNKNOWN"] | None = None
+    dispatch_state: Literal["PENDING", "NOT_SENT", "SENT_CONFIRMED", "SENT_OUTCOME_UNKNOWN"] | None = None
     severity: str | None = None
     control_plane_revision_id: str | None = None
     control_plane_revision_number: int | None = None

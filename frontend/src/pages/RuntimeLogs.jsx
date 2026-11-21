@@ -1,3 +1,6 @@
+import { formatServerTime } from "../utils/serverTime.js";
+import { executionDisplay } from "../utils/runtimePresentation.js";
+import SecurityExplanation from "../components/securityexplanation.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchRuntimeLogs } from "../api/client";
@@ -135,11 +138,12 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
     <section className="page-section activity-page">
       <div className="section-heading">
         <h2>Tool activity</h2>
-        <p>{page.summary.total} matching event(s)</p>
+        <p>{page.summary.total} outcome event(s) matching filters; pending intent events are listed separately.</p>
       </div>
       {error && <div className="error-banner" role="alert">{error} Previous results are retained when available.</div>}
       <p className="hint-text" role="note">
-        Allowed calls are not always completed calls. Do not automatically retry an unknown result.
+        The summary counts exclude pending audit intents. The table includes them for traceability.
+        A policy ALLOW does not establish successful dispatch. Never replay an uncertain result without reconciliation.
       </p>
 
       {appliedFilterCount > 0 && (
@@ -174,7 +178,7 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
       </form>
 
       <div className="summary-grid runtime-summary-grid">
-        <SummaryCard label="Matching" value={page.summary.total} />
+        <SummaryCard label="Outcome events" value={page.summary.total} />
         <SummaryCard label="Allowed" value={page.summary.allowed} />
         <SummaryCard label="Blocked" value={page.summary.blocked} />
         <SummaryCard label="Executed" value={page.summary.executed} />
@@ -242,19 +246,20 @@ function RuntimeLogsTable({ logs, selectedLogId, onSelectLog }) {
   return (
     <div aria-label="Runtime events table" className="table-shell runtime-table" tabIndex={0}>
       <table>
-        <thead><tr><th>Time</th><th>Tool</th><th>Decision</th><th>Rule</th><th>Config Rev</th><th>Executed</th><th>Execution Status</th><th>Severity</th><th>Agent</th><th>Server</th></tr></thead>
+        <thead><tr><th>Time</th><th>Phase</th><th>Tool</th><th>Decision</th><th>Rule</th><th>Config Rev</th><th>Executed</th><th>Execution Status</th><th>Severity</th><th>Agent</th><th>Server</th></tr></thead>
         <tbody>
           {logs.map((log) => (
             <tr className={(log.id === selectedLogId ? "selected-row " : "") + "selectable-record"} key={log.id}
               onClick={(event) => { if (!event.target.closest("button")) event.currentTarget.querySelector("button")?.click(); }}>
               <td>{formatDate(log.created_at)}</td>
+              <td>{log.event_phase || "Legacy event"}</td>
               <td><button aria-pressed={log.id === selectedLogId} className="record-link" onClick={(event) => onSelectLog(event, log.id)} type="button">
                 {displayValue(log.tool_name)}<span className="record-link-context"> · #{displayValue(log.id)}</span>
               </button></td>
               <td><Badge value={log.decision} className={getDecisionBadgeClass(log.decision)} /></td>
               <td>{displayValue(log.rule_id)}</td>
               <td>{displayValue(log.control_plane_revision_number)}</td>
-              <td>{formatBoolean(log.executed)}</td>
+              <td>{executionDisplay(log)}</td>
               <td><Badge value={log.execution_status} className={getExecutionBadgeClass(log.execution_status)} /></td>
               <td><Badge value={log.severity} className={getSeverityBadgeClass(log.severity)} /></td>
               <td>{displayValue(log.agent_id)}</td>
@@ -274,10 +279,11 @@ function RuntimeLogDetailPanel({ log, detailHeading, onClose }) {
         <h3 id="runtime-event-heading" ref={detailHeading} tabIndex={-1}>Runtime call #{displayValue(log.id)}</h3>
         <button onClick={onClose} type="button">Close details</button>
       </div>
+      <SecurityExplanation record={log} />
       <div className="metadata-grid runtime-metadata-grid">
-        <MetadataSection title="Runtime context" items={[["Agent", log.agent_id], ["Session ID", log.session_id], ["Server ID", log.server_id], ["Tool", log.tool_name], ["Argument summary", log.arguments_summary, "structured"], ["created_at", formatDate(log.created_at)]]} />
+        <MetadataSection title="Runtime context" items={[["Operation ID", log.operation_id], ["Audit phase", log.event_phase], ["Agent", log.agent_id], ["Session ID", log.session_id], ["Server ID", log.server_id], ["Tool", log.tool_name], ["Argument summary", log.arguments_summary, "structured"], ["created_at", formatDate(log.created_at)]]} />
         <MetadataSection title="Policy decision" items={[["Decision", log.decision, "decision"], ["Rule ID", log.rule_id], ["Decision reason", log.decision_reason], ["Severity", log.severity, "severity"], ["Configuration revision", log.control_plane_revision_number], ["control_plane_content_hash", log.control_plane_content_hash]]} />
-        <MetadataSection title="Transport and execution" items={[["Client protocol profile", log.client_protocol_profile_id], ["Upstream protocol profile", log.upstream_protocol_profile_id], ["Executed", log.execution_status === "upstream_outcome_unknown" ? "Unknown — upstream effect possible" : formatBoolean(log.executed)], ["Execution status", log.execution_status, "execution"], ["Result summary", log.result_summary], ["Error summary", log.error_summary]]} />
+        <MetadataSection title="Transport and execution" items={[["Client protocol profile", log.client_protocol_profile_id], ["Upstream protocol profile", log.upstream_protocol_profile_id], ["Executed", executionDisplay(log)], ["Execution status", log.execution_status, "execution"], ["Result summary", log.result_summary], ["Error summary", log.error_summary]]} />
       </div>
     </section>
   );
@@ -338,9 +344,7 @@ function displayValue(value) {
 }
 
 function formatDate(value) {
-  if (!value) return "-";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+  return formatServerTime(value);
 }
 
 function formatBoolean(value) {

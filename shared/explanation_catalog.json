@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "runtime_checks": {
+    "ARGUMENTS_INVALID": {
+      "title": "Tool arguments failed validation",
+      "next_action": "Compare the request with the signed tool input schema."
+    },
+    "CRITICAL_DETERMINISTIC_FINDING": {
+      "title": "A critical deterministic finding is present",
+      "next_action": "Resolve or review the specific blocking finding."
+    },
+    "EFFECT_NOT_AUTHORIZED": {
+      "title": "One or more tool effects are unauthorized",
+      "next_action": "Review the detailed capability and resource checks below."
+    },
+    "EFFECT_SET_MISMATCH": {
+      "title": "Observed effect set differs from the signed contract",
+      "next_action": "Compare the requested effects with the approved contract."
+    },
+    "IDENTITY_NOT_VERIFIED": {
+      "title": "Agent identity was not verified",
+      "next_action": "Check the trusted agent identity and session."
+    },
+    "NORMALIZED_REQUEST_INVALID": {
+      "title": "Normalized operation facts were not verified",
+      "next_action": "Inspect the normalization and evidence for this tool call."
+    },
+    "REVIEW_NOT_APPROVED": {
+      "title": "Security review has not approved this tool",
+      "next_action": "Complete the review of the current tool fingerprint."
+    },
+    "SENSITIVE_RESOURCE": {
+      "title": "A sensitive resource reference is forbidden",
+      "next_action": "Review the requested resource and the sensitive-resource policy."
+    },
+    "SERVER_NOT_TRUSTED": {
+      "title": "MCP server trust is missing or blocked",
+      "next_action": "Review and approve the current server trust record."
+    },
+    "SESSION_NOT_ACTIVE": {
+      "title": "Agent session is not active",
+      "next_action": "Authenticate again with an active session."
+    },
+    "SIGNED_CONTRACT_BINDING_INVALID": {
+      "title": "Signed tool contract does not match the active configuration",
+      "next_action": "Check the active signed revision and contract binding."
+    },
+    "SUBJECT_AUTHORIZATION_NOT_RESOLVED": {
+      "title": "Agent authorization could not be resolved",
+      "next_action": "Review the agent's published capability grants."
+    },
+    "TOOL_ANALYSIS_NOT_APPROVED": {
+      "title": "Tool analysis is not approved",
+      "next_action": "Review and approve the exact tool observation."
+    },
+    "TOOL_APPROVAL_BINDING_INVALID": {
+      "title": "Tool approval does not match this observation or revision",
+      "next_action": "Recheck the observation approval against the current tool."
+    }
+  },
+  "runtime_effect_checks": {
+    "CAPABILITY_NOT_ACTIVE_OR_UNKNOWN": {
+      "title": "Capability is unknown or inactive in the catalog",
+      "next_action": "Review the published capability catalog."
+    },
+    "CAPABILITY_NOT_GRANTED": {
+      "title": "Agent lacks the required capability",
+      "next_action": "Review the required agent capability grant; do not broaden permissions without approval."
+    },
+    "EFFECT_FACT_MISSING_OR_INCONSISTENT": {
+      "title": "Effect facts are missing or inconsistent",
+      "next_action": "Verify the normalized effect facts."
+    },
+    "RESOURCE_BINDING_OR_SCOPE_UNAUTHORIZED": {
+      "title": "Resource binding or scope was not authorized",
+      "next_action": "Verify the canonical resource, scope and authority."
+    },
+    "RESOURCE_CARDINALITY_EXCEEDED": {
+      "title": "Resource count exceeds the signed limit",
+      "next_action": "Reduce the number of resources or review the contract limit."
+    }
+  },
+  "safe_runtime_error_codes": [
+    "agent_identity_assertion_invalid",
+    "agent_identity_binding_mismatch",
+    "agent_identity_binding_not_found",
+    "agent_identity_binding_unavailable",
+    "audit_completion_failed",
+    "blocked_by_emergency_deny",
+    "canonical_arguments_changed_before_execution",
+    "client_initialization_error",
+    "cross_call_data_exfiltration_guard",
+    "dispatch_admission_unavailable",
+    "emergency_deny_active",
+    "human_review_hold_active",
+    "identity_verification_unexpected_error",
+    "invalid_execution_contract",
+    "invalid_policy_decision",
+    "invalid_tool_arguments",
+    "inventory_error",
+    "policy_deferred",
+    "policy_denied",
+    "policy_error",
+    "request_preparation_error",
+    "resource_resolution_failed",
+    "result_guard_blocked",
+    "result_guard_unavailable",
+    "runtime_audit_unavailable",
+    "schema_profile_mismatch",
+    "tool_call_blocked",
+    "unsafe_tool_result_blocked",
+    "unsupported_mcp_protocol_profile",
+    "unsupported_policy_obligation",
+    "upstream_auth_error",
+    "upstream_credential_invalid",
+    "upstream_credential_ref_invalid",
+    "upstream_credential_unavailable",
+    "upstream_mcp_http_error",
+    "upstream_mcp_protocol_error",
+    "upstream_oauth_configuration_invalid",
+    "upstream_oauth_reauthorization_required",
+    "upstream_oauth_resource_binding_mismatch",
+    "upstream_oauth_token_exchange_failed",
+    "upstream_oauth_token_expiry_invalid",
+    "upstream_oauth_token_response_invalid"
+  ]
+}
