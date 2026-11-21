@@ -84,7 +84,7 @@ class Settings(BaseSettings):
         ge=60,
         le=86400,
     )
-    local_runtime_start_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    local_runtime_start_timeout_seconds: float = Field(default=20.0, gt=0, le=360)
     local_runtime_autostart_opa: bool = True
     local_runtime_autostart_gateway: bool = True
     local_runtime_autostart_identity_provider: bool = True
