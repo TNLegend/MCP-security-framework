@@ -1966,7 +1966,7 @@ export default function CloudSecurity({ isAdmin = false }) {
               {isAdmin && details.findings.length > 0 &&
                 ["COMPLETED", "PARTIAL"].includes(details.scan.status) && (
                 <div>
-                  <h4>Request a finding exception</h4>
+                  <h4 id="cloud-exception-request-heading">Request a finding exception</h4>
                   <label>Finding to review
                     <select value={exceptionFinding}
                       onChange={(e) => setExceptionFinding(e.target.value)}>
@@ -1976,7 +1976,7 @@ export default function CloudSecurity({ isAdmin = false }) {
                     </select>
                   </label>
                   <label>Exception request justification (at least 20 characters)
-                    <textarea maxLength={1000} value={exceptionReason}
+                    <textarea id="cloud-exception-request-reason" maxLength={1000} value={exceptionReason}
                       onChange={(e) => setExceptionReason(e.target.value)} />
                   </label>
                   <button type="button" disabled={governanceLoading ||
@@ -2062,6 +2062,20 @@ export default function CloudSecurity({ isAdmin = false }) {
           {details.findings.length ? details.findings.map((f) => (
             <article key={f.id} id={"cloud-finding-" + f.id} className="cloud-finding">
               <strong>{f.severity}: {f.title}</strong>
+              {isAdmin && ["COMPLETED", "PARTIAL"].includes(details.scan.status) && (
+                <button type="button" className="tiny-action"
+                  aria-label={"Prepare exception request for " + f.title}
+                  disabled={governanceLoading}
+                  onClick={() => {
+                    // Only select the exact stored finding; never create or
+                    // approve an exception without a typed justification.
+                    setExceptionFinding(f.id);
+                    setExceptionReason("");
+                    document.getElementById("cloud-exception-request-reason")?.focus();
+                  }}>
+                  Request exception for this finding
+                </button>
+              )}
               <CloudFindingResource finding={f} resources={details.resources} />
               {details.scan.kind === "IAC_CONFIG" && (() => {
                 const sources = iacFindingSourceEvidence(f, details.evidence);

@@ -675,7 +675,7 @@ function M3ShadowDetails({ m3 }) {
   return (
     <details className="m3-shadow-details">
       <summary>Instruction-injection check details (advisory, does not decide)</summary>
-      <p>Mode: shadow. This check cannot allow or block a tool; deterministic findings and your review decide.</p>
+      <p>Passive observation only. This check cannot allow or block a tool; recorded security findings and your review decide.</p>
       <dl className="compact-dl">
         <InfoRow label="Inspection" value={humanize(m3.scope?.execution_status || "unknown")} />
         <InfoRow label="Fields inspected" value={m3.scope?.inspected_fields ?? "Unknown"} />

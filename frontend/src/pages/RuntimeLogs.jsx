@@ -31,7 +31,30 @@ const EMPTY_FILTERS = {
   search: "",
 };
 
-function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
+export function runtimeServerLabel(log, servers = []) {
+  if (log?.server_id === null || log?.server_id === undefined) return "Not recorded";
+  const candidates = servers.filter((s) =>
+    String(s?.id) === String(log.server_id) && s.status !== "archived");
+  if (candidates.length !== 1) return "Server #" + String(log.server_id) + " (unverified)";
+  const title = candidates[0].server_info_title || candidates[0].name;
+  return title ? String(title) + " (#" + String(log.server_id) + ")"
+    : "Server #" + String(log.server_id);
+}
+
+export function matchingReviewedToolId(log, tools = []) {
+  if (!log?.tool_fingerprint || log?.server_id === null
+      || log?.server_id === undefined || !log?.tool_name) return null;
+  const matches = tools.filter((tool) =>
+    String(tool?.server_id) === String(log.server_id)
+    && tool?.current_fingerprint === log.tool_fingerprint
+    && tool?.name === log.tool_name);
+  return matches.length === 1 ? matches[0].id : null;
+}
+
+function RuntimeLogs({
+  initialPage = EMPTY_PAGE, loading = false, servers = [], tools = [],
+  onNavigate = null,
+}) {
   const [page, setPage] = useState(normalizePage(initialPage));
   const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
   const [activeFilters, setActiveFilters] = useState({});
@@ -222,7 +245,7 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
           <div aria-busy={pageLoading}>
             {pageLoading && <p role="status" className="hint-text">Loading runtime calls...</p>}
             {(!pageLoading || entries.length > 0) && (
-              <RuntimeLogsTable logs={entries} selectedLogId={selectedLogId} onSelectLog={openEvent} />
+              <RuntimeLogsTable logs={entries} selectedLogId={selectedLogId} onSelectLog={openEvent} servers={servers} />
             )}
           </div>
           <div className="pagination-bar">
@@ -231,7 +254,7 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
             <button disabled={pageLoading || !page.has_more || !page.next_cursor} onClick={nextPage} type="button">Next</button>
           </div>
         </div>
-        {selectedLog && <RuntimeLogDetailPanel log={selectedLog} detailHeading={detailHeading} onClose={closeEvent} />}
+        {selectedLog && <RuntimeLogDetailPanel log={selectedLog} detailHeading={detailHeading} onClose={closeEvent} servers={servers} tools={tools} onNavigate={onNavigate} />}
       </div>
     </section>
   );
@@ -268,7 +291,7 @@ function SummaryCard({ label, value }) {
   return <div className="summary-card"><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function RuntimeLogsTable({ logs, selectedLogId, onSelectLog }) {
+function RuntimeLogsTable({ logs, selectedLogId, onSelectLog, servers = [] }) {
   if (logs.length === 0) return <div className="empty-state">No runtime calls match the current filters.</div>;
   return (
     <div aria-label="Runtime events table" className="table-shell runtime-table" tabIndex={0}>
@@ -290,7 +313,7 @@ function RuntimeLogsTable({ logs, selectedLogId, onSelectLog }) {
               <td><Badge value={log.execution_status} className={getExecutionBadgeClass(log.execution_status)} /></td>
               <td><Badge value={log.severity} className={getSeverityBadgeClass(log.severity)} /></td>
               <td>{displayValue(log.agent_id)}</td>
-              <td>{displayValue(log.server_id)}</td>
+              <td>{runtimeServerLabel(log, servers)}</td>
             </tr>
           ))}
         </tbody>
@@ -345,7 +368,8 @@ export function ToolEffectsSummary({ summary }) {
   );
 }
 
-function RuntimeLogDetailPanel({ log, detailHeading, onClose }) {
+function RuntimeLogDetailPanel({ log, detailHeading, onClose, servers = [], tools = [], onNavigate }) {
+  const matchedToolId = matchingReviewedToolId(log, tools);
   return (
     <section className="detail-panel investigation-detail" aria-labelledby="runtime-event-heading">
       <div className="section-heading compact-heading">
@@ -353,12 +377,33 @@ function RuntimeLogDetailPanel({ log, detailHeading, onClose }) {
         <button onClick={onClose} type="button">Close details</button>
       </div>
       <SecurityExplanation record={log} />
+      <div className="button-row" aria-label="Related security records">
+        {matchedToolId !== null && onNavigate && (
+          <button type="button" className="secondary-action"
+            onClick={() => onNavigate("analysis", matchedToolId)}>
+            Open matching tool review
+          </button>
+        )}
+        {log.control_plane_revision_number !== null &&
+          log.control_plane_revision_number !== undefined && onNavigate && (
+          <button type="button" className="secondary-action"
+            onClick={() => onNavigate("config")}>
+            Inspect rules (recorded revision {log.control_plane_revision_number})
+          </button>
+        )}
+        {log.emergency_deny_id && onNavigate && (
+          <button type="button" className="secondary-action"
+            onClick={() => onNavigate("emergency")}>
+            Browse emergency blocks (ID {log.emergency_deny_id})
+          </button>
+        )}
+      </div>
       <ToolEffectsSummary summary={log.arguments_summary} />
       <RuntimeReconciliation key={log.operation_id || `legacy-${log.id}`} operationId={log.operation_id} />
       <details className="operator-technical-details">
         <summary>Request, policy and transport records</summary>
       <div className="metadata-grid runtime-metadata-grid">
-        <MetadataSection title="Runtime context" items={[["Operation ID", log.operation_id], ["Audit phase", log.event_phase], ["Agent", log.agent_id], ["Session ID", log.session_id], ["Server ID", log.server_id], ["Tool", log.tool_name], ["Argument summary", log.arguments_summary, "structured"], ["Recorded at", formatDate(log.created_at)]]} />
+        <MetadataSection title="Runtime context" items={[["Operation ID", log.operation_id], ["Audit phase", log.event_phase], ["Agent", log.agent_id], ["Session ID", log.session_id], ["Server", runtimeServerLabel(log, servers)], ["Server ID", log.server_id], ["Tool", log.tool_name], ["Argument summary", log.arguments_summary, "structured"], ["Recorded at", formatDate(log.created_at)]]} />
         <MetadataSection title="Policy decision" items={[["Decision", log.decision, "decision"], ["Rule ID", log.rule_id], ["Decision reason", log.decision_reason], ["Severity", log.severity, "severity"], ["Configuration revision", log.control_plane_revision_number], ["Configuration digest", log.control_plane_content_hash]]} />
         <MetadataSection title="Transport and execution" items={[["Client protocol profile", log.client_protocol_profile_id], ["Upstream protocol profile", log.upstream_protocol_profile_id], ["Dispatch evidence", executionDisplay(log)], ["Execution status", log.execution_status, "execution"], ["Result summary", log.result_summary], ["Error summary", log.error_summary]]} />
       </div>

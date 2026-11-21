@@ -22,6 +22,7 @@ function Dashboard({
   dashboardRefreshedAt,
   loading,
   readStates = {},
+  readTimestamps = {},
   onNavigate,
 }) {
   const approvedTools = tools.filter(
@@ -50,6 +51,14 @@ function Dashboard({
 
   function unavailableMessage(source) {
     return readStates[source] === "unavailable" ? "The latest data is unavailable." : null;
+  }
+
+  function lastResponse(source) {
+    // This is the local *receipt time* of an independently completed API read,
+    // never the source collection time, proof of current AWS state, or a stale
+    // response being silently relabeled as a successful new check.
+    if (readStates[source] !== "ready" || !readTimestamps[source]) return null;
+    return "Response received: " + formatDate(readTimestamps[source]);
   }
 
   return (
@@ -108,21 +117,24 @@ function Dashboard({
         <button className="secondary-action" type="button" onClick={() => onNavigate("operations")}>Open system health</button>
       </div>
       <div className="status-grid">
-        <RuntimeStatusCard label="API" value={readStates.health === "ready" ? health?.status : readStates.health || "checking"} />
+        <RuntimeStatusCard label="API" value={readStates.health === "ready" ? health?.status : readStates.health || "checking"} freshness={lastResponse("health")} />
         <RuntimeStatusCard
           label="Database"
           value={readStates.runtimeStatus === "ready" ? runtimeStatus?.database?.status : readStates.runtimeStatus || "checking"}
           detail={readStates.runtimeStatus === "ready" ? runtimeStatus?.database?.detail : null}
+          freshness={lastResponse("runtimeStatus")}
         />
         <RuntimeStatusCard
           label="Policy checks"
           value={readStates.runtimeStatus === "ready" ? runtimeStatus?.opa?.status : readStates.runtimeStatus || "checking"}
           detail={readStates.runtimeStatus === "ready" ? runtimeStatus?.opa?.endpoint : null}
+          freshness={lastResponse("runtimeStatus")}
         />
         <RuntimeStatusCard
           label="Gateway"
           value={readStates.runtimeStatus === "ready" ? runtimeStatus?.gateway?.status : readStates.runtimeStatus || "checking"}
           detail={readStates.runtimeStatus === "ready" ? runtimeStatus?.gateway?.endpoint : null}
+          freshness={lastResponse("runtimeStatus")}
         />
       </div>
 
@@ -138,6 +150,7 @@ function Dashboard({
         <StatCard label="Active emergency blocks" value={count("emergencyDenies", activeDenies.length)} tone="stat-warn" />
       </div>
       <p className="hint-text">These Runtime counts come from the backend over all retained outcome events; they are not limited to the latest 20 rows. Intent-only events and deleted history are excluded. They are not a live security posture score.</p>
+      <p className="hint-text" role="note">Inventory: {lastResponse("tools") || "current response unavailable"}. Runtime outcome summary: {lastResponse("runtimeLogs") || "current response unavailable"}. Emergency restrictions: {lastResponse("emergencyDenies") || "current response unavailable"}. These are API receipt times, not measurement times from the upstream services.</p>
       </details>
 
       <div className="dashboard-layout">
@@ -150,6 +163,7 @@ function Dashboard({
               Refresh after the service recovers before changing security settings.
             </p>
           )}
+          {lastResponse("activeRevision") && <p className="hint-text" role="note">{lastResponse("activeRevision")}; signature metadata must still be verified independently.</p>}
           {activeRevision ? (
             <dl className="compact-dl">
               <div>
@@ -204,11 +218,12 @@ function Dashboard({
   );
 }
 
-function RuntimeStatusCard({ label, value, detail }) {
+function RuntimeStatusCard({ label, value, detail, freshness }) {
   return (
     <div className="status-panel compact-status">
       <span>{label}</span>
       <strong>{String(value || "unknown").toLowerCase().replace(/^./, (c) => c.toUpperCase())}</strong>
+      <small role="note">{freshness || "Current API response unavailable"}</small>
       {detail && <details className="operator-technical-details">
         <summary>Connection details</summary>
         <small>{detail}</small>

@@ -83,16 +83,16 @@ export function analysisModuleCards(tool, analysis, bundle) {
       explanation: "This analysis record has no independent prompt injection detection report. The description analysis may still identify candidate instructions.",
       detail: m4?.m3 && Array.isArray(m4.m3.model_directives)
         ? m4.m3.model_directives.length + " candidate instruction(s) from the description analysis. Injection is unconfirmed."
-        : "Independent M3 outcome unavailable in this record.",
+        : "Independent injection-check result unavailable in this record.",
     },
     {
       id: "M4",
       title: "Description hypotheses",
       status: m4 ? "Advisory only" : "Evidence unavailable",
-      explanation: "English-language GLiNER/DeBERTa hypotheses describe advertised text, not verified tool behavior.",
+      explanation: "The language-model check interprets the advertised tool description; it does not verify what the tool actually does.",
       detail: Number.isInteger(m4?.m6?.candidate_operation_count)
         ? m4.m6.candidate_operation_count + " candidate operation(s) detected in advertised description."
-        : "Open M4 analysis for model context and coverage limitations.",
+        : "Open the description check for model context and coverage limitations.",
     },
     {
       id: "M5",
@@ -114,7 +114,7 @@ export function analysisModuleCards(tool, analysis, bundle) {
       id: "M7",
       title: "Risk explanation",
       status: m7?.schema === "m7_deterministic_risk_evidence_v1" ? "Deterministic" : "Explanation unavailable",
-      explanation: "Risk is a deterministic MAX contribution, not a vote from independent verified models.",
+      explanation: "Recorded risk is based on the strongest supported risk driver; it is not a vote from AI models.",
       detail: m7?.schema === "m7_deterministic_risk_evidence_v1"
         ? m7.risk_drivers.length + " recorded risk driver(s); coverage " + label(m7.coverage?.status) + "."
         : "No current structured risk explanation.",

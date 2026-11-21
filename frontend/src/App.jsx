@@ -124,6 +124,8 @@ function App() {
   const [logoutError, setLogoutError] = useState("");
   const [signingOut, setSigningOut] = useState(false);
   const [readStates, setReadStates] = useState({});
+  // Per-source successful response receipt. Do not equate it with source measurement time.
+  const [readTimestamps, setReadTimestamps] = useState({});
   const [health, setHealth] = useState(null);
   const [runtimeStatus, setRuntimeStatus] = useState(null);
   const [operationsSummary, setOperationsSummary] = useState(null);
@@ -190,6 +192,7 @@ function App() {
     setAccountOpen(false);
     setMobileNavOpen(false);
     setReadStates({});
+    setReadTimestamps({});
     setHealth(null);
     setRuntimeStatus(null);
     setOperationsSummary(null);
@@ -330,6 +333,7 @@ function App() {
           if (generation === loadDataGeneration.current) {
             setter(result);
             setReadStates((current) => ({ ...current, [key]: "ready" }));
+            setReadTimestamps((current) => ({ ...current, [key]: new Date().toISOString() }));
           }
           return result;
         } catch (err) {
@@ -481,7 +485,7 @@ function App() {
     }
 
     if (activePage === "runtime") {
-      return <RuntimeLogs initialPage={runtimeLogPage} loading={loading} />;
+      return <RuntimeLogs initialPage={runtimeLogPage} loading={loading} servers={activeServers} tools={activeTools} onNavigate={navigateToPage} />;
     }
 
     if (activePage === "operations") {
@@ -521,6 +525,7 @@ function App() {
         runtimeStatus={runtimeStatus}
         loading={loading}
         readStates={readStates}
+        readTimestamps={readTimestamps}
         onNavigate={navigateToPage}
       />
     );
@@ -529,6 +534,7 @@ function App() {
     analysisEntryToolId,
     operationEntryId,
     readStates,
+    readTimestamps,
     activeServers,
     activeToolAnalyses,
     activeTools,
