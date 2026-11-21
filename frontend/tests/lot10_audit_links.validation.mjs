@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  auditOperationLink, normalizeOperationId, operationFromQuery,
+  auditOperationLink, auditTargetLink, normalizeOperationId, operationFromQuery,
 } from "../src/utils/operationNavigation.js";
 
 const ID = "12345678-1234-4321-89ab-0123456789ab";
@@ -28,4 +28,21 @@ test("AUD-01/OP-01: exact-ID audit links open only read-only operation investiga
   assert.equal(operationFromQuery("?view=operations&operation_id=invalid"), null);
   assert.equal(operationFromQuery("?view=operations"), null);
   assert.equal(operationFromQuery(""), null);
+});
+
+
+test("AUD-01/AU-01: only exact current tool and runtime operation IDs become deep links", () => {
+  assert.equal(auditTargetLink("mcp_tool", 42), "?view=analysis&tool=42");
+  assert.equal(auditTargetLink("mcp_tool", "42"), "?view=analysis&tool=42");
+  assert.equal(auditTargetLink("runtime_operation", ID),
+    "?view=operations&operation_id=" + ID);
+  for (const [type, id] of [
+    ["mcp_tool", 0], ["mcp_tool", "-1"], ["mcp_tool", "0042"],
+    ["mcp_tool", "42?view=users"], ["mcp_tool", "../../users"],
+    ["mcp_tool", "999999999999999999"], ["mcp_tool", null],
+    ["mcp_server", 42], ["cloud_scan", ID],
+    ["control_plane_config_revision", ID], ["runtime_logs", ID],
+  ]) {
+    assert.equal(auditTargetLink(type, id), null, type + " should not imply an exact verified link");
+  }
 });

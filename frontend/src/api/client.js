@@ -8,7 +8,30 @@ const BUILD_SCAN_TIMEOUT_MS = 600_000;
 const ERROR_MESSAGES = Object.freeze({
   upstream_oauth_dynamic_registration_unsupported:
     "This MCP does not support automatic OAuth registration. Enter a provider-issued OAuth client ID and try again.",
+  upstream_oauth_authorization_denied:
+    "The external provider denied the authorization. Review the requested permissions and reconnect if appropriate.",
+  upstream_oauth_state_invalid:
+    "The authorization response did not match the original request. Start a new connection; do not reuse this callback.",
+  upstream_oauth_state_expired:
+    "The provider authorization session expired. Start the connection again.",
+  upstream_oauth_token_exchange_failed:
+    "The provider connection could not finish. Check the provider configuration before retrying.",
+  oauth_callback_failed: "The sign-in callback could not be verified. Start the connection again.",
+  invalid_runtime_log_cursor:
+    "That log page is no longer available. Clear the current log page and reload.",
+  validation_error: "Some supplied values are invalid. Review the highlighted fields.",
+  request_timeout: "The request timed out. Check the operation status before trying again, especially if it may have modified remote data.",
+  network_error: "The server connection failed. Check System health and avoid replaying an operation whose outcome is uncertain.",
+  controlled_ai_unavailable:
+    "AI assistance is temporarily unavailable. You can continue manually; no security settings were changed.",
+  security_pack_ai_unavailable:
+    "AI assistance for security configuration is unavailable. You can continue manually; no settings were changed.",
+  invalid_csrf_token: "The form security token expired. Reload the page and sign in again before retrying.",
+  unauthorized: "You need to sign in to view or change this information.",
+  forbidden: "Your account does not have permission to perform this action.",
 });
+
+const OPAQUE_ERROR_CODE = /^[A-Za-z][A-Za-z0-9_:-]{2,99}$/;
 
 let csrfToken = "";
 let sessionGeneration = 0;
@@ -212,12 +235,40 @@ export function formatApiErrorDetail(detail) {
 }
 
 export function safeErrorMessage(err) {
-  const message = err instanceof ApiError ? err.message : safeMessage(err?.message || "");
   const code = String(err?.code || "");
+  const message = err instanceof ApiError ? err.message : safeMessage(err?.message || "");
   if (/security_pack_ai_unavailable|controlled_ai_unavailable|Gemini API returned HTTP 503|Groq API returned HTTP 503/i.test(message + " " + code)) {
-    return "AI assistance is temporarily unavailable. You can continue manually or retry later; no security settings were changed.";
+    return ERROR_MESSAGES[code] ||
+      "AI assistance is temporarily unavailable. You can continue manually or retry later; no security settings were changed.";
   }
-  return message || "Request failed.";
+  if (!(err instanceof ApiError)) return message || "Request failed.";
+  // Field-level validation errors are the one trusted actionable exception
+  // to the generic-code fallback: the user needs to know what to correct.
+  if (code === "validation_error" && err.fieldErrors?.length) {
+    return err.fieldErrors.slice(0, 10)
+      .map((entry) => fieldLabel(entry.field) + ": " + safeMessage(entry.message))
+      .join(" ");
+  }
+  // Avoid exposing upstream exception text, filesystem paths, credentials or
+  // arbitrary provider messages. Keep the bounded diagnostic code separately.
+  if (ERROR_MESSAGES[code]) return ERROR_MESSAGES[code];
+  if (err.status === 401) return ERROR_MESSAGES.unauthorized;
+  if (err.status === 403) return ERROR_MESSAGES.forbidden;
+  if (err.status >= 500) {
+    return "A server or upstream service failed. Check System health and the operation history before retrying; an upstream effect may already have occurred.";
+  }
+  if (err.fieldErrors?.length) {
+    return err.fieldErrors.slice(0, 10)
+      .map((entry) => fieldLabel(entry.field) + ": " + safeMessage(entry.message))
+      .join(" ") || ERROR_MESSAGES.validation_error;
+  }
+  const codeInfo = OPAQUE_ERROR_CODE.test(code) && code.length <= 80
+    ? " (error code: " + code + ")" : "";
+  if (err.status === 404) return "The requested record could not be found or is no longer available" + codeInfo + ".";
+  if (err.status === 409) return "The record changed or conflicts with the current operation. Refresh its status before proceeding" + codeInfo + ".";
+  if (err.status === 429) return "The service rate limit was reached. Try later" + codeInfo + ".";
+  return "The operation was not completed" + codeInfo +
+    ". Review the relevant record and System health for details.";
 }
 
 export async function settleNamedRequests(requests) {
@@ -478,6 +529,12 @@ export async function logoutControlPlane() {
   const payload = await request("/control-plane/auth/logout", { method: "POST" });
   setCsrfToken("");
   return payload;
+}
+
+export async function fetchActiveConfigIntegrity() {
+  // Signature, content hash, schema and the revision chain are verified by
+  // the same backend provider used by trusted runtime configuration reads.
+  return request("/control-plane/config/active/integrity");
 }
 
 export async function requestControlledAIAssistance(toolId, payload) {

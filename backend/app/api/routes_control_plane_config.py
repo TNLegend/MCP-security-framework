@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,6 +13,7 @@ from app.schemas.control_plane import (
     ConfigRevisionActionRequest,
     ConfigRevisionPatchRequest,
     ConfigRevisionPublic,
+    ConfigRevisionIntegrityPublic,
 )
 from app.services.control_plane_auth import (
     AuthenticatedControlPlaneUser,
@@ -27,6 +30,11 @@ from app.services.control_plane_config import (
     publish_revision,
     rollback_to_revision,
     validate_revision,
+)
+
+from app.services.published_configuration import (
+    PublishedConfigurationProvider,
+    PublishedConfigurationError,
 )
 
 router = APIRouter(prefix="/control-plane/config", tags=["Control Plane Config"])
@@ -52,6 +60,41 @@ def get_active_revision(
 ):
     revision = active_revision(db)
     return ConfigRevisionPublic.model_validate(revision) if revision else None
+
+
+@router.get("/active/integrity", response_model=ConfigRevisionIntegrityPublic)
+def verify_active_revision_integrity(
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    """Verify exactly what the runtime configuration resolver would accept.
+
+    This does not trigger configuration publication, alter keys or establish
+    that every Gateway process has loaded the same revision.
+    """
+    checked_at = datetime.now(timezone.utc)
+    try:
+        snapshot = PublishedConfigurationProvider(db).load_active_snapshot(fresh=True)
+    except PublishedConfigurationError as exc:
+        return ConfigRevisionIntegrityPublic(
+            status="FAILED",
+            checked_at=checked_at,
+            error_code=exc.code,
+        )
+    except Exception:
+        # Fail closed, without leaking ORM exceptions, path or key material.
+        return ConfigRevisionIntegrityPublic(
+            status="UNAVAILABLE",
+            checked_at=checked_at,
+            error_code="revision_verification_unavailable",
+        )
+    return ConfigRevisionIntegrityPublic(
+        status="VERIFIED",
+        revision_id=snapshot.revision_id,
+        revision_number=snapshot.revision_number,
+        content_hash=snapshot.content_hash,
+        checked_at=checked_at,
+    )
 
 
 @router.get("/revisions/{revision_id}", response_model=ConfigRevisionPublic)

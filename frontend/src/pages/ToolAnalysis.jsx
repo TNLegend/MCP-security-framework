@@ -20,6 +20,7 @@ function ToolAnalysis({
   tools = [],
 }) {
   const [selectedToolId, setSelectedToolId] = useState(null);
+  const handledDeepLink = useRef(null);
   const [bundle, setBundle] = useState(null);
   const [bundleToolId, setBundleToolId] = useState(null);
   const [bundleLoading, setBundleLoading] = useState(false);
@@ -93,13 +94,22 @@ function ToolAnalysis({
       setSelectedToolId(null);
       return;
     }
-    if (!tools.some((tool) => tool.id === selectedToolId)) {
-      const requested = tools.find((tool) => String(tool.id) === String(requestedToolId));
-      setSelectedToolId(requested?.id ?? tools[0].id);
+    const deepLink = requestedToolId === null ? null : String(requestedToolId);
+    if (deepLink !== null && handledDeepLink.current !== deepLink) {
+      handledDeepLink.current = deepLink;
+      const requested = tools.find((tool) => String(tool.id) === deepLink);
+      // Fail closed: an audit link to a deleted/foreign tool must never silently
+      // open another tool and present unrelated findings as matching evidence.
+      setSelectedToolId(requested?.id ?? null);
       if (requested) {
         const index = filteredTools.findIndex((tool) => tool.id === requested.id);
         if (index >= 0) toolPagination.setPage(Math.floor(index / toolPagination.pageSize) + 1);
       }
+      return;
+    }
+    if (deepLink === null) handledDeepLink.current = null;
+    if (!tools.some((tool) => tool.id === selectedToolId)) {
+      setSelectedToolId(deepLink === null ? tools[0].id : null);
     }
   }, [selectedToolId, requestedToolId, tools]);
 
@@ -351,6 +361,14 @@ function ToolAnalysis({
         </div>
 
         <div className="detail-panel">
+          {requestedToolId !== null && !tools.some((tool) =>
+            String(tool.id) === String(requestedToolId)) && !loading && (
+            <p role="alert" className="error-banner">
+              The tool linked by the audit record (ID {String(requestedToolId).slice(0, 40)})
+              is not in the current inventory. No other tool has been substituted.
+              Check whether the original server was archived.
+            </p>
+          )}
           <h3 id="review-selected-tool">{selectedTool ? selectedTool.title || selectedTool.name : "No tool selected"}</h3>
           {selectedServer && <p className="hint-text">{selectedServer.server_info_title || selectedServer.name}</p>}
           {selectedTool && (
@@ -752,9 +770,35 @@ function InfoRow({ label, value }) {
 // TA-02 / XC-03: show what the backend recorded. The GUI never reclassifies a
 // finding (e.g. as "prompt injection") from words in its code or title.
 export function friendlyFindingTitle(finding) {
-  if (finding?.title && !/^[A-Z0-9_ -]+$/.test(finding.title)) return finding.title;
-  if (finding?.code) return humanize(String(finding.code).toLowerCase());
-  return "Security finding to review";
+  // The finding catalogue may contain upstream, untrusted tool text.
+  // Render it as text (React escapes markup), with a strict display budget.
+  const original = typeof finding?.title === "string" ? finding.title : "";
+  const title = original.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+  if (title && !/^[A-Z0-9_ -]+$/.test(title)) {
+    return title.length > 140 ? title.slice(0, 139).trimEnd() + "…" : title;
+  }
+  const code = typeof finding?.code === "string"
+    ? finding.code.replace(/[^A-Za-z0-9_ -]/g, "").slice(0, 96) : "";
+  return code ? humanize(code.toLowerCase()) : "Security finding to review";
+}
+
+// A source is displayed only if the corresponding finding actually carries
+// a bounded, structured JSON pointer/offset; never invent a line of source
+// code or print a machine-local absolute path.
+export function findingEvidenceLocation(finding) {
+  const evidence = finding?.evidence;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return null;
+  const location = evidence.location && typeof evidence.location === "object"
+    ? evidence.location : evidence;
+  const path = location.source_path ?? location.source_pointer ?? location.path;
+  if (typeof path !== "string" || !/^\/(?:[^~/]|~[01])+(?:\/(?:[^~/]|~[01])+)*$/.test(path)
+      || path.length > 200 || path.split("/").some((part) => part === "." || part === "..")) return null;
+  const start = location.start ?? location.start_offset;
+  const end = location.end ?? location.end_offset;
+  if (start === undefined && end === undefined) return path + " (field)";
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0
+      || end <= start || end > 1000000) return null;
+  return path + " (characters " + start + "–" + end + ")";
 }
 const FINDING_IMPACT = {
   BLOCK: "Blocks the tool during deterministic security analysis",
@@ -790,6 +834,7 @@ export function FindingsView({ error, findings }) {
             <dl className="inline-metadata">
               <div><dt>Code</dt><dd>{finding.code || "-"}</dd></div>
               <div><dt>Source</dt><dd>{finding.source || "-"}</dd></div>
+              <div><dt>Exact source location</dt><dd>{findingEvidenceLocation(finding) || "Not recorded in this finding"}</dd></div>
               <div><dt>Confidence</dt><dd>{formatConfidence(finding.confidence)}</dd></div>
             </dl>
           </details>

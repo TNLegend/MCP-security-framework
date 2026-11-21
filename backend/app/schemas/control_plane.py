@@ -248,6 +248,17 @@ class ConfigPublishRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ConfigRevisionIntegrityPublic(BaseModel):
+    # A backend signature and chain verification, not proof of Gateway rollout.
+    status: Literal["VERIFIED", "FAILED", "UNAVAILABLE"]
+    revision_id: str | None = None
+    revision_number: int | None = None
+    content_hash: str | None = None
+    checked_at: datetime
+    error_code: str | None = None
+    verification_scope: Literal["backend_published_configuration"] = "backend_published_configuration"
+
+
 class ConfigRevisionPublic(BaseModel):
     id: str
     revision_number: int

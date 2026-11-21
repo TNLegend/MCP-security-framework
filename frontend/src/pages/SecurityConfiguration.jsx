@@ -1,8 +1,10 @@
 import { formatServerTime } from "../utils/serverTime.js";
+import { displayedConfigIntegrity } from "../utils/configIntegrity.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useDialogFocus } from "../utils/useDialogFocus";
 import {
   createDraftRevision,
+  fetchActiveConfigIntegrity,
   createLatestConfigRevision,
   deleteConfigRevision,
   patchConfigRevision,
@@ -37,6 +39,40 @@ function SecurityConfiguration({
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [validationReceipt, setValidationReceipt] = useState(null);
+  const [integrityResult, setIntegrityResult] = useState(null);
+  const [integrityLoading, setIntegrityLoading] = useState(false);
+  const [integrityError, setIntegrityError] = useState("");
+  const displayedIntegrity = displayedConfigIntegrity(activeRevision, integrityResult);
+  useEffect(() => {
+    let current = true;
+    setIntegrityResult(null);
+    setIntegrityError("");
+    if (!activeRevision?.id) {
+      setIntegrityLoading(false);
+      return () => { current = false; };
+    }
+    setIntegrityLoading(true);
+    fetchActiveConfigIntegrity()
+      .then((result) => { if (current) setIntegrityResult(result); })
+      .catch(() => { if (current) setIntegrityError("The backend verification request failed. No valid signature has been established."); })
+      .finally(() => { if (current) setIntegrityLoading(false); });
+    return () => { current = false; };
+  }, [activeRevision?.id, activeRevision?.content_hash]);
+
+  async function recheckPublishedIntegrity() {
+    if (!activeRevision?.id || integrityLoading) return;
+    setIntegrityLoading(true);
+    setIntegrityError("");
+    setIntegrityResult(null);
+    try {
+      const result = await fetchActiveConfigIntegrity();
+      setIntegrityResult(result);
+    } catch {
+      setIntegrityError("Unable to verify the published revision. Do not assume that its signature is valid.");
+    } finally {
+      setIntegrityLoading(false);
+    }
+  }
   const [busy, setBusy] = useState(false);
   const [loadedRevision, setLoadedRevision] = useState(null);
   // CF-01: publication requires a reviewed, backend-computed preview.
@@ -274,6 +310,32 @@ function SecurityConfiguration({
         <Summary label="Policy settings" value={Object.keys(activeRevision?.content?.policy_settings?.rules || {}).length} />
         <Summary label="Active revision status" value={activeRevision?.status || "Not published"} />
       </div>
+
+      <section className="detail-panel" aria-label="Published revision signature verification">
+        <h3>Published revision integrity</h3>
+        <p role="status">
+          {integrityLoading
+            ? "Verifying the signed published revision against the backend..."
+            : integrityError || displayedIntegrity.message}
+        </p>
+        {integrityResult && (
+          <p className="hint-text">
+            Backend verification: <strong>{displayedIntegrity.status}</strong>
+            {" · "}Checked: {formatServerTime(integrityResult.checked_at)}
+            {integrityResult.error_code ? " · Failure code: " + integrityResult.error_code : ""}
+          </p>
+        )}
+        <button type="button" className="secondary-action"
+          disabled={!activeRevision?.id || integrityLoading}
+          onClick={recheckPublishedIntegrity}>
+          Recheck published signature
+        </button>
+        <p className="hint-text">
+          This verifies the signature, exact content hash and signed history using
+          the backend configuration verifier. It does not establish that every
+          Gateway process has loaded this revision.
+        </p>
+      </section>
 
       <nav aria-label="Security rules sections" className="management-jump-links">
         <a href="#configuration-history">Revision history</a>
