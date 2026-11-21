@@ -1,6 +1,55 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "vite";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+
+
+test("CLOUD-01: generic AWS role onboarding does not depend on the lab account or AWS CLI", async () => {
+  const server = await createServer({
+    configFile: false,
+    plugins: [(await import("@vitejs/plugin-react")).default()],
+    server: { middlewareMode: true, hmr: false },
+    appType: "custom", logLevel: "silent",
+  });
+  try {
+    const { awsCrossAccountTrustExample, explainDeployObligations,
+      governanceFreshnessWindow, CloudScanTable } = await server.ssrLoadModule("/src/pages/CloudSecurity.jsx");
+    assert.equal(governanceFreshnessWindow("IAM_MCP"), "24 hours");
+    assert.equal(governanceFreshnessWindow("AWS_ADVANCED"), "7 days");
+    assert.equal(governanceFreshnessWindow("IAC_CONFIG"), "7 days");
+    const html = renderToStaticMarkup(React.createElement(CloudScanTable, {
+      scans: [{
+        id: "synthetic-audit", kind: "AWS_ADVANCED", status: "PARTIAL",
+        created_at: "2026-11-21T17:00:00Z", resource_count: 2,
+        finding_count: 1, unknown_checks: 4,
+      }], label: "Synthetic AWS status", loading: false, empty: "No audits",
+      onOpen: () => { throw new Error("Do not invoke actions while rendering"); },
+    }));
+    assert.match(html, /Partial/);
+    assert.match(html, /Incomplete coverage; not a clean security verdict/);
+    assert.doesNotMatch(html, /(?:Fully secure|All checks passed)/);
+    const obligations = explainDeployObligations(["ADMIN_REVIEW", "LOG"]);
+    assert.match(obligations, /Administrator review required/);
+    assert.match(obligations, /Record the assessment/);
+    assert.doesNotMatch(obligations, /ADMIN_REVIEW|\bLOG\b/);
+    assert.match(explainDeployObligations(["UNRECOGNIZED_CODE"]), /Unrecognized requirement/);
+    const demo = awsCrossAccountTrustExample("mcp-independent-customer-xyz");
+    assert.equal(demo.Version, "2012-10-17");
+    assert.equal(demo.Statement[0].Action, "sts:AssumeRole");
+    assert.equal(
+      demo.Statement[0].Condition.StringEquals["sts:ExternalId"],
+      "mcp-independent-customer-xyz",
+    );
+    assert.match(demo.Statement[0].Principal.AWS, /FRAMEWORK_AUDIT_PRINCIPAL/);
+    assert.doesNotMatch(JSON.stringify(demo), /565087261244|mcp-cloud-audit-operator/);
+    const oldRole = awsCrossAccountTrustExample("");
+    assert.ok(!("Condition" in oldRole.Statement[0]));
+  } finally {
+    await server.close();
+  }
+});
 
 test("CLOUD-05: credential helper failure is actionable and not a network outage", async () => {
   const server = await createServer({

@@ -491,6 +491,7 @@ function App() {
           isAdmin={isAdmin}
           loading={loading}
           onRefresh={loadData}
+          onNavigate={navigateToPage}
           summary={operationsSummary}
         />
       );

@@ -28,6 +28,40 @@ const cloudTasks = [
   { id: "cloud-detail", label: "Audit review" },
 ];
 
+// Example only: the administrator must replace the principal with the IAM
+// role running this framework. An External ID is a trust condition, not a
+// credential and does not grant AWS access on its own.
+export const deployObligationLabels = Object.freeze({
+  ADMIN_REVIEW: "Administrator review required",
+  REVIEW_EVIDENCE: "Inspect and verify supporting evidence",
+  LOG: "Record the assessment in the audit history",
+});
+
+export function governanceFreshnessWindow(kind) {
+  return kind === "IAM_MCP" ? "24 hours" :
+    ["AWS_ADVANCED", "IAC_CONFIG"].includes(kind) ? "7 days" :
+    "not determined for this scan type";
+}
+
+export function explainDeployObligations(values) {
+  if (!Array.isArray(values)) return "No follow-up requirements recorded";
+  return values.map((value) =>
+    deployObligationLabels[value] || "Unrecognized requirement (review technical evidence)"
+  ).join("; ");
+}
+
+export function awsCrossAccountTrustExample(externalId) {
+  const statement = {
+    Effect: "Allow",
+    Principal: { AWS: "arn:aws:iam::SOURCE_ACCOUNT_ID:role/FRAMEWORK_AUDIT_PRINCIPAL" },
+    Action: "sts:AssumeRole",
+  };
+  if (externalId) {
+    statement.Condition = { StringEquals: { "sts:ExternalId": externalId } };
+  }
+  return { Version: "2012-10-17", Statement: [statement] };
+}
+
 const scanKinds = {
   AWS_BASELINE: "AWS baseline",
   AWS_ADVANCED: "Advanced AWS",
@@ -56,7 +90,7 @@ function CloudStatus({ status }) {
   </span>;
 }
 
-function CloudScanTable({ scans, onOpen, empty, loading, metric, label, mixed = false }) {
+export function CloudScanTable({ scans, onOpen, empty, loading, metric, label, mixed = false }) {
   if (loading && !scans.length) return <p role="status">Loading audit history…</p>;
   if (!scans.length) return <p className="cloud-empty">{empty}</p>;
 
@@ -77,7 +111,10 @@ function CloudScanTable({ scans, onOpen, empty, loading, metric, label, mixed = 
         return <tr key={scan.id}>
           <td><time dateTime={scan.created_at}>{started}</time></td>
           {mixed && <td>{scanKinds[scan.kind] || scan.kind}</td>}
-          <td><CloudStatus status={scan.status} /></td>
+          <td><CloudStatus status={scan.status} />
+            {scan.status === "PARTIAL" && <small title="Some scan coverage was incomplete or unavailable">
+              Incomplete coverage; not a clean security verdict
+            </small>}</td>
           {mixed && <td>{scan.kind === "IAC_CONFIG" ? scan.source_file_count : scan.resource_count}</td>}
           {metric && <td>{scan[metric]}</td>}
           <td>{scan.finding_count}</td>
@@ -482,6 +519,8 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [credentialMode, setCredentialMode] = useState("SDK_DEFAULT");
   const [profile, setProfile] = useState("");
   const [roleArn, setRoleArn] = useState("");
+  const [externalId, setExternalId] = useState("");
+  const [expectedAccountId, setExpectedAccountId] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -761,6 +800,8 @@ export default function CloudSecurity({ isAdmin = false }) {
       credential_mode: credentialMode,
       profile_name: credentialMode === "NAMED_PROFILE" ? profile.trim() : null,
       role_arn: roleArn.trim() || null,
+      external_id: roleArn.trim() ? (externalId.trim() || null) : null,
+      expected_account_id: expectedAccountId.trim() || null,
     };
     const created = await action(
       () => createCloudEnvironment(payload),
@@ -774,6 +815,8 @@ export default function CloudSecurity({ isAdmin = false }) {
       name: env.name, regions: env.regions.join(", "), services: [...env.services],
       credential_mode: env.credential_mode,
       profile_name: env.profile_name || "", role_arn: env.role_arn || "",
+      external_id: env.external_id || "",
+      expected_account_id: env.expected_account_id || "",
     });
     setMessage("");
     setError("");
@@ -789,6 +832,8 @@ export default function CloudSecurity({ isAdmin = false }) {
       credential_mode: edit.credential_mode,
       profile_name: edit.credential_mode === "NAMED_PROFILE" ? edit.profile_name.trim() : null,
       role_arn: edit.role_arn.trim() || null,
+      external_id: edit.role_arn.trim() ? (edit.external_id.trim() || null) : null,
+      expected_account_id: edit.expected_account_id.trim() || null,
     };
     const updated = await action(
       () => updateCloudEnvironment(current.id, payload),
@@ -1153,10 +1198,41 @@ export default function CloudSecurity({ isAdmin = false }) {
                 <input required maxLength={64} value={profile} onChange={(e) => setProfile(e.target.value)} placeholder="audit-profile" />
               </label>
             )}
+            <label>Expected AWS account ID (recommended)
+              <input value={expectedAccountId} inputMode="numeric" maxLength={12}
+                pattern="[0-9]{12}" placeholder="123456789012"
+                onChange={(e) => setExpectedAccountId(e.target.value)} />
+            </label>
             <label>Audit role ARN (optional)
               <input value={roleArn} onChange={(e) => setRoleArn(e.target.value)}
                 placeholder="arn:aws:iam::123456789012:role/ReadOnlyAuditRole" />
             </label>
+            {roleArn.trim() && <label>External ID for cross-account role trust (recommended)
+              <input value={externalId} maxLength={128}
+                placeholder="Generate an External ID or enter your existing role condition"
+                onChange={(e) => setExternalId(e.target.value)} />
+            </label>}
+            {roleArn.trim() && <button className="tiny-action" type="button"
+              onClick={() => setExternalId("mcp-" + globalThis.crypto.randomUUID())}>
+              Generate unique External ID
+            </button>}
+            <details className="operator-technical-details">
+              <summary>How to authorize another AWS account (no AWS CLI required)</summary>
+              <p>In the target AWS account, create a read-only audit role.
+                Its trust policy must allow the IAM principal of this framework
+                to call sts:AssumeRole. An External ID prevents unrelated
+                customers of a shared audit principal from assuming your role.
+                Do not use a root principal or grant write access to scanners.</p>
+              <p><strong>Trust policy example only:</strong> replace
+                SOURCE_ACCOUNT_ID and FRAMEWORK_AUDIT_PRINCIPAL with the
+                dedicated IAM principal running this installation. The example
+                is not a permission grant until an AWS administrator reviews it.</p>
+              <pre>{JSON.stringify(awsCrossAccountTrustExample(externalId.trim()), null, 2)}</pre>
+              <p>The target role also needs reviewed read-only IAM policies for
+                the selected scanners. The identity used by the framework must
+                already be available to boto3 (EC2/ECS/EKS/Lambda role, temporary
+                environment credentials, or a local profile); AWS CLI is optional.</p>
+            </details>
             <p>Only an AWS role or already-configured temporary SDK credentials are used. Do not enter access keys or a root profile.</p>
             <button className="secondary-action" disabled={busy || services.length === 0} type="submit">{busy ? "Working..." : "Add environment"}</button>
           </form>
@@ -1170,6 +1246,8 @@ export default function CloudSecurity({ isAdmin = false }) {
           <div>
             <dl className="cloud-facts">
               <div><dt>AWS account</dt><dd>{current.account_id || "Not verified"}</dd></div>
+              <div><dt>Expected account</dt><dd>{current.expected_account_id || "Not pinned"}</dd></div>
+              <div><dt>Role trust condition</dt><dd>{current.external_id ? "External ID configured" : "No External ID configured"}</dd></div>
               <div><dt>Regions</dt><dd>{current.regions.join(", ")}</dd></div>
               <div><dt>Services</dt><dd>{current.services.join(", ")}</dd></div>
             </dl>
@@ -1190,6 +1268,18 @@ export default function CloudSecurity({ isAdmin = false }) {
             )}
             {isAdmin && current.status !== "CONNECTED" &&
               <p>Test the AWS connection to enable read-only audits.</p>}
+            {current.status === "CONNECTED" && (
+              <div role="note" className="hint-text">
+                <p>A verified AWS identity proves the account and audit role at
+                  the time of the test, not which scanner checks the role can
+                  actually read. Missing IAM permissions must never count as
+                  clean security results.</p>
+                <button type="button" className="secondary-action"
+                  onClick={() => setActiveTask("cloud-advanced")}>
+                  Check available AWS read permissions
+                </button>
+              </div>
+            )}
             {isAdmin && edit && (
               <form className="contract-editor" onSubmit={saveEdit}>
                 <h4>Edit selected AWS environment</h4>
@@ -1225,11 +1315,26 @@ export default function CloudSecurity({ isAdmin = false }) {
                       onChange={(e) => setEdit((x) => ({...x,profile_name:e.target.value}))} />
                   </label>
                 )}
+                <label>Expected AWS account ID (recommended)
+                  <input value={edit.expected_account_id} inputMode="numeric" maxLength={12}
+                    pattern="[0-9]{12}" placeholder="123456789012"
+                    onChange={(e) => setEdit((x) => ({...x,expected_account_id:e.target.value}))} />
+                </label>
                 <label>Audit role ARN (optional)
                   <input value={edit.role_arn} onChange={(e) =>
                     setEdit((x) => ({...x,role_arn:e.target.value}))}
                     placeholder="arn:aws:iam::123456789012:role/CloudAuditRole" />
                 </label>
+                {edit.role_arn.trim() && <label>External ID for IAM trust policy
+                  <input value={edit.external_id} maxLength={128}
+                    onChange={(e) => setEdit((x) => ({...x,external_id:e.target.value}))} />
+                </label>}
+                {edit.role_arn.trim() && <button type="button" className="tiny-action"
+                  onClick={() => setEdit((x) => ({...x,external_id:"mcp-" + globalThis.crypto.randomUUID()}))}>
+                  Generate new External ID (requires updating role trust)
+                </button>}
+                <p>Changing the account, role or External ID requires a new
+                  connection test. Existing audit history is preserved.</p>
                 <button type="submit" className="secondary-action" disabled={busy || !edit.services.length}>
                   {busy ? "Saving..." : "Save AWS environment"}
                 </button>
@@ -1749,8 +1854,11 @@ export default function CloudSecurity({ isAdmin = false }) {
                 <strong>{deployGovernance.classification.replaceAll("_", " ")}</strong>
                 <p>{deployGovernance.explanation}</p>
                 <DeployEvidenceExplanation decision={deployGovernance} />
-                <p>Follow-up: {deployGovernance.obligations.join(", ")}.
+                <p>Follow-up: {explainDeployObligations(deployGovernance.obligations)}.
                   No automatic Runtime blocking or proof of effective AWS access.</p>
+                <p>Governance requires evidence no older than {governanceFreshnessWindow(details.scan.kind)}
+                  for this audit type. Freshness alone does not establish
+                  complete coverage or effective permission.</p>
               </div>}
               <h4>Previous security assessments ({governanceHistory.length})</h4>
               {governanceHistoryError && <p role="alert" className="error-banner">
@@ -1765,6 +1873,8 @@ export default function CloudSecurity({ isAdmin = false }) {
                     <summary>Decision reasons, signed evidence and integrity chain</summary>
                     {item.result?.explanation && <p>{item.result.explanation}</p>}
                     <DeployEvidenceExplanation decision={item.result || item} />
+                    {Array.isArray(item.result?.obligations) &&
+                      <p>Recorded follow-up: {explainDeployObligations(item.result.obligations)}.</p>}
                     <p>Input SHA-256: <code>{item.input_sha256}</code></p>
                     <p>Output SHA-256: <code>{item.output_sha256}</code></p>
                     <p>Chain entry SHA-256: <code>{item.entry_sha256}</code></p>

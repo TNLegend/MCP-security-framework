@@ -1826,6 +1826,13 @@ Cloud Security now has an optional, strictly read-only advanced AWS scanner.
 - Before launching, the ADMIN selects an already CONNECTED AWS environment
   with a role ARN. The backend uses boto3 and STS AssumeRole to obtain temporary
   credentials; no persistent IAM access keys are saved. AWS CLI is optional.
+- For arbitrary customer-owned AWS accounts, see
+  [cross-account onboarding](docs/aws_external_account_onboarding.md).
+  The administrator can pin the expected 12-digit account and configure a
+  per-account IAM External ID directly in Cloud Security. The source identity
+  remains the backend's SDK role or named profile; account trust and read-only
+  permissions must be configured and reviewed separately in the target AWS
+  account. The existing GUI is not a hosted multi-tenant AWS login portal.
 - The GUI offers a "Check read-only AWS permissions" diagnostic. It probes
   a limited set of EC2, IAM, S3, CloudTrail and CloudWatch API actions and
   returns ALLOWED, DENIED or UNKNOWN. An ALLOWED probe is NOT a guarantee

@@ -312,6 +312,14 @@ def ensure_cloud_security_schema() -> None:
             """ALTER TABLE cloud_environments
             ADD COLUMN IF NOT EXISTS services JSON DEFAULT '["EC2","S3","IAM"]' NOT NULL"""
         ))
+        # Backwards-compatible, nullable cross-account role trust and account
+        # identity pins. Existing environments retain their original behavior.
+        connection.execute(text(
+            "ALTER TABLE cloud_environments ADD COLUMN IF NOT EXISTS external_id VARCHAR(128)"
+        ))
+        connection.execute(text(
+            "ALTER TABLE cloud_environments ADD COLUMN IF NOT EXISTS expected_account_id VARCHAR(12)"
+        ))
         # IaC scans are account-independent. Existing AWS observations remain intact.
         connection.execute(text("ALTER TABLE cloud_scans ALTER COLUMN environment_id DROP NOT NULL"))
         connection.execute(text("ALTER TABLE cloud_resources ALTER COLUMN environment_id DROP NOT NULL"))

@@ -8,7 +8,7 @@ import {
 import "./management.css";
 
 
-function Operations({ initialOperationId = null, isAdmin = false, loading = false, onRefresh, summary }) {
+function Operations({ initialOperationId = null, isAdmin = false, loading = false, onNavigate, onRefresh, summary }) {
   const [reason, setReason] = useState("Apply bounded runtime log retention maintenance.");
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -178,6 +178,16 @@ function Operations({ initialOperationId = null, isAdmin = false, loading = fals
             self-check and verify an isolated MCP call before enabling
             normal workloads. No command in this panel mutates the system.</p>
         </details>
+        {onNavigate && <div className="button-row" aria-label="Investigate system prerequisites">
+          <button type="button" className="secondary-action"
+            onClick={() => onNavigate("config")}>Review signed security rules</button>
+          <button type="button" className="secondary-action"
+            onClick={() => onNavigate("inventory")}>Review MCP server connections</button>
+          <button type="button" className="secondary-action"
+            onClick={() => onNavigate("build")}>Check code scanners</button>
+          <button type="button" className="secondary-action"
+            onClick={() => onNavigate("cloud")}>Check cloud scanners</button>
+        </div>}
       </section>
 
       <section className="detail-panel" id="recent-activity">

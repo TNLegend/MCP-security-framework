@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 AWS_REGION = re.compile(r"^(af|ap|ca|cn|eu|il|me|mx|sa|us|us-gov)-[a-z]+(?:-[a-z]+)?-\d$")
 AWS_PROFILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 AWS_ROLE = re.compile(r"^arn:aws(?:-us-gov|-cn)?:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,200}$")
+AWS_ACCOUNT_ID = re.compile(r"^[0-9]{12}$")
+AWS_EXTERNAL_ID = re.compile(r"^[A-Za-z0-9_+=,.@:/-]{2,128}$")
 
 
 class EnvironmentCreate(BaseModel):
@@ -17,6 +19,8 @@ class EnvironmentCreate(BaseModel):
     credential_mode: Literal["SDK_DEFAULT", "NAMED_PROFILE"] = "SDK_DEFAULT"
     profile_name: str | None = None
     role_arn: str | None = None
+    external_id: str | None = None
+    expected_account_id: str | None = None
     model_config = ConfigDict(extra="forbid")
 
     @field_validator("name")
@@ -55,12 +59,31 @@ class EnvironmentCreate(BaseModel):
             raise ValueError("invalid_aws_role_arn")
         return v
 
+    @field_validator("external_id")
+    @classmethod
+    def valid_external_id(cls, v: str | None) -> str | None:
+        if v is not None and not AWS_EXTERNAL_ID.fullmatch(v):
+            raise ValueError("invalid_aws_external_id")
+        return v
+
+    @field_validator("expected_account_id")
+    @classmethod
+    def valid_expected_account(cls, v: str | None) -> str | None:
+        if v is not None and not AWS_ACCOUNT_ID.fullmatch(v):
+            raise ValueError("invalid_expected_aws_account_id")
+        return v
+
     @model_validator(mode="after")
     def check_auth(self):
         if self.credential_mode=="NAMED_PROFILE" and not self.profile_name:
             raise ValueError("profile_name_required")
         if self.credential_mode=="SDK_DEFAULT" and self.profile_name is not None:
             raise ValueError("profile_not_allowed_for_default_chain")
+        if self.external_id is not None and not self.role_arn:
+            raise ValueError("external_id_requires_audit_role")
+        if (self.expected_account_id and self.role_arn
+                and self.role_arn.split(":")[4] != self.expected_account_id):
+            raise ValueError("audit_role_account_does_not_match_expected_account")
         return self
 
 
@@ -74,6 +97,8 @@ class EnvironmentPublic(BaseModel):
     credential_mode: str
     profile_name: str | None
     role_arn: str | None
+    external_id: str | None
+    expected_account_id: str | None
     status: str
     last_error_code: str | None
     last_checked_at: datetime | None

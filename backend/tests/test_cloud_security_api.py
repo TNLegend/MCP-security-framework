@@ -98,6 +98,75 @@ def test_viewer_cannot_create_or_test_or_scan(harness):
     assert client.get("/control-plane/cloud-security/environments").status_code==200
 
 
+def test_cross_account_onboarding_roundtrip_and_reverification(harness):
+    client, db, monkeypatch, _ = harness
+    import app.api.routes_cloud_security as routes
+
+    payload = {
+        "name": "External AWS account",
+        "regions": ["eu-west-3"],
+        "services": ["IAM", "S3"],
+        "credential_mode": "SDK_DEFAULT",
+        "role_arn": "arn:aws:iam::210987654321:role/McpAudit",
+        "external_id": "mcp-customer-random-789",
+        "expected_account_id": "210987654321",
+    }
+    created = client.post("/control-plane/cloud-security/environments", json=payload)
+    assert created.status_code == 201, created.text
+    env = created.json()
+    assert env["external_id"] == payload["external_id"]
+    assert env["expected_account_id"] == payload["expected_account_id"]
+    assert env["status"] == "UNVERIFIED"
+
+    # A different AWS account must never be silently accepted on first test.
+    monkeypatch.setattr(routes, "check_connection",
+                        lambda e: (_ for _ in ()).throw(
+                            routes.CloudAuditError("AWS_ACCOUNT_CHANGED")))
+    denied = client.post("/control-plane/cloud-security/environments/" + env["id"] + "/test")
+    assert denied.status_code == 400
+    assert denied.json()["detail"] == "AWS_ACCOUNT_CHANGED"
+    assert db.get(CloudEnvironment, env["id"]).status == "FAILED"
+
+    monkeypatch.setattr(routes, "check_connection",
+                        lambda e: (object(), "210987654321", "assumed-role"))
+    success = client.post("/control-plane/cloud-security/environments/" + env["id"] + "/test")
+    assert success.status_code == 200
+    assert success.json()["account_id"] == payload["expected_account_id"]
+
+    # Legacy GUI clients omitting the new fields cannot silently drop the
+    # trust condition or account pin when renaming the environment.
+    legacy_change = {key: value for key, value in payload.items()
+                     if key not in ("external_id", "expected_account_id")}
+    legacy_change["name"] = "External AWS account renamed"
+    renamed = client.patch("/control-plane/cloud-security/environments/" +
+                           env["id"], json=legacy_change)
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["external_id"] == payload["external_id"]
+    assert renamed.json()["expected_account_id"] == payload["expected_account_id"]
+    assert renamed.json()["status"] == "CONNECTED"
+
+    changed = client.patch("/control-plane/cloud-security/environments/" +
+                           env["id"], json={**payload, "external_id": "mcp-rotated"})
+    assert changed.status_code == 200
+    assert changed.json()["status"] == "UNVERIFIED"
+    assert changed.json()["account_id"] is None
+    assert changed.json()["external_id"] == "mcp-rotated"
+
+
+def test_cross_account_role_removal_clears_external_id(harness):
+    client, _, _, _ = harness
+    item = client.post("/control-plane/cloud-security/environments", json={
+        "name": "Account with role", "regions": ["eu-west-3"],
+        "role_arn": "arn:aws:iam::123456789012:role/Audit",
+        "external_id": "mcp-unique-per-deployment",
+    }).json()
+    changed = client.patch("/control-plane/cloud-security/environments/" + item["id"],
+                           json={"name": "Account without role", "regions": ["eu-west-3"]})
+    assert changed.status_code == 200
+    assert changed.json()["external_id"] is None
+    assert changed.json()["role_arn"] is None
+
+
 def test_start_scan_is_queued_once_and_deduplicated(harness):
     client, db, monkeypatch, _ = harness
     import app.api.routes_cloud_security as routes

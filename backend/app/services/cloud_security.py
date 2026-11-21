@@ -86,8 +86,15 @@ def _sdk_session(env: CloudEnvironment):
         source=sts.get_caller_identity()
         if str(source.get("Arn","")).endswith(":root"):
             raise CloudAuditError("ROOT_AWS_IDENTITY_FORBIDDEN")
-        data=sts.assume_role(RoleArn=env.role_arn,RoleSessionName="McpDeploySecurityAudit",
-                             DurationSeconds=900)
+        assume_args = {"RoleArn": env.role_arn,
+                       "RoleSessionName": "McpDeploySecurityAudit",
+                       "DurationSeconds": 900}
+        # The operator configures this identifier in the target role trust
+        # policy. It is not a secret and cannot substitute for AssumeRole.
+        external_id = getattr(env, "external_id", None)
+        if external_id:
+            assume_args["ExternalId"] = external_id
+        data=sts.assume_role(**assume_args)
         keys=data["Credentials"]
         # In-memory only for this scan. Never persist, log or return these values.
         # Preserve the validated source profile for boto3's config lookup.
@@ -113,7 +120,11 @@ def check_connection(env: CloudEnvironment):
         raise CloudAuditError("AWS_ACCOUNT_INVALID")
     if arn.endswith(":root"):
         raise CloudAuditError("ROOT_AWS_IDENTITY_FORBIDDEN")
-    if env.account_id and env.account_id != account:
+    # Reject an accidental connection to a different account on the *first*
+    # test, before the observed account_id has been stored. A re-authenticated
+    # credential must not silently retarget an existing environment either.
+    expected = getattr(env, "expected_account_id", None)
+    if (expected and expected != account) or (env.account_id and env.account_id != account):
         raise CloudAuditError("AWS_ACCOUNT_CHANGED")
     return sdk,account,arn.split(":")[-1].split("/")[0]
 

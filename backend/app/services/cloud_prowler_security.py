@@ -592,6 +592,8 @@ def _worker(scan_id: str) -> None:
                 credential_mode=env.credential_mode,
                 profile_name=env.profile_name,
                 role_arn=env.role_arn,
+                external_id=env.external_id,
+                expected_account_id=env.expected_account_id,
                 regions=list(env.regions),
                 account_id=env.account_id,
             )

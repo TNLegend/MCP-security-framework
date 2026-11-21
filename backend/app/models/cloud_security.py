@@ -38,6 +38,10 @@ class CloudEnvironment(Base):
     credential_mode: Mapped[str] = mapped_column(String(24), nullable=False)
     profile_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     role_arn: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    # Optional cross-account binding. The ExternalId is an IAM trust condition,
+    # not a password, and is never used to construct shell commands.
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    expected_account_id: Mapped[str | None] = mapped_column(String(12), nullable=True)
     status: Mapped[str] = mapped_column(String(24), default="UNVERIFIED", nullable=False)
     last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

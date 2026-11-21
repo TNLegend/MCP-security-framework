@@ -132,6 +132,45 @@ def _opa_dual_policy_ready(base_url: str) -> bool:
     return True
 
 
+
+# Human-actionable diagnostics without changing the structured failure contract.
+# A failed policy-integrity check must stay fail-closed; never start a partial
+# runtime or silently regenerate trusted hash manifests.
+STARTUP_GUIDANCE = {
+    "opa_local_policy_bundle_integrity_failed":
+        "Verify the pinned Runtime and Deploy policy files and their signed manifests. Restore the reviewed bundle; do not bypass integrity verification.",
+    "opa_runtime_or_deploy_policy_missing":
+        "Check that the local OPA instance serves BOTH Runtime and Deploy policy endpoints. Stop a conflicting OPA process and restart using the supported launcher.",
+    "opa_remote_policy_bundle_mismatch":
+        "The running OPA policy bytes do not match the pinned manifest. Stop the conflicting policy engine, inspect the reviewed bundle and restart; never suppress this check.",
+    "framework_owned_child_exited":
+        "Review the identified child-service health and bounded logs. Verify its prerequisite, then use the supported restart flow without replaying uncertain MCP calls.",
+    "database_not_ready":
+        "Verify the managed PostgreSQL service, configured database and schema migration receipt. Do not redirect a test environment to a production database.",
+    "opa_not_ready":
+        "Inspect the pinned OPA executable, local policy bundle and listener. Confirm both policy endpoints before restarting.",
+    "identity_provider_not_ready":
+        "Verify the configured identity issuer and local authentication provider. Do not bypass signed identity verification.",
+    "mcp_lab_not_ready":
+        "Check the local MCP laboratory process and its endpoint. Avoid bypassing the Gateway for real tool calls.",
+    "backend_not_ready":
+        "Inspect the backend readiness endpoint and service logs; verify PostgreSQL, OPA and model integrity checks.",
+}
+
+
+def startup_failure(code: str, *, details: dict | None = None) -> dict:
+    payload = {
+        "ready": False,
+        "error": code,
+        "operator_guidance": STARTUP_GUIDANCE.get(
+            code, "Review the bounded startup logs and prerequisite checks; do not disable security controls."
+        ),
+    }
+    if details:
+        payload.update(details)
+    return payload
+
+
 def main() -> int:
     configure_runtime_environment()
     python = VENV_PYTHON if VENV_PYTHON.exists() else Path(sys.executable)
@@ -147,24 +186,28 @@ def main() -> int:
     try:
         database = manager.ensure_database(auto_start=True)
         if database.status != "healthy":
-            print(json.dumps({"ready": False, "database": database.as_dict()}, indent=2))
+            print(json.dumps(startup_failure("database_not_ready",
+                                           details={"database": database.as_dict()}), indent=2))
             return 1
         try:
             local_policy_sha256()  # Verify pinned local Runtime + Deploy policy hashes.
         except (OSError, ValueError, KeyError):
-            print(json.dumps({"ready": False,
-                              "error": "opa_local_policy_bundle_integrity_failed"}, indent=2))
+            print(json.dumps(startup_failure(
+                "opa_local_policy_bundle_integrity_failed"), indent=2))
             return 1
 
         opa = manager.ensure_opa(auto_start=True)
         if opa.status != "healthy":
-            print(json.dumps({"ready": False, "opa": opa.as_dict()}, indent=2))
+            print(json.dumps(startup_failure("opa_not_ready",
+                                           details={"opa": opa.as_dict()}), indent=2))
             return 1
         if not _opa_dual_policy_ready(settings.opa_base_url):
-            print(json.dumps({"ready": False, "error": "opa_runtime_or_deploy_policy_missing"}, indent=2))
+            print(json.dumps(startup_failure(
+                "opa_runtime_or_deploy_policy_missing"), indent=2))
             return 1
         if not _opa_remote_bundle_matches_manifest(settings.opa_base_url):
-            print(json.dumps({"ready": False, "error": "opa_remote_policy_bundle_mismatch"}, indent=2))
+            print(json.dumps(startup_failure(
+                "opa_remote_policy_bundle_mismatch"), indent=2))
             return 1
 
         # Only migrate after verifying both policies. A Runtime-only reused
@@ -177,7 +220,8 @@ def main() -> int:
         if identity_provider.status != "healthy":
             print(
                 json.dumps(
-                    {"ready": False, "identity_provider": identity_provider.as_dict()},
+                    startup_failure("identity_provider_not_ready",
+                                    details={"identity_provider": identity_provider.as_dict()}),
                     indent=2,
                 )
             )
@@ -185,12 +229,14 @@ def main() -> int:
 
         mcp_lab = manager.ensure_mcp_lab(auto_start=True)
         if mcp_lab.status != "healthy":
-            print(json.dumps({"ready": False, "mcp_lab": mcp_lab.as_dict()}, indent=2))
+            print(json.dumps(startup_failure("mcp_lab_not_ready",
+                                           details={"mcp_lab": mcp_lab.as_dict()}), indent=2))
             return 1
 
         backend = manager.start_backend()
         if backend.status != "healthy":
-            print(json.dumps({"ready": False, "backend": backend.as_dict()}, indent=2))
+            print(json.dumps(startup_failure("backend_not_ready",
+                                           details={"backend": backend.as_dict()}), indent=2))
             return 1
 
         gateway = manager.ensure_gateway(auto_start=True)
@@ -216,9 +262,10 @@ def main() -> int:
                 print(
                     json.dumps(
                         {
-                            "ready": False,
-                            "error": "framework_owned_child_exited",
                             **failure,
+                            # A component detail can never override ready=false
+                            # or the fixed, fail-closed launcher error code.
+                            **startup_failure("framework_owned_child_exited"),
                         },
                         indent=2,
                     ),

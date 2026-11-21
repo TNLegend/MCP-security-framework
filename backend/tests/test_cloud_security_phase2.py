@@ -213,6 +213,92 @@ def test_assumed_role_keeps_named_profile_when_no_default_exists(monkeypatch, tm
     assert session.get_credentials().access_key == "SYNTHETIC_ACCESS"
 
 
+@pytest.mark.parametrize("values", [
+    {"expected_account_id": "12345678901"},
+    {"expected_account_id": "12345678901X"},
+    {"external_id": "untrusted\\nvalue", "role_arn": "arn:aws:iam::123456789012:role/Audit"},
+    {"external_id": "only-external-id"},
+    {"external_id": "" , "role_arn": "arn:aws:iam::123456789012:role/Audit"},
+    {"expected_account_id": "210987654321", "role_arn": "arn:aws:iam::123456789012:role/Audit"},
+])
+def test_cross_account_inputs_reject_invalid_identity_bindings(values):
+    with pytest.raises(ValidationError):
+        EnvironmentCreate.model_validate({"name": "External account", "regions": ["eu-west-3"], **values})
+
+
+def test_cross_account_inputs_accept_pinned_identity_and_external_id():
+    payload = EnvironmentCreate.model_validate({
+        "name": "Third-party AWS environment",
+        "regions": ["eu-west-3"],
+        "credential_mode": "SDK_DEFAULT",
+        "role_arn": "arn:aws:iam::123456789012:role/ReadOnlyAuditRole",
+        "expected_account_id": "123456789012",
+        "external_id": "mcp-deployment-87654321",
+    })
+    assert payload.expected_account_id == "123456789012"
+    assert payload.external_id == "mcp-deployment-87654321"
+
+
+@pytest.mark.parametrize("external_id", [None, "mcp-my-sandbox-9988"])
+def test_cross_account_role_sts_receives_external_id_only_when_configured(monkeypatch, external_id):
+    import app.services.cloud_security as module
+    assume_arguments = []
+
+    class FakeSTS:
+        def get_caller_identity(self):
+            return {
+                "Arn": "arn:aws:iam::000000000001:user/operator",
+                "Account": "000000000001",
+            }
+
+        def assume_role(self, **kwargs):
+            assume_arguments.append(kwargs)
+            return {"Credentials": {
+                "AccessKeyId": "SYNTHETIC", "SecretAccessKey": "SYNTHETIC",
+                "SessionToken": "SYNTHETIC",
+            }}
+
+    class FakeSession:
+        def client(self, service, **kwargs):
+            assert service == "sts"
+            return FakeSTS()
+
+    monkeypatch.setattr(module.boto3, "Session", lambda **kwargs: FakeSession())
+    env = SimpleNamespace(
+        credential_mode="SDK_DEFAULT", regions=["eu-west-3"],
+        role_arn="arn:aws:iam::123456789012:role/Audit",
+        external_id=external_id,
+    )
+    module._sdk_session(env)
+    assert len(assume_arguments) == 1
+    assert ("ExternalId" in assume_arguments[0]) == (external_id is not None)
+    if external_id:
+        assert assume_arguments[0]["ExternalId"] == external_id
+
+
+def test_cross_account_expected_id_is_checked_on_first_connection(monkeypatch):
+    import app.services.cloud_security as module
+
+    class FakeSTS:
+        def get_caller_identity(self):
+            return {
+                "Arn": "arn:aws:sts::123456789012:assumed-role/Audit/session",
+                "Account": "123456789012",
+            }
+
+    class FakeSDK:
+        def client(self, service, **kwargs):
+            assert service == "sts"
+            return FakeSTS()
+
+    monkeypatch.setattr(module, "_sdk_session", lambda _: FakeSDK())
+    good = SimpleNamespace(account_id=None, expected_account_id="123456789012")
+    assert module.check_connection(good)[1] == "123456789012"
+    bad = SimpleNamespace(account_id=None, expected_account_id="210987654321")
+    with pytest.raises(CloudAuditError, match="AWS_ACCOUNT_CHANGED"):
+        module.check_connection(bad)
+
+
 def test_only_selected_aws_services_are_collected():
     e=SimpleNamespace(id="e"*36,regions=["eu-west-3"],services=["S3"])
     c=Collector(e,scan())

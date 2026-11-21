@@ -105,7 +105,9 @@ def create_environment(
     env=CloudEnvironment(
         name=payload.name,provider="AWS",regions=payload.regions,services=payload.services,
         credential_mode=payload.credential_mode,profile_name=payload.profile_name,
-        role_arn=payload.role_arn,created_by=actor.user.id,
+        role_arn=payload.role_arn,external_id=payload.external_id,
+        expected_account_id=payload.expected_account_id,
+        created_by=actor.user.id,
     )
     db.add(env)
     try:
@@ -153,12 +155,23 @@ def update_environment(
         "credential_mode": payload.credential_mode,
         "profile_name": payload.profile_name,
         "role_arn": payload.role_arn,
+        # Old clients can still rename/update without unintentionally
+        # dropping a deployed role trust condition or pinned AWS account.
+        "external_id": (payload.external_id if "external_id" in payload.model_fields_set
+                        else env.external_id),
+        "expected_account_id": (
+            payload.expected_account_id if "expected_account_id" in payload.model_fields_set
+            else env.expected_account_id
+        ),
     }
+    if not payload.role_arn:
+        new_values["external_id"] = None
     changed_keys = sorted(k for k, v in new_values.items() if getattr(env,k) != v)
     changed = bool(changed_keys)
     connection_changed = any(
         getattr(env, k) != new_values[k] for k in
-        ("regions", "credential_mode", "profile_name", "role_arn")
+        ("regions", "credential_mode", "profile_name", "role_arn",
+         "external_id", "expected_account_id")
     )
     for k,v in new_values.items():
         setattr(env,k,v)
