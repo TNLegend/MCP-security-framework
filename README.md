@@ -2005,7 +2005,7 @@ both Runtime and Deploy policies before enabling this feature in the running
 GUI; the feature is NOT deployed by the research branch.
 
 
-## Deploy Security Phase 6: advisory OPA governance (feature branch)
+## Deploy Security Phase 6: advisory OPA governance
 
 Phase 6 now has a read-only governance path for approved MCP-to-IAM
 identity-policy comparisons, Terraform IaC scanning (Checkov and Trivy)
@@ -2035,16 +2035,25 @@ manifest and that OPA exposes both Runtime and Deploy decision paths
 BEFORE applying database migrations. A Runtime-only externally running
 OPA service causes an explicit startup failure, not a fallback.
 
-This release is developed and qualified on a dedicated feature branch,
-NOT installed into the currently running backend/OPA/PostgreSQL service.
-The additive SQL migration and PostgreSQL UPDATE/DELETE/TRUNCATE guards
-have PASSED an isolated real PostgreSQL 17.11 acceptance test. They are
-NOT applied to the active database. The launcher also verifies the exact
-remote OPA source bytes against the local pinned SHA-256 manifest before
-migrating, and refuses any additional unqualified Rego modules.
-Full production rollout, restore rehearsal and scanner-binary coverage
-remain distinct deployment-qualification items. See independent QA report:
-mcp-security-qualification/docs/phase7_deploy_opa_phase6_isolated_closure_20261121.md.
+The controlled local Windows deployment was qualified on 21 November 2026:
+the existing PostgreSQL database was backed up using pg_dump custom format,
+the backup was restored into an isolated PostgreSQL 17 cluster, and the ORM
+migration preserved the contents of all 43 original tables. The active
+database then accepted the additive migration (45 tables total and four
+append-only governance triggers). The local release launcher reported all
+required services healthy, and an HTTP smoke test verified the new backend,
+the GUI's OPA/exception interface, protected authenticated endpoints and
+the active signed Runtime revision. Both policy decision paths and their
+exact loaded source hashes matched the qualified manifest.
+
+This acceptance establishes a local deployment, not universal AWS security
+or end-to-end live ADMIN exception approval: QA exercises privileged flows
+with controlled identities and mocked AWS inputs. Independent scanners
+requiring separately installed Trivy/Checkov binaries remain environmental
+coverage limitations. Other installations must repeat backup, restore,
+migration, startup and authenticated smoke tests before adopting this version.
+See independent QA report:
+mcp-security-qualification/docs/phase7_deploy_opa_phase6_live_rollout_20261121.md.
 
 Independent report: mcp-security-qualification/
 docs/phase7_deploy_opa_phase6_final_20261120.md.
