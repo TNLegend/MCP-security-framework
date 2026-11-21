@@ -2191,3 +2191,39 @@ full-QA collector still has six unrelated legacy import/fixture errors.
 Linux installation remains **outside scope and not tested**. Do not claim
 Linux portability from this Windows result. More evidence and limitations:
 https://github.com/TNLegend/mcp-security-qualification/blob/feature/phase8-portability-qualification/docs/phase8_windows_security_qualification_20261121.md
+
+## Lot 10 — Release-candidate qualification (21 November 2026)
+
+The Lot 9 code at `0f370bafca70d3805f73b68c4880394c7f0720ae`
+was qualified in an isolated Lot 10 worktree, **without changing running
+services or cloud accounts**. The product QA scope passed **355 tests
+(3 skipped)**. Additional backend/Gateway/failure-handling tests passed
+**67**, and core prompt-injection SHADOW/generation tests passed **41**
+(these suites overlap and their totals are not additive). Frontend tests,
+Vite, and OPA checks passed. Chromium covered real local Gateway, OPA,
+PostgreSQL, and FastAPI paths against synthetic identities and resources,
+including both ADMIN and VIEWER. A disposable Windows Git clone passed
+source bootstrap, prerequisite checks, offline npm install and frontend build.
+
+Offline synthetic Terraform scans returned 3 findings each from real Checkov
+and Trivy binaries. Gitleaks CLI worked and eight generic-key repository
+alerts were reviewed as non-secret hashes/code identifiers or empty sample
+variables. Prowler's local CLI was checked without AWS access. A Semgrep
+custom-rule scan remained **INCOMPLETE (exit 2)** and is not certified.
+
+The **unfiltered historical QA suite is not green**: four retired
+static-discovery import failures prevent collection; once these are explicitly
+excluded, 392 tests passed and 25 failed before the stop threshold (13
+commit-pinned legacy UI assertions, 12 missing private research assets).
+The Sol audit matrix still has 29 partial findings; the Claude matrix has
+39 unverified and 3 partial findings because the complete original report
+was unavailable. Additional live AWS, external OAuth, model-provider, screen
+reader, and full clean Python/model install checks are not certified by
+this Lot 10 run.
+
+**Decision: locally validated code candidate with external release blockers.**
+The deployment and `main` promotion gates remain closed until the outstanding
+audit and external evidence is reviewed. The live database and OPA/Gateway
+services have not been restarted by this qualification. See the separate
+QA branch report:
+https://github.com/TNLegend/mcp-security-qualification/blob/feature/lot10-final-qualification-qa-20261121/docs/lot10_final_qualification_20261121.md
