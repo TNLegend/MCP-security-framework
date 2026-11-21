@@ -112,17 +112,17 @@ function Dashboard({
         <RuntimeStatusCard
           label="Database"
           value={readStates.runtimeStatus === "ready" ? runtimeStatus?.database?.status : readStates.runtimeStatus || "checking"}
-          detail={runtimeStatus?.database?.detail}
+          detail={readStates.runtimeStatus === "ready" ? runtimeStatus?.database?.detail : null}
         />
         <RuntimeStatusCard
           label="Policy checks"
           value={readStates.runtimeStatus === "ready" ? runtimeStatus?.opa?.status : readStates.runtimeStatus || "checking"}
-          detail={runtimeStatus?.opa?.endpoint}
+          detail={readStates.runtimeStatus === "ready" ? runtimeStatus?.opa?.endpoint : null}
         />
         <RuntimeStatusCard
           label="Gateway"
           value={readStates.runtimeStatus === "ready" ? runtimeStatus?.gateway?.status : readStates.runtimeStatus || "checking"}
-          detail={runtimeStatus?.gateway?.endpoint}
+          detail={readStates.runtimeStatus === "ready" ? runtimeStatus?.gateway?.endpoint : null}
         />
       </div>
 
@@ -143,6 +143,13 @@ function Dashboard({
       <div className="dashboard-layout">
         <section className="detail-panel">
           <h3>Active security rules</h3>
+          {readStates.activeRevision === "unavailable" && (
+            <p className="hint-text" role="status">
+              The latest signed configuration could not be checked. Any revision below is
+              previously loaded metadata, not proof of what is currently active.
+              Refresh after the service recovers before changing security settings.
+            </p>
+          )}
           {activeRevision ? (
             <dl className="compact-dl">
               <div>

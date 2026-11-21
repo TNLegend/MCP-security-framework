@@ -362,7 +362,7 @@ function Users({ users = [], loading = false, onRefresh }) {
                         <button
                           disabled={Boolean(busyAction) || (user.role === "ADMIN" && finalAdmin)}
                           onClick={() => run("role", user)}
-                          title={user.role === "ADMIN" ? lastAdminReason : undefined}
+                          aria-describedby={lastAdminReason ? "last-admin-reason-" + user.id : undefined}
                           type="button"
                         >
                           Make {user.role === "ADMIN" ? "VIEWER" : "ADMIN"}
@@ -371,7 +371,7 @@ function Users({ users = [], loading = false, onRefresh }) {
                           <button
                             disabled={Boolean(busyAction) || finalAdmin}
                             onClick={() => run("disable", user)}
-                            title={lastAdminReason}
+                            aria-describedby={lastAdminReason ? "last-admin-reason-" + user.id : undefined}
                             type="button"
                           >
                             Disable
@@ -385,7 +385,7 @@ function Users({ users = [], loading = false, onRefresh }) {
                             Enable
                           </button>
                         )}
-                        {lastAdminReason && <p role="note" className="hint-text">
+                        {lastAdminReason && <p role="note" className="hint-text" id={"last-admin-reason-" + user.id}>
                           {lastAdminReason} Changing its role or disabling this account
                           would leave no enabled administrator.
                         </p>}

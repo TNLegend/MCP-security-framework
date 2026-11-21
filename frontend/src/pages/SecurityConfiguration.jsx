@@ -252,13 +252,18 @@ function SecurityConfiguration({
             <div className="button-row">
               <button className="danger-action"
                 disabled={busy || Boolean(publishBlockReason(publicationPreview))}
-                title={publishBlockReason(publicationPreview) || undefined}
+                aria-describedby={publishBlockReason(publicationPreview) ? "publish-unavailable-reason" : undefined}
                 onClick={() => runAction("publish")} type="button">
                 {busy ? "Publishing..." : "Publish and sign"}
               </button>
               <button className="secondary-action" disabled={busy}
                 onClick={() => setPublishReview(null)} type="button">Cancel</button>
             </div>
+            {publishBlockReason(publicationPreview) && (
+              <p className="hint-text" role="note" id="publish-unavailable-reason">
+                Publication unavailable: {publishBlockReason(publicationPreview)}
+              </p>
+            )}
           </section>
         </div>
       )}
@@ -404,11 +409,7 @@ function SecurityConfiguration({
                     <button
                       disabled={busy || selectedRevision.status !== "PUBLISHED"}
                       onClick={() => runAction("draft")}
-                      title={
-                        selectedRevision.status !== "PUBLISHED"
-                          ? "Create Draft requires a PUBLISHED parent revision."
-                          : undefined
-                      }
+                      aria-describedby={selectedRevision.status !== "PUBLISHED" ? "revision-action-prerequisites" : undefined}
                       type="button"
                     >
                       Create Draft
@@ -427,11 +428,7 @@ function SecurityConfiguration({
                         contentText !== loadedContentText
                       }
                       onClick={() => runAction("validate")}
-                      title={
-                        contentText !== loadedContentText
-                          ? "Save draft changes before validating."
-                          : undefined
-                      }
+                      aria-describedby={selectedRevision.status !== "DRAFT" || hasUnsavedChanges ? "revision-action-prerequisites" : undefined}
                       type="button"
                     >
                       Validate
@@ -443,11 +440,7 @@ function SecurityConfiguration({
                         contentText !== loadedContentText
                       }
                       onClick={() => runAction("publish")}
-                      title={
-                        contentText !== loadedContentText
-                          ? "Save draft changes before publishing."
-                          : undefined
-                      }
+                      aria-describedby={selectedRevision.status !== "DRAFT" || hasUnsavedChanges ? "revision-action-prerequisites" : undefined}
                       type="button"
                     >
                       Publish
@@ -463,16 +456,24 @@ function SecurityConfiguration({
                       className="danger-action"
                       disabled={busy || selectedRevision.status !== "DRAFT"}
                       onClick={() => runAction("delete")}
-                      title={
-                        selectedRevision.status !== "DRAFT"
-                          ? "Only draft configurations can be deleted."
-                          : undefined
-                      }
+                      aria-describedby={selectedRevision.status !== "DRAFT" ? "revision-action-prerequisites" : undefined}
                       type="button"
                     >
                       Delete
                     </button>
                   </div>
+                  <p className="hint-text" role="note" id="revision-action-prerequisites">
+                    Available actions depend on the selected revision, not on other published versions.
+                    {selectedRevision.status !== "DRAFT" &&
+                      " Editing, validation, publishing and deletion require a DRAFT revision."}
+                    {selectedRevision.status !== "PUBLISHED" &&
+                      " Create Draft requires a PUBLISHED parent revision."}
+                    {selectedRevision.status !== "ARCHIVED" &&
+                      " Rollback requires an ARCHIVED revision."}
+                    {hasUnsavedChanges && " Save your local draft changes before validating or publishing."}
+                    {hasRevisionConflict &&
+                      " This revision changed after you started editing. Refresh it before saving; do not overwrite newer content."}
+                  </p>
                 </div>
               )}
             </>

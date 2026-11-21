@@ -228,7 +228,38 @@ export function iamWarningExplanation(code) {
     "An IAM policy check remains unresolved; effective AWS access is not established.";
 }
 
-function IAMPolicyEvidence({ item }) {
+// Never display raw SDK errors. These descriptions are selected from the
+// backend's closed error-code vocabulary, not inferred IAM authorizations.
+export function iamReadErrorGuidance(code, workloadType) {
+  const messages = {
+    AWS_ACCESS_DENIED: "The audit identity was denied a required IAM read. Identify the exact read operation in the audit trail before requesting narrowly scoped audit access.",
+    AWS_SESSION_EXPIRED: "The temporary AWS audit session expired. Renew the audit credentials and rerun the read-only collection.",
+    AWS_INVALID_CREDENTIALS: "The audit credentials were rejected. Verify the configured identity without adding permissions.",
+    AWS_CREDENTIALS_UNAVAILABLE: "No usable audit credentials were available. Check the selected profile or role before retrying.",
+    AWS_PROFILE_NOT_FOUND: "The named local AWS profile was not found. Verify its configuration on the audit host.",
+    AWS_RATE_LIMITED: "IAM collection was rate-limited. Retry after the service recovers; do not treat the missing checks as passed.",
+    AWS_CONNECTION_FAILED: "AWS could not be reached reliably. Verify connectivity and retry without changing IAM grants.",
+    AWS_API_ERROR: "AWS returned an unclassified API error. Review the secure collector logs to identify the failed read.",
+    CLOUD_SCAN_INTERNAL_ERROR: "The IAM collector failed unexpectedly. Investigate its local diagnostics; no permission conclusion is established.",
+    IAM_POLICY_PAGINATION_INCOMPLETE: "The IAM policy listing was incomplete. The collector cannot claim full coverage until all pages are retrieved.",
+    IAM_POLICY_COUNT_LIMIT: "The role has more policy documents than this bounded collector supports. Qualify an expanded read before relying on the comparison.",
+    IAM_POLICY_STATEMENT_LIMIT: "The policy has more statements than the collector's reviewed limit. The comparison remains incomplete.",
+    IAM_POLICY_DOC_INVALID: "A policy document could not be parsed safely; inspect its format through an authorized read-only review.",
+    IAM_POLICY_STATEMENT_INVALID: "An IAM policy statement is malformed or unsupported; review its shape before relying on the comparison.",
+    IAM_POLICY_READ_UNCLASSIFIED: "The IAM read failed without a classified safe code. Review secured collector diagnostics; the missing access is not proof of denial.",
+  };
+  const base = messages[code] ||
+    "An unrecognized IAM read failure was recorded. Coverage remains unverified.";
+  if (code !== "AWS_ACCESS_DENIED") return base;
+  const kind = String(workloadType || "").toUpperCase();
+  if (kind === "EC2") return base +
+    " For EC2 instance-profile discovery, iam:GetInstanceProfile may be required.";
+  if (["ECS", "EKS", "LAMBDA"].includes(kind)) return base +
+    " For this workload, verify the role binding directly; do not assume an EC2 instance-profile permission is needed.";
+  return base + " Verify the actual workload type before requesting any additional permission.";
+}
+
+export function IAMPolicyEvidence({ item }) {
   const evidence = item.evidence_summary;
   const facts = evidence?.summary;
   if (!facts || typeof facts !== "object") {
@@ -280,6 +311,23 @@ function IAMPolicyEvidence({ item }) {
           ))}</ul>
         </div>
       )}
+      {Array.isArray(facts.identity_policy_read_error_codes) &&
+        facts.identity_policy_read_error_codes.length > 0 && (
+        <div role="note">
+          <strong>Why IAM policy coverage is incomplete:</strong>
+          <ul>{facts.identity_policy_read_error_codes.map((code, index) => (
+            <li key={index}>{iamReadErrorGuidance(code, facts.workload_type)}
+              {" "}<code>{code}</code></li>
+          ))}</ul>
+          <p>These are safe collector diagnostics, not proof of effective AWS access.</p>
+        </div>
+      )}
+      {item.notes === "IAM_ROLE_OR_POLICY_READ_UNAVAILABLE" &&
+        !facts.identity_policy_read_error_codes?.length && (
+          <p role="note">The original IAM read error was not preserved as a structured
+            code. Recheck the audit identity and rerun a read-only scan.
+            The missing policy data does not establish effective access.</p>
+        )}
       <p><strong>Effective AWS access:</strong> Not established by this identity-policy
         comparison. SCPs, permissions boundaries, session policies, resource
         policies and runtime identity use may further restrict access.</p>

@@ -422,13 +422,16 @@ function ToolContractWorkspace({ isAdmin, onComplete, tool }) {
           </label>
           {isAdmin && suggestions.length > 0 && !contractDraft && (
             <button className="secondary-action" disabled={busy} onClick={askAi}
-              title="Ask AI to suggest a template. You must review its result." type="button">
+              aria-describedby="template-ai-advisory-notice" type="button">
               {busy ? "Checking..." : "Suggest with AI"}
             </button>
           )}
         </div>
         {isAdmin && suggestions.length > 0 && !contractDraft && (
-          <p className="hint-text">AI suggestions send the tool description and input fields to the configured AI provider or its fallback.</p>
+          <p className="hint-text" id="template-ai-advisory-notice">
+            AI suggestions send the tool description and input fields to the configured AI provider or its fallback.
+            Every suggestion requires your review; it cannot approve or publish a contract.
+          </p>
         )}
 
         {selectedTemplate && (
@@ -644,10 +647,20 @@ function ToolContractWorkspace({ isAdmin, onComplete, tool }) {
                 <PublicationPreview draftId={contractDraft.revision_id} onChange={setPublicationPreview} />
                 <div className="button-row">
                   <button disabled={busy} onClick={() => setContractDraft(null)} type="button">Edit</button>
-                  <button className="secondary-action" disabled={busy || changeSummary.trim().length < 3 || contractDraft.observation_approvals < 1 || Boolean(publishBlockReason(publicationPreview))} onClick={publishAndReanalyze} title={contractDraft.observation_approvals < 1 ? "Approve the observed protocol profiles before publication." : (publishBlockReason(publicationPreview) || undefined)} type="button">
+                  <button className="secondary-action" disabled={busy || changeSummary.trim().length < 3 || contractDraft.observation_approvals < 1 || Boolean(publishBlockReason(publicationPreview))} onClick={publishAndReanalyze}
+                    aria-describedby={changeSummary.trim().length < 3 || contractDraft.observation_approvals < 1 || publishBlockReason(publicationPreview) ? "contract-publication-prerequisites" : undefined}
+                    type="button">
                     {busy ? "Publishing..." : "Publish & reanalyse"}
                   </button>
                 </div>
+                {(changeSummary.trim().length < 3 || contractDraft.observation_approvals < 1 || publishBlockReason(publicationPreview)) && (
+                  <p className="hint-text" role="note" id="contract-publication-prerequisites">
+                    Publication unavailable:
+                    {changeSummary.trim().length < 3 && " provide a change summary of at least three characters."}
+                    {contractDraft.observation_approvals < 1 && " Approve the observed protocol profiles first."}
+                    {publishBlockReason(publicationPreview) && " " + publishBlockReason(publicationPreview)}
+                  </p>
+                )}
               </section>
             )}
           </>

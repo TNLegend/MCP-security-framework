@@ -1,5 +1,5 @@
 import { formatServerTime } from "../utils/serverTime.js";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   cleanupRuntimeLogs, fetchUnresolvedRuntimeOperations,
@@ -8,7 +8,7 @@ import {
 import "./management.css";
 
 
-function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
+function Operations({ initialOperationId = null, isAdmin = false, loading = false, onRefresh, summary }) {
   const [reason, setReason] = useState("Apply bounded runtime log retention maintenance.");
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -19,6 +19,29 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
   const [investigationError, setInvestigationError] = useState("");
   const [investigationBusy, setInvestigationBusy] = useState(false);
   const [caseReconciliation, setCaseReconciliation] = useState(null);
+
+  // An exact-ID audit link may open a read-only investigation directly.
+  // Ignore late responses after navigating away or changing the target.
+  useEffect(() => {
+    if (!initialOperationId) return undefined;
+    let cancelled = false;
+    setCaseReconciliation(null);
+    setInvestigationError("");
+    setInvestigationBusy(true);
+    fetchRuntimeOperationReconciliation(initialOperationId)
+      .then((detail) => {
+        if (!cancelled) setCaseReconciliation({ operationId: initialOperationId, detail });
+      })
+      .catch(() => {
+        if (!cancelled) setInvestigationError(
+          "The recorded operation could not be reconciled. Its remote effects remain unverified; do not retry automatically.",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setInvestigationBusy(false);
+      });
+    return () => { cancelled = true; };
+  }, [initialOperationId]);
 
   async function inspectUnresolvedCases() {
     setCaseReconciliation(null);
@@ -271,7 +294,8 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
                 </button>
               </li>
             ))}</ul>
-            {caseReconciliation && <div className="detail-panel" role="status">
+          </div>}
+          {caseReconciliation && <div className="detail-panel" id="operation-reconciliation" role="status">
               <p><strong>Operation:</strong> <code>{caseReconciliation.operationId}</code></p>
               <p><strong>Recorded state:</strong> {caseReconciliation.detail.state}</p>
               <p>Intent recorded: {String(caseReconciliation.detail.intent_recorded)};
@@ -280,7 +304,6 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
               <p>Remote effect possible: {String(caseReconciliation.detail.effect_possible)}.
                 Manual review: {String(caseReconciliation.detail.manual_reconciliation_required)}.</p>
               <p>Do not automatically replay a call whose upstream effect is unknown.</p>
-            </div>}
           </div>}
         </section>
 

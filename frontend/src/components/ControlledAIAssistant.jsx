@@ -159,7 +159,7 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
 }
 
 
-function ControlledAIResult({ result }) {
+export function ControlledAIResult({ result }) {
   const safeResult = result.non_authoritative === true
     && result.requires_human_review === true
     && result.can_mutate_runtime === false;
@@ -176,7 +176,7 @@ function ControlledAIResult({ result }) {
     <div className="controlled-ai-result">
       <h4>{isDraft ? "AI-generated onboarding proposal" : "AI-assisted review"}</h4>
       <section className="controlled-ai-section">
-        <h5>{isDraft ? "What was proposed" : "What the framework recorded"}</h5>
+        <h5>{isDraft ? "What the AI proposed" : "AI interpretation of recorded evidence"}</h5>
         <p>{result.summary}</p>
       </section>
       <section className="controlled-ai-section">

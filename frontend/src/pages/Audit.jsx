@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { fetchAuditEventPage, fetchRelatedSecurityTimeline, safeErrorMessage } from "../api/client";
 import { Pagination } from "../components/Pagination";
+import { auditOperationLink } from "../utils/operationNavigation.js";
 
 const PAGE_SIZE = 20;
 
@@ -235,12 +236,15 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
                 runtime_logs: "operations",
                 control_plane_user: "users",
               })[selectedEvent.target_type];
+              const directOperationLink = auditOperationLink(selectedEvent.target_type, selectedEvent.target_id);
               return view ? (
-                <p>Open the related <a href={"?view=" + view}>
+                <p>Open the related <a href={directOperationLink || "?view=" + view}>
                   {view === "operations" ? "System health" : view}</a> view
-                  and locate the recorded target ID <code>{selectedEvent.target_id}</code>.
-                  The link opens the module, not an independently verified
-                  current-state match.</p>
+                  {directOperationLink
+                    ? <> to inspect the exact recorded operation <code>{selectedEvent.target_id}</code>.
+                        This reads reconciliation records; it never replays the MCP call.</>
+                    : <> and locate the recorded target ID <code>{selectedEvent.target_id}</code>.</>}
+                  The link is not an independently verified current-state match.</p>
               ) : <p>No module deep link is defined for target type
                 <code>{selectedEvent.target_type || "unrecorded"}</code>.
                 Use the recorded type and ID to investigate manually.</p>;

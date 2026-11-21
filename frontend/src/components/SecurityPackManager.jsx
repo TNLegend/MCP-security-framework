@@ -395,12 +395,17 @@ function SecurityPackManager({ onComplete, revision }) {
                         }),
                         "Security Pack removed from the draft.",
                       )}
-                      title={installation.enabled ? "Disable the Security Pack before removing it." : undefined}
+                      aria-describedby={installation.enabled ? "remove-pack-reason-" + installation.pack_id : undefined}
                       type="button"
                     >
                       Remove
                     </button>
                   </div>
+                )}
+                {isDraft && installation.enabled && (
+                  <p className="hint-text" role="note" id={"remove-pack-reason-" + installation.pack_id}>
+                    Removal unavailable: disable this Security Pack in the draft first.
+                  </p>
                 )}
               </article>
             );
@@ -450,12 +455,20 @@ function SecurityPackManager({ onComplete, revision }) {
           <button
             disabled={busy || !isDraft || !packageText.trim() || packageValidation?.installable !== true}
             onClick={installImport}
-            title={!isDraft ? "Install requires a v2 DRAFT revision." : undefined}
+            aria-describedby={!isDraft ? "security-pack-install-reason" : undefined}
             type="button"
           >
             Install Package
           </button>
         </div>
+        {!isDraft && <p className="hint-text" role="note" id="security-pack-install-reason">
+          Package installation is unavailable: select a version 2 draft revision first.
+        </p>}
+        {isDraft && packageText.trim() && packageValidation?.installable !== true && (
+          <p className="hint-text" role="note">
+            Validate the package and resolve any listed dependencies or collisions before installing.
+          </p>
+        )}
         {packageValidation && (
           <dl className="compact-dl package-validation-result">
             <div><dt>pack</dt><dd>{packageValidation.pack_id}@{packageValidation.version}</dd></div>

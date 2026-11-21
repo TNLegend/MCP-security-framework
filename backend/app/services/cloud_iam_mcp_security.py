@@ -37,6 +37,29 @@ class ComparisonError(ValueError):
     pass
 
 
+# Store a bounded, closed vocabulary of IAM read failures. Raw SDK exception
+# messages may contain account details, ARNs or request identifiers.
+_SAFE_POLICY_READ_ERRORS = frozenset({
+    "AWS_ACCESS_DENIED", "AWS_SESSION_EXPIRED", "AWS_RATE_LIMITED",
+    "AWS_INVALID_CREDENTIALS", "AWS_CREDENTIALS_UNAVAILABLE",
+    "AWS_PROFILE_NOT_FOUND", "AWS_CONNECTION_FAILED", "AWS_API_ERROR",
+    "CLOUD_SCAN_INTERNAL_ERROR", "IAM_POLICY_PAGINATION_INCOMPLETE",
+    "IAM_POLICY_COUNT_LIMIT", "IAM_POLICY_DOC_INVALID",
+    "IAM_POLICY_STATEMENT_LIMIT", "IAM_POLICY_STATEMENT_INVALID",
+})
+
+
+def safe_policy_read_error_codes(errors: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in errors[:32]:
+        code = str(value)
+        if code not in _SAFE_POLICY_READ_ERRORS:
+            code = "IAM_POLICY_READ_UNCLASSIFIED"
+        if code not in result:
+            result.append(code)
+    return result
+
+
 def digest(value: object) -> str:
     return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                              ensure_ascii=True).encode("utf-8")).hexdigest()
@@ -356,6 +379,7 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                 read_errors.append(str(exc))
             except Exception as exc:
                 read_errors.append(_safe_error(exc))
+        policy_read_error_codes = safe_policy_read_error_codes(read_errors)
         policy_hash=digest(iam_statements) if identity and not read_errors else None
         from app.services.cloud_iam_policy_delta import reverse_identity_policy
         deltas=(reverse_identity_policy(iam_statements,expected)
@@ -400,6 +424,7 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     "approved_mapping_id":mapping_id,
                     "approved_mapping_digest":approved_hash,
                     "identity_policy_coverage_codes":policy_codes,
+                    "identity_policy_read_error_codes":policy_read_error_codes,
                 },
             )
             db.add(res)
@@ -455,6 +480,7 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     "role_usage_operator_declared":mapping.configuration.get("role_usage","UNKNOWN"),
                     "role_arn_admin_pinned":bool(workload.get("expected_role_arn")),
                     "identity_policy_digest":policy_hash,
+                    "identity_policy_read_error_codes":policy_read_error_codes,
                     "identity_policy_match_evidence": (
                         matching_identity_policy_evidence(
                             entry["action"], entry["resource"], iam_statements,

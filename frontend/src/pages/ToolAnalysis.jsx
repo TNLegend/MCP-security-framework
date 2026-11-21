@@ -396,37 +396,14 @@ function ToolAnalysis({
                 </dl>
               </details>
 
-              {isAdmin && (
-                <div className="button-row">
-                  <button
-                    className="secondary-action"
-                    disabled={busy || Boolean(approveDisabledReason)}
-                    onClick={() => openReview("Allow")}
-                    title={approveDisabledReason}
-                    type="button"
-                  >
-                    Approve review
-                  </button>
-                  <button
-                    className="danger-action"
-                    disabled={busy || Boolean(blockDisabledReason)}
-                    onClick={() => openReview("Block")}
-                    title={blockDisabledReason}
-                    type="button"
-                  >
-                    Block tool
-                  </button>
-                </div>
-              )}
-              {approveDisabledReason && isAdmin && (
-                <div className="hint-text" role="status">
-                  Review approval is unavailable for this tool.
-                  <details className="operator-technical-details">
-                    <summary>Why is approval unavailable?</summary>
-                    <p>{approveDisabledReason}</p>
-                  </details>
-                </div>
-              )}
+              <ReviewActionControls
+                isAdmin={isAdmin}
+                busy={busy}
+                approveDisabledReason={approveDisabledReason}
+                blockDisabledReason={blockDisabledReason}
+                onApprove={() => openReview("Allow")}
+                onBlock={() => openReview("Block")}
+              />
 
               <AnalysisWorkspace
                 activeTab={activeTab}
@@ -1026,6 +1003,44 @@ function shorten(value) {
     return "-";
   }
   return `${String(value).slice(0, 12)}...${String(value).slice(-8)}`;
+}
+
+// Disabled controls do not reliably receive keyboard focus or reveal title tooltips.
+// Keep both security preconditions visible to ADMIN users and associate each
+// control with its reason. The backend remains authoritative for every action.
+export function ReviewActionControls({
+  isAdmin, busy = false, approveDisabledReason = "", blockDisabledReason = "",
+  onApprove, onBlock,
+}) {
+  if (!isAdmin) return null;
+  return (
+    <>
+      <div className="button-row">
+        <button className="secondary-action" type="button"
+          disabled={busy || Boolean(approveDisabledReason)}
+          aria-describedby={approveDisabledReason ? "review-approval-unavailable" : undefined}
+          onClick={onApprove}>
+          Approve review
+        </button>
+        <button className="danger-action" type="button"
+          disabled={busy || Boolean(blockDisabledReason)}
+          aria-describedby={blockDisabledReason ? "review-block-unavailable" : undefined}
+          onClick={onBlock}>
+          Block tool
+        </button>
+      </div>
+      {approveDisabledReason && (
+        <p className="hint-text" id="review-approval-unavailable" role="note">
+          <strong>Approval unavailable:</strong> {approveDisabledReason}
+        </p>
+      )}
+      {blockDisabledReason && (
+        <p className="hint-text" id="review-block-unavailable" role="note">
+          <strong>Block action unavailable:</strong> {blockDisabledReason}
+        </p>
+      )}
+    </>
+  );
 }
 
 export default ToolAnalysis;

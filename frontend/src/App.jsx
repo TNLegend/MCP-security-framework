@@ -35,6 +35,7 @@ import Users from "./pages/Users";
 import AccountPasswordPanel from "./components/accountpasswordpanel.jsx";
 import { LIMITS, clearFieldError, validateLogin } from "./utils/validation";
 import { parseOAuthReturn, oauthReturnDescription } from "./utils/oauthreturn.js";
+import { operationFromQuery } from "./utils/operationNavigation.js";
 
 const pages = [
   { id: "dashboard", label: "Home", group: "Home" },
@@ -76,6 +77,8 @@ function pageUrl(pageId, toolId = null) {
   else url.searchParams.set("view", pageId);
   if (pageId === "analysis" && toolId !== null) url.searchParams.set("tool", toolId);
   else url.searchParams.delete("tool");
+  // A normal navigation must not accidentally keep a previous investigation.
+  url.searchParams.delete("operation_id");
   url.hash = "";
   return url;
 }
@@ -109,6 +112,7 @@ function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const mobileNavButtonRef = useRef(null);
   const [analysisEntryToolId, setAnalysisEntryToolId] = useState(toolFromLocation);
+  const [operationEntryId, setOperationEntryId] = useState(() => operationFromQuery(window.location.search));
   const mainRef = useRef(null);
   const focusMainOnRender = useRef(false);
   const [user, setUser] = useState(null);
@@ -175,6 +179,7 @@ function App() {
       focusMainOnRender.current = false;
     }
     setAnalysisEntryToolId(requestedTool);
+    setOperationEntryId(null);
     setActivePage(pageId);
   }
 
@@ -372,6 +377,7 @@ function App() {
       focusMainOnRender.current = true;
       setActivePage(pageFromLocation());
       setAnalysisEntryToolId(toolFromLocation());
+      setOperationEntryId(operationFromQuery(window.location.search));
       setMobileNavOpen(false);
       setAccountOpen(false);
     }
@@ -481,6 +487,7 @@ function App() {
     if (activePage === "operations") {
       return (
         <Operations
+          initialOperationId={operationEntryId}
           isAdmin={isAdmin}
           loading={loading}
           onRefresh={loadData}
@@ -519,6 +526,7 @@ function App() {
   }, [
     activePage,
     analysisEntryToolId,
+    operationEntryId,
     readStates,
     activeServers,
     activeToolAnalyses,
