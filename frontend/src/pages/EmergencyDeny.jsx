@@ -1,6 +1,6 @@
-import { formatServerTime, isServerTimeFuture } from "../utils/serverTime.js";
-import { useEffect, useRef, useState } from "react";
-import { createEmergencyDeny, revokeEmergencyDeny } from "../api/client";
+import { formatServerTime } from "../utils/serverTime.js";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { createEmergencyDeny, fetchEmergencyDenyRuntimeEvents, revokeEmergencyDeny } from "../api/client";
 import { Pagination, usePagination } from "../components/Pagination";
 import { useDialogFocus } from "../utils/useDialogFocus";
 import {
@@ -34,6 +34,32 @@ function describedTarget(target) {
     + (target.target_secondary_value ? " / " + target.target_secondary_value : "");
 }
 
+// EM-01: labels for the state computed by the backend; never derived here.
+export const DENY_STATE_LABELS = {
+  ACTIVE: "Active",
+  EXPIRED: "Expired",
+  REVOKED: "Revoked",
+};
+
+export function denyStateLabel(deny) {
+  return DENY_STATE_LABELS[deny?.state] || "Unknown state";
+}
+
+export function canRevokeDeny(deny, isAdmin) {
+  return Boolean(isAdmin && deny?.state === "ACTIVE");
+}
+
+export function validateRevocationJustification(text) {
+  const value = String(text || "").trim();
+  if (value.length < LIMITS.emergencyReasonMin) {
+    return `Justification must be at least ${LIMITS.emergencyReasonMin} characters.`;
+  }
+  if (value.length > LIMITS.emergencyReasonMax) {
+    return `Justification must be at most ${LIMITS.emergencyReasonMax} characters.`;
+  }
+  return "";
+}
+
 function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefresh }) {
   const [form, setForm] = useState({
     target_type: "global",
@@ -48,20 +74,23 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [pendingCreate, setPendingCreate] = useState(null);
+  const [pendingRevoke, setPendingRevoke] = useState(null);
+  const [linkedEvents, setLinkedEvents] = useState({});
   const mutationLockRef = useRef(false);
   const modalRef = useRef(null);
-  useDialogFocus(Boolean(pendingCreate), modalRef);
+  useDialogFocus(Boolean(pendingCreate || pendingRevoke), modalRef);
   useEffect(() => {
-    if (!pendingCreate) return undefined;
+    if (!pendingCreate && !pendingRevoke) return undefined;
     function handleEscape(event) {
       if (event.key === "Escape" && !mutationLockRef.current) {
         event.preventDefault();
         setPendingCreate(null);
+        setPendingRevoke(null);
       }
     }
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [pendingCreate]);
+  }, [pendingCreate, pendingRevoke]);
   const visibleDenies = scopeFilter ? denies.filter((deny) => deny.target_type === scopeFilter) : denies;
   const denyPagination = usePagination(visibleDenies, JSON.stringify([denies.length, scopeFilter]));
 
@@ -107,26 +136,48 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
     }
   }
 
-  async function revoke(deny) {
-    if (!isAdmin || busy || mutationLockRef.current || !window.confirm(
-      "Revoke the restriction for " + describedTarget(deny)
-      + "? This may allow future calls if all other policies permit them."
-    )) {
-      return;
-    }
+  function startRevoke(deny) {
+    if (!canRevokeDeny(deny, isAdmin) || busy) return;
     setError("");
     setMessage("");
+    setPendingRevoke({ deny, justification: "", error: "" });
+  }
+
+  async function confirmRevoke() {
+    if (!pendingRevoke || busy || mutationLockRef.current) return;
+    const problem = validateRevocationJustification(pendingRevoke.justification);
+    if (problem) {
+      setPendingRevoke({ ...pendingRevoke, error: problem });
+      return;
+    }
     mutationLockRef.current = true;
     setBusy(true);
     try {
-      await revokeEmergencyDeny(deny.id);
-      setMessage("Emergency Deny revoked.");
+      await revokeEmergencyDeny(pendingRevoke.deny.id, pendingRevoke.justification.trim());
+      setMessage("Emergency block revoked. The record and its blocked calls stay in the history.");
+      setPendingRevoke(null);
       await onRefresh?.();
     } catch (err) {
-      setError(err.message || "Emergency Deny revocation failed");
+      setPendingRevoke({ ...pendingRevoke, error: err.message || "Revocation failed." });
     } finally {
       setBusy(false);
       mutationLockRef.current = false;
+    }
+  }
+
+  async function toggleLinkedEvents(deny) {
+    if (linkedEvents[deny.id]) {
+      setLinkedEvents(({ [deny.id]: _removed, ...rest }) => rest);
+      return;
+    }
+    setLinkedEvents((current) => ({ ...current, [deny.id]: { loading: true } }));
+    try {
+      const items = await fetchEmergencyDenyRuntimeEvents(deny.id);
+      setLinkedEvents((current) => ({ ...current, [deny.id]: { items } }));
+    } catch (err) {
+      setLinkedEvents((current) => ({
+        ...current, [deny.id]: { error: err.message || "Blocked calls could not be loaded." },
+      }));
     }
   }
 
@@ -298,6 +349,41 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
         </div>
       )}
 
+      {pendingRevoke && isAdmin && (
+        <div className="modal-backdrop" role="presentation">
+          <section aria-modal="true" aria-labelledby="deny-revoke-title"
+            aria-describedby="deny-revoke-description" className="modal-panel"
+            ref={modalRef} role="dialog" tabIndex={-1}>
+            <h3 id="deny-revoke-title">Revoke emergency block</h3>
+            <p id="deny-revoke-description">
+              Future calls matching {describedTarget(pendingRevoke.deny)} may run again if every
+              other policy allows them. The block record is kept for the audit trail.
+            </p>
+            <label>
+              Justification (required)
+              <textarea
+                aria-describedby="deny-revoke-error"
+                aria-invalid={Boolean(pendingRevoke.error)}
+                maxLength={LIMITS.emergencyReasonMax}
+                onChange={(event) => setPendingRevoke({
+                  ...pendingRevoke, justification: event.target.value, error: "",
+                })}
+                rows={3}
+                value={pendingRevoke.justification}
+              />
+            </label>
+            <FieldError id="deny-revoke-error" message={pendingRevoke.error} />
+            <div className="button-row">
+              <button className="danger-action" disabled={busy} onClick={confirmRevoke} type="button">
+                {busy ? "Revoking..." : "Revoke block"}
+              </button>
+              <button className="secondary-action" disabled={busy}
+                onClick={() => setPendingRevoke(null)} type="button">Cancel</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       <div className="section-heading compact-heading" id="emergency-block-records">
         <div><h3>Block records</h3><p role="status">{visibleDenies.length} of {denies.length} records</p></div>
         <label>
@@ -318,29 +404,48 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
               <th>Created</th>
               <th>Expires</th>
               <th>Current status</th>
+              <th>Blocked calls</th>
               <th>Action</th>
             </tr>
           </thead>
           <tbody>
             {visibleDenies.length === 0 ? (
               <tr>
-                <td colSpan="7">{scopeFilter ? "No block records match this scope." : "No Emergency Deny records."}</td>
+                <td colSpan="8">{scopeFilter ? "No block records match this scope." : "No Emergency Deny records."}</td>
               </tr>
             ) : (
               denyPagination.pageItems.map((deny) => (
-                <tr key={deny.id}>
+                <Fragment key={deny.id}>
+                <tr>
                   <td><span title={deny.target_type}>{TARGET_LABELS[deny.target_type] || deny.target_type}</span></td>
                   <td>{targetValue(deny)}</td>
                   <td>{deny.reason}</td>
                   <td>{formatDate(deny.created_at)}</td>
                   <td>{formatDate(deny.expires_at)}</td>
-                  <td>{isServerTimeFuture(deny.expires_at) ? "Active" : "Expired"}</td>
+                  <td>
+                    <strong>{denyStateLabel(deny)}</strong>
+                    {deny.state === "REVOKED" && (
+                      <details>
+                        <summary>Revocation details</summary>
+                        <p>Revoked {formatDate(deny.revoked_at)} by <code>{deny.revoked_by || "unknown"}</code></p>
+                        <p>Justification: {deny.revocation_justification || "Not recorded"}</p>
+                      </details>
+                    )}
+                  </td>
+                  <td>
+                    {deny.runtime_event_count > 0 ? (
+                      <button className="tiny-action" onClick={() => toggleLinkedEvents(deny)} type="button"
+                        aria-expanded={Boolean(linkedEvents[deny.id])}>
+                        {deny.runtime_event_count} call(s)
+                      </button>
+                    ) : "None recorded"}
+                  </td>
                   <td>
                     {isAdmin ? (
                       <button
                         className="tiny-action"
-                        disabled={busy || !isServerTimeFuture(deny.expires_at)}
-                        onClick={() => revoke(deny)}
+                        disabled={busy || !canRevokeDeny(deny, isAdmin)}
+                        onClick={() => startRevoke(deny)}
                         type="button"
                       >
                         Revoke
@@ -350,6 +455,14 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
                     )}
                   </td>
                 </tr>
+                {linkedEvents[deny.id] && (
+                  <tr>
+                    <td colSpan="8">
+                      <LinkedRuntimeEvents state={linkedEvents[deny.id]} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))
             )}
           </tbody>
@@ -363,6 +476,28 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
         total={denyPagination.total}
       />
     </section>
+  );
+}
+
+function LinkedRuntimeEvents({ state }) {
+  if (state.loading) return <p role="status">Loading blocked calls...</p>;
+  if (state.error) return <p className="error-text" role="alert">{state.error}</p>;
+  const items = state.items || [];
+  if (items.length === 0) return <p>No blocked call is linked to this block.</p>;
+  return (
+    <table aria-label="Calls blocked by this emergency block">
+      <thead><tr><th>Time</th><th>Agent</th><th>Tool</th><th>Operation</th></tr></thead>
+      <tbody>
+        {items.map((item) => (
+          <tr key={item.id}>
+            <td>{formatDate(item.created_at)}</td>
+            <td>{item.agent_id}</td>
+            <td>{item.tool_name}</td>
+            <td><code>{item.operation_id || item.id}</code></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

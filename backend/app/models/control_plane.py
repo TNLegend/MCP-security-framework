@@ -141,3 +141,8 @@ class EmergencyDeny(Base):
     created_by: Mapped[str] = mapped_column(String(36), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    # EM-01: logical revocation. A deny is never deleted, so runtime events
+    # that cite it keep a resolvable reference. NULL means not revoked.
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    revocation_justification: Mapped[str | None] = mapped_column(Text, nullable=True)

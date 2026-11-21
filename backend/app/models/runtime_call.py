@@ -45,6 +45,8 @@ class RuntimeCall(Base):
     decision_basis: Mapped[str | None] = mapped_column(String(40), nullable=True)
     dispatch_state: Mapped[str | None] = mapped_column(String(40), nullable=True)
     severity: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # EM-01: the emergency deny that blocked this call (EMERGENCY basis only).
+    emergency_deny_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     control_plane_revision_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     control_plane_revision_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     control_plane_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)

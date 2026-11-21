@@ -33,6 +33,10 @@ class RuntimeCallCreate(BaseModel):
         if (self.dispatch_state == "SENT_OUTCOME_UNKNOWN" and
                 self.execution_status != "upstream_outcome_unknown"):
             raise ValueError("runtime_dispatch_uncertainty_status_mismatch")
+        if self.emergency_deny_id is not None and (
+            self.decision != "BLOCK" or self.decision_basis != "EMERGENCY"
+        ):
+            raise ValueError("runtime_emergency_deny_reference_inconsistent")
         return self
 
     agent_id: str
@@ -55,6 +59,7 @@ class RuntimeCallCreate(BaseModel):
     decision_basis: Literal["POLICY", "PRE_POLICY_GATE", "FAIL_CLOSED_TECHNICAL", "GUARD", "EMERGENCY", "UNKNOWN"] | None = None
     dispatch_state: Literal["PENDING", "NOT_SENT", "SENT_CONFIRMED", "SENT_OUTCOME_UNKNOWN"] | None = None
     severity: str | None = None
+    emergency_deny_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
     control_plane_revision_id: str | None = None
     control_plane_revision_number: int | None = None
     control_plane_content_hash: str | None = None
@@ -102,6 +107,7 @@ class RuntimeCallRead(BaseModel):
     decision_basis: Literal["POLICY", "PRE_POLICY_GATE", "FAIL_CLOSED_TECHNICAL", "GUARD", "EMERGENCY", "UNKNOWN"] | None = None
     dispatch_state: Literal["PENDING", "NOT_SENT", "SENT_CONFIRMED", "SENT_OUTCOME_UNKNOWN"] | None = None
     severity: str | None = None
+    emergency_deny_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
     control_plane_revision_id: str | None = None
     control_plane_revision_number: int | None = None
     control_plane_content_hash: str | None = None

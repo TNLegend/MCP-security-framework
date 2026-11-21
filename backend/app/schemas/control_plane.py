@@ -308,5 +308,17 @@ class EmergencyDenyPublic(BaseModel):
     created_by: str
     created_at: datetime
     expires_at: datetime
+    # EM-01: computed server-side; the GUI never derives it from timestamps.
+    state: Literal["ACTIVE", "EXPIRED", "REVOKED"]
+    revoked_at: datetime | None = None
+    revoked_by: str | None = None
+    revocation_justification: str | None = None
+    runtime_event_count: int = 0
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class EmergencyDenyRevokeRequest(BaseModel):
+    justification: str = Field(min_length=8, max_length=2000)
+
+    model_config = ConfigDict(extra="forbid")

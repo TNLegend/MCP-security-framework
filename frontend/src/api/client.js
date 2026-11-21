@@ -812,10 +812,16 @@ export async function createEmergencyDeny(payload) {
   });
 }
 
-export async function revokeEmergencyDeny(denyId) {
-  return request(`/control-plane/emergency-denies/${denyId}`, {
-    method: "DELETE",
+// EM-01: logical revocation with a mandatory justification (never deleted).
+export async function revokeEmergencyDeny(denyId, justification) {
+  return request(`/control-plane/emergency-denies/${encodeURIComponent(denyId)}/revoke`, {
+    method: "POST",
+    body: JSON.stringify({ justification }),
   });
+}
+
+export async function fetchEmergencyDenyRuntimeEvents(denyId) {
+  return request(`/control-plane/emergency-denies/${encodeURIComponent(denyId)}/runtime-events`);
 }
 
 export async function fetchAuditEvents() {

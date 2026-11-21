@@ -283,6 +283,7 @@ def _copy_observation_approvals_to_draft(
 
         from app.models.tool_analysis import ToolAnalysis,ToolHumanReview
         from app.models.control_plane import EmergencyDeny
+        from app.services.emergency_deny import active_emergency_deny_clause
         from app.services.tda_application.queries import latest_protocol_observation
         from app.services.tda.m5_context.identity import compute_analysis_context_hash
         from app.services.tda_application.authority import approved_analysis_provenance
@@ -293,7 +294,7 @@ def _copy_observation_approvals_to_draft(
             ToolHumanReview.fingerprint==observation.tool_fingerprint).order_by(ToolHumanReview.id.desc()).limit(1))
         # Subject/session denies remain live checks for the actual caller.
         # This tool-only operation may not invent a caller or widen a deny.
-        deny=db.scalar(select(EmergencyDeny.id).where(EmergencyDeny.expires_at>datetime.utcnow(),or_(
+        deny=db.scalar(select(EmergencyDeny.id).where(active_emergency_deny_clause(),or_(
             EmergencyDeny.target_type=='global',
             and_(EmergencyDeny.target_type=='server_ref',EmergencyDeny.target_value==observation.server_ref),
             and_(EmergencyDeny.target_type=='server_tool',EmergencyDeny.target_value==observation.server_ref,

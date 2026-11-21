@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from app.models.control_plane import EmergencyDeny
@@ -16,6 +16,27 @@ EMERGENCY_DENY_TARGETS = {
     "server_ref",
     "server_tool",
 }
+
+
+DENY_STATE_ACTIVE = "ACTIVE"
+DENY_STATE_EXPIRED = "EXPIRED"
+DENY_STATE_REVOKED = "REVOKED"
+
+
+def active_emergency_deny_clause(now: datetime | None = None):
+    """EM-01: the ONLY definition of an enforceable deny. Every enforcement
+    query must use it, so a revoked deny can never block or be forgotten."""
+    now = now or datetime.utcnow()
+    return and_(EmergencyDeny.expires_at > now, EmergencyDeny.revoked_at.is_(None))
+
+
+def emergency_deny_state(deny: EmergencyDeny, now: datetime | None = None) -> str:
+    now = now or datetime.utcnow()
+    if deny.revoked_at is not None:
+        return DENY_STATE_REVOKED
+    if deny.expires_at <= now:
+        return DENY_STATE_EXPIRED
+    return DENY_STATE_ACTIVE
 
 
 class EmergencyDenyError(RuntimeError):
@@ -36,7 +57,7 @@ def check_emergency_deny(
     try:
         candidates = db.scalars(
             select(EmergencyDeny)
-            .where(EmergencyDeny.expires_at > now)
+            .where(active_emergency_deny_clause(now))
             .order_by(EmergencyDeny.created_at.desc())
         ).all()
     except Exception as exc:

@@ -101,6 +101,12 @@ PHASE2_INVENTORY_COLUMNS = {
         "ADD COLUMN IF NOT EXISTS policy_duration_ms DOUBLE PRECISION",
         "ADD COLUMN IF NOT EXISTS upstream_duration_ms DOUBLE PRECISION",
         "ADD COLUMN IF NOT EXISTS result_guard_duration_ms DOUBLE PRECISION",
+        "ADD COLUMN IF NOT EXISTS emergency_deny_id VARCHAR(36)",
+    ],
+    "emergency_denies": [
+        "ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP",
+        "ADD COLUMN IF NOT EXISTS revoked_by VARCHAR(36)",
+        "ADD COLUMN IF NOT EXISTS revocation_justification TEXT",
     ],
     "control_plane_config_revisions": [
         "ADD COLUMN IF NOT EXISTS previous_revision_hash VARCHAR(64)",
@@ -147,6 +153,8 @@ RUNTIME_CALL_INDEXES = [
     "CREATE INDEX IF NOT EXISTS ix_runtime_calls_server_id_id ON runtime_calls (server_id, id DESC)",
     "CREATE INDEX IF NOT EXISTS ix_runtime_calls_tool_name_id ON runtime_calls (tool_name, id DESC)",
     "CREATE INDEX IF NOT EXISTS ix_runtime_calls_agent_id_id ON runtime_calls (agent_id, id DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_runtime_calls_emergency_deny_id "
+    "ON runtime_calls (emergency_deny_id, id DESC)",
 ]
 
 

@@ -56,6 +56,7 @@ from app.models.analyzer_migration import (
     AnalyzerMigrationActivation,
 )
 from app.models.control_plane import ControlPlaneUser, EmergencyDeny
+from app.services.emergency_deny import active_emergency_deny_clause
 from app.models.tool_analysis import (
     ToolAnalysis,
     ToolAnalysisFinding,
@@ -408,7 +409,7 @@ def _veto(db, obs):
     deny = db.scalar(
         select(EmergencyDeny.id)
         .where(
-            EmergencyDeny.expires_at > datetime.utcnow(),
+            active_emergency_deny_clause(),
             or_(
                 EmergencyDeny.target_type == "global",
                 and_(

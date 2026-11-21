@@ -1,4 +1,5 @@
 import math
+import re
 import time
 from typing import Any
 
@@ -211,6 +212,21 @@ def summarize_tool_result(result: dict[str, Any] | None) -> str | None:
 
 
 
+_DENY_ID_RE = re.compile(r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
+
+
+def _emergency_deny_reference(decision: dict[str, Any], basis: str) -> str | None:
+    """EM-01: link an EMERGENCY refusal to the deny that caused it.
+
+    Only a framework-issued UUID is accepted; anything else is dropped, so a
+    malformed value can never reach the audit log."""
+    if basis != "EMERGENCY" or decision.get("decision") != "BLOCK":
+        return None
+    evidence = decision.get("evidence")
+    deny_id = evidence.get("deny_id") if isinstance(evidence, dict) else None
+    return deny_id if isinstance(deny_id, str) and _DENY_ID_RE.fullmatch(deny_id) else None
+
+
 def summarize_policy_evidence(decision: dict[str, Any]) -> dict[str, Any] | None:
     """Preserve verifiable, low-sensitivity failure codes, never raw MCP data."""
     evidence = decision.get("evidence")
@@ -416,6 +432,7 @@ def build_runtime_log(
         "decision_basis": basis,
         "dispatch_state": dispatch_state,
         "severity": decision.get("severity"),
+        "emergency_deny_id": _emergency_deny_reference(decision, basis),
         "control_plane_revision_id": tool_call.get("control_plane_revision_id"),
         "control_plane_revision_number": tool_call.get("control_plane_revision_number"),
         "control_plane_content_hash": tool_call.get("control_plane_content_hash"),

@@ -23,6 +23,7 @@ from app.models.tool_analysis import (
     ToolObservationReviewApproval,
 )
 from app.models.control_plane import EmergencyDeny
+from app.services.emergency_deny import active_emergency_deny_clause
 from app.schemas.control_plane import ControlPlaneConfigContent
 from app.services.control_plane_config import (
     active_revision,
@@ -87,7 +88,7 @@ def renew_admin_allowed_tool_observations(
         {"endpoint": server.endpoint, "transport": server.transport}
     )
     active_deny = db.scalar(select(EmergencyDeny.id).where(
-        EmergencyDeny.expires_at > datetime.utcnow(),
+        active_emergency_deny_clause(),
         or_(
             EmergencyDeny.target_type == "global",
             and_(EmergencyDeny.target_type == "server_ref",
