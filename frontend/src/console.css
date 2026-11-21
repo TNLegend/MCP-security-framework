@@ -100,7 +100,7 @@ body { background: var(--console-canvas); }
   text-transform: uppercase;
 }
 .security-console .app-nav-group-links { display: grid; gap: 2px; }
-.security-console .app-nav button {
+.security-console .app-nav a {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -114,15 +114,16 @@ body { background: var(--console-canvas); }
   font-size: .88rem;
   font-weight: 600;
   text-align: left;
+  text-decoration: none;
 }
-.security-console .app-nav button svg { flex: none; width: 17px; height: 17px; opacity: .9; }
-.security-console .app-nav button:hover { background: #203a51; color: #fff; }
-.security-console .app-nav button.active {
+.security-console .app-nav a svg { flex: none; width: 17px; height: 17px; opacity: .9; }
+.security-console .app-nav a:hover { background: #203a51; color: #fff; }
+.security-console .app-nav a.active {
   border-color: #417b76;
   background: #214745;
   color: #effffa;
 }
-.security-console .app-nav button.active svg { color: #a6f3d8; }
+.security-console .app-nav a.active svg { color: #a6f3d8; }
 
 .security-console .console-header {
   min-width: 0;
@@ -259,6 +260,7 @@ body { background: var(--console-canvas); }
 .login-layout h1 { font-size: 1.8rem; margin: 0 0 5px; line-height: 1.2; }
 .login-description { color: var(--console-muted); margin-bottom: 22px; }
 .login-form .console-primary { justify-self: stretch; margin-top: 2px; }
+.session-retry { margin-bottom: 14px; }
 .session-loading { display: grid; min-height: 100vh; place-items: center; }
 
 .security-console .dashboard-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 19px; }

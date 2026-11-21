@@ -35,5 +35,5 @@ test("review errors stay in the confirmation dialog and submission retains the e
   const source = page("ToolAnalysis");
   assert.match(source, /reviewDialog\.fingerprint !== selectedTool\.current_fingerprint/);
   assert.match(source, /reviewDialog\.analysisContextHash !== \(reviewAnalysis\?\.analysis_context_hash/);
-  assert.match(source, /current \? \{ \.\.\.current, error: err\.message/);
+  assert.match(source, /setReviewDialog\(\(current\) => current \? \{[\s\S]*?error: receiptUncertain/);
 });

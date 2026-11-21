@@ -138,7 +138,11 @@ def operations(page, api):
     expect(page.get_by_text("Retention applied", exact=False)).to_be_visible()
     expect(apply).to_be_disabled()
     requests = [json.loads(data) for _, path, data in api.mutations if path == CLEANUP]
-    assert requests[-1] == {"dry_run": False, "reason": "Revised reason for retention test"}
+    assert requests[-1] == {
+        "dry_run": False,
+        "reason": "Revised reason for retention test",
+        "expected_preview_fingerprint": smoke.DIGEST,
+    }
 
 
 def main():

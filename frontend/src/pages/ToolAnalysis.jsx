@@ -1,7 +1,7 @@
 import { formatServerTime } from "../utils/serverTime.js";
 import "./workflowPages.css";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { approveTool, blockTool, fetchToolAnalysisBundle } from "../api/client";
+import { approveTool, blockTool, fetchToolAnalysisBundle, safeErrorMessage } from "../api/client";
 import ControlledAIAssistant from "../components/ControlledAIAssistant";
 import M4SemanticsPanel from "../components/m4semanticspanel";
 import { Pagination, usePagination } from "../components/Pagination";
@@ -26,6 +26,7 @@ function ToolAnalysis({
   const [bundle, setBundle] = useState(null);
   const [bundleToolId, setBundleToolId] = useState(null);
   const [bundleLoading, setBundleLoading] = useState(false);
+  const [reviewRefresh, setReviewRefresh] = useState(0);
   const [busy, setBusy] = useState(false);
   const [reviewDialog, setReviewDialog] = useState(null);
   const modalRef = useRef(null);
@@ -110,6 +111,7 @@ function ToolAnalysis({
     if (!selectedToolId) {
       setBundle(null);
       setBundleToolId(null);
+      setBundleLoading(false);
       return;
     }
     setBundle(null);
@@ -127,7 +129,7 @@ function ToolAnalysis({
         if (!cancelled) {
           setBundle(null);
           setBundleToolId(null);
-          setError(err.message || "Could not load tool analysis");
+          setError(safeErrorMessage(err) || "Could not load tool analysis");
         }
       })
       .finally(() => {
@@ -138,7 +140,7 @@ function ToolAnalysis({
     return () => {
       cancelled = true;
     };
-  }, [selectedToolId, selectedToolFingerprint, selectedToolLastAnalyzedAt]);
+  }, [selectedToolId, selectedToolFingerprint, selectedToolLastAnalyzedAt, reviewRefresh]);
 
   // Begin with the overall assessment. Advisory M4 remains available in its own tab.
   useEffect(() => {
@@ -196,15 +198,28 @@ function ToolAnalysis({
           reviewDialog.justification.trim(),
         );
       }
-      setMessage(reviewDialog.action === "Allow" ? "Tool review approved." : "Tool block recorded.");
-      setReviewDialog(null);
-      await onRefresh?.();
-      setBundle(await fetchToolAnalysisBundle(selectedTool.id));
-      setBundleToolId(selectedTool.id);
     } catch (err) {
-      setReviewDialog((current) =>
-        current ? { ...current, error: err.message || "The review could not be recorded. Try again." } : current,
-      );
+      const detail = safeErrorMessage(err);
+      const receiptUncertain = !err?.status || err.status >= 500;
+      setReviewDialog((current) => current ? {
+        ...current,
+        error: receiptUncertain
+          ? detail + " Verify the recorded review before submitting again."
+          : detail,
+      } : current);
+      setBusy(false);
+      return;
+    }
+
+    setMessage(reviewDialog.action === "Allow" ? "Tool review approved." : "Tool block recorded.");
+    setReviewDialog(null);
+    setBundle(null);
+    setBundleToolId(null);
+    setReviewRefresh((current) => current + 1);
+    try {
+      await onRefresh?.();
+    } catch {
+      setError("The review was recorded. The inventory could not be refreshed. Reload the evidence before making another decision.");
     } finally {
       setBusy(false);
     }

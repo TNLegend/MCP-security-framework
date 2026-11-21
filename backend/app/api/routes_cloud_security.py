@@ -38,7 +38,11 @@ from app.services.cloud_iam_mapping import (
     MappingError, context_for_server, compile_expectations,
     mapping_digest, verify_approved_mapping,
 )
-from app.services.published_configuration import PublishedConfigurationProvider
+from app.services.published_configuration import (
+    PublishedConfigurationError,
+    PublishedConfigurationProvider,
+    PublishedConfigurationSnapshot,
+)
 from app.models.mcp_server import MCPServer
 from app.services.cloud_deploy_governance import (
     DeployGovernanceError, build_deploy_iam_governance_input,
@@ -384,6 +388,18 @@ async def upload_iac_scan(
     return scan
 
 
+def _load_iam_snapshot(db: Session) -> PublishedConfigurationSnapshot:
+    try:
+        return PublishedConfigurationProvider(db).load_active_snapshot()
+    except PublishedConfigurationError as exc:
+        code = (
+            "IAM_MCP_PUBLISHED_CONFIGURATION_MISSING"
+            if exc.code == "active_config_missing"
+            else "IAM_MCP_PUBLISHED_CONFIGURATION_UNVERIFIED"
+        )
+        raise HTTPException(status_code=409, detail=code) from exc
+
+
 @router.get("/environments/{environment_id}/iam-mapping-context")
 def iam_mapping_context(
     environment_id:str,mcp_server_id:int,
@@ -395,7 +411,7 @@ def iam_mapping_context(
     if server is None or server.status!="active":
         raise HTTPException(status_code=404,detail="mcp_server_not_found")
     try:
-        snapshot=PublishedConfigurationProvider(db).load_active_snapshot()
+        snapshot=_load_iam_snapshot(db)
         return context_for_server(snapshot,server.endpoint)
     except MappingError as exc:
         raise HTTPException(status_code=409,detail=str(exc)) from exc
@@ -430,7 +446,7 @@ def create_iam_mapping(
     if server is None or server.status!="active":
         raise HTTPException(status_code=404,detail="mcp_server_not_found")
     try:
-        snapshot=PublishedConfigurationProvider(db).load_active_snapshot()
+        snapshot=_load_iam_snapshot(db)
         configuration={"identity":payload.identity.model_dump(mode="json",exclude_none=True),
                        "role_usage":payload.role_usage,
                        "unmapped_effects_acknowledged":payload.acknowledge_unmapped_effects,
@@ -481,7 +497,7 @@ def approve_iam_mapping(
     if server is None or server.status!="active":
         raise HTTPException(status_code=409,detail="mcp_server_not_active")
     try:
-        snapshot=PublishedConfigurationProvider(db).load_active_snapshot()
+        snapshot=_load_iam_snapshot(db)
         if row.signed_revision!=snapshot.revision_number or row.signed_content_hash!=snapshot.content_hash:
             raise MappingError("IAM_MCP_MAPPING_SIGNED_REVISION_CHANGED")
         if row.configuration.get("source_binding")!={"account_id":_env(db,environment_id).account_id,
@@ -528,7 +544,7 @@ def request_iam_mcp_comparison(
     if server is None or server.status!="active":
         raise HTTPException(status_code=409,detail="mcp_server_not_active")
     try:
-        snapshot=PublishedConfigurationProvider(db).load_active_snapshot()
+        snapshot=_load_iam_snapshot(db)
         verify_approved_mapping(row,snapshot,server.endpoint,env.account_id)
     except MappingError as exc:
         raise HTTPException(status_code=409,detail=str(exc)) from exc

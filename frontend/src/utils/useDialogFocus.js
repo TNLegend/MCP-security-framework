@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useLayoutEffect } from "react";
 
 const FOCUSABLE = [
   "a[href]", "button:not([disabled])", "input:not([disabled])",
@@ -6,15 +6,26 @@ const FOCUSABLE = [
   "[tabindex]:not([tabindex=\"-1\"])",
 ].join(", ");
 
-export function useDialogFocus(active, dialogRef) {
-  useEffect(() => {
+export function useDialogFocus(active, dialogRef, { focusContainer = false } = {}) {
+  useLayoutEffect(() => {
     if (!active || !dialogRef.current) return undefined;
     const dialog = dialogRef.current;
     const previousFocus = document.activeElement;
-    const focusable = () => [...dialog.querySelectorAll(FOCUSABLE)]
-      .filter((item) => !item.hasAttribute("hidden") && item.getAttribute("aria-hidden") !== "true");
-    const items = focusable();
-    (items[0] || dialog).focus();
+    const focusable = () => [...dialog.querySelectorAll(FOCUSABLE)].filter((item) =>
+      item.tabIndex >= 0 && !item.matches(":disabled") && !item.closest("[hidden], [inert], [aria-hidden='true']")
+      && item.getClientRects().length > 0 && getComputedStyle(item).visibility === "visible",
+    );
+    const blockedElements = [];
+    for (let branch = dialog; branch.parentElement; branch = branch.parentElement) {
+      for (const sibling of branch.parentElement.children) {
+        if (sibling !== branch && sibling instanceof HTMLElement && !sibling.inert) {
+          sibling.inert = true;
+          blockedElements.push(sibling);
+        }
+      }
+      if (branch.parentElement === document.body) break;
+    }
+    (focusContainer ? dialog : focusable()[0] || dialog).focus();
 
     function retainFocus(event) {
       if (event.key !== "Tab") return;
@@ -24,23 +35,23 @@ export function useDialogFocus(active, dialogRef) {
         dialog.focus();
         return;
       }
-      const first = nextItems[0];
-      const last = nextItems[nextItems.length - 1];
-      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
+      const focusIndex = nextItems.indexOf(document.activeElement);
+      if (event.shiftKey && focusIndex <= 0) {
         event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
+        nextItems.at(-1).focus();
+      } else if (!event.shiftKey && (focusIndex < 0 || focusIndex === nextItems.length - 1)) {
         event.preventDefault();
-        first.focus();
+        nextItems[0].focus();
       }
     }
 
-    dialog.addEventListener("keydown", retainFocus);
+    document.addEventListener("keydown", retainFocus, true);
     return () => {
-      dialog.removeEventListener("keydown", retainFocus);
+      document.removeEventListener("keydown", retainFocus, true);
+      for (const element of blockedElements) element.inert = false;
       if (previousFocus?.isConnected && typeof previousFocus.focus === "function") {
-        previousFocus.focus();
+        previousFocus.focus({ preventScroll: true });
       }
     };
-  }, [active, dialogRef]);
+  }, [active, dialogRef, focusContainer]);
 }

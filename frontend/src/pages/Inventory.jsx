@@ -1,4 +1,4 @@
-import { formatServerTime } from "../utils/serverTime.js";
+import { formatServerTime, parseServerTime } from "../utils/serverTime.js";
 import "./workflowPages.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -163,7 +163,7 @@ function Inventory({
     }).sort((left, right) => {
       if (serverSort === "NAME") return getServerDisplayName(left).localeCompare(getServerDisplayName(right));
       if (serverSort === "RECENT") {
-        return (Date.parse(right.last_seen_at) || 0) - (Date.parse(left.last_seen_at) || 0);
+        return (parseServerTime(right.last_seen_at).getTime() || 0) - (parseServerTime(left.last_seen_at).getTime() || 0);
       }
       return 0;
     });

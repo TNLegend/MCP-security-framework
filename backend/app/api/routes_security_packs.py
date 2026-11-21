@@ -336,6 +336,15 @@ def tool_adapter_guidance(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _ai_onboarding_http_error(error: SecurityPackOnboardingError) -> HTTPException:
+    code = str(error).split(":", 1)[0]
+    if code == "security_pack_ai_rate_limited":
+        return HTTPException(status_code=429, detail=code)
+    if code == "security_pack_ai_timeout":
+        return HTTPException(status_code=504, detail=code)
+    return HTTPException(status_code=503, detail="security_pack_ai_unavailable")
+
+
 @router.post(
     "/tools/{tool_id}/ai-suggestion",
     response_model=AITemplateSuggestionPublic,
@@ -353,7 +362,7 @@ def tool_ai_template_suggestion(
     try:
         return suggest_template_with_ai(tool, content=content)
     except SecurityPackOnboardingError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise _ai_onboarding_http_error(exc) from None
 
 
 @router.post(
@@ -373,7 +382,7 @@ def tool_ai_security_pack_draft(
     try:
         return suggest_security_pack_with_ai(tool, content=content)
     except SecurityPackOnboardingError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise _ai_onboarding_http_error(exc) from None
 
 
 @router.post(

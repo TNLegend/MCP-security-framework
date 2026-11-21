@@ -23,10 +23,21 @@ ControlledAIRecommendedAction = Literal[
 ]
 
 
+class ControlledAIExpectedAnalysis(BaseModel):
+    id: int = Field(gt=0)
+    fingerprint: str = Field(min_length=64, max_length=64)
+    context_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    analysis_status: str | None = Field(default=None, max_length=64)
+    review_status: str | None = Field(default=None, max_length=64)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ControlledAIAssistanceRequest(BaseModel):
     mode: ControlledAIMode
     question: str | None = Field(default=None, max_length=1000)
     draft_revision_id: str | None = Field(default=None, max_length=64)
+    expected_analysis: ControlledAIExpectedAnalysis | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -57,7 +68,7 @@ class ControlledAIAssistancePublic(BaseModel):
     draft_kind: Literal["NONE", "TEMPLATE_MAPPING", "SECURITY_PACK"] = "NONE"
     draft_preview: dict[str, Any] | None = None
     uncertainties: tuple[str, ...] = Field(default=(), max_length=12)
-    confidence: float = Field(ge=0, le=1)
+    confidence: float | None = Field(default=None, ge=0, le=1)
     non_authoritative: Literal[True] = True
     requires_human_review: Literal[True] = True
     can_mutate_runtime: Literal[False] = False

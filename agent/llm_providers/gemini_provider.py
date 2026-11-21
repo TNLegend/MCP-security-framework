@@ -58,7 +58,14 @@ class GeminiProvider(BaseLLMProvider):
         response = self._post_json(payload)
 
         try:
-            text = response["candidates"][0]["content"]["parts"][0]["text"]
+            parts = response["candidates"][0]["content"]["parts"]
+            text = "".join(
+                part["text"]
+                for part in parts
+                if isinstance(part, dict)
+                and part.get("thought") is not True
+                and isinstance(part.get("text"), str)
+            )
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMProviderError("Gemini response did not include text output.") from exc
 
@@ -77,12 +84,12 @@ class GeminiProvider(BaseLLMProvider):
         model = quote(self.model, safe="")
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{model}:generateContent?key={self.api_key}"
+            f"{model}:generateContent"
         )
         request = Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "x-goog-api-key": self.api_key},
             method="POST",
         )
 
@@ -93,7 +100,7 @@ class GeminiProvider(BaseLLMProvider):
                 # the advisory caller try its configured secondary provider.
                 remaining = self.timeout_seconds - (time.monotonic() - started)
                 if attempt and remaining < 2:
-                    raise LLMProviderError("Gemini API request timed out.")
+                    raise LLMProviderError("Gemini API request timed out.", code="timeout")
                 timeout = self.timeout_seconds if not attempt else remaining
                 with urlopen(request, timeout=timeout) as response:
                     response_body = response.read().decode("utf-8")
@@ -104,14 +111,17 @@ class GeminiProvider(BaseLLMProvider):
                     exc.close()
                     time.sleep(0.35)
                     continue
-                detail = exc.read().decode("utf-8", errors="replace")
+                exc.close()
                 raise LLMProviderError(
-                    f"Gemini API returned HTTP {exc.code}: {_shorten(detail)}"
-                ) from exc
+                    f"Gemini API returned HTTP {exc.code}.",
+                    code="rate_limited" if exc.code == 429 else "unavailable",
+                ) from None
             except URLError as exc:
-                raise LLMProviderError(f"Gemini API request failed: {exc.reason}") from exc
-            except TimeoutError as exc:
-                raise LLMProviderError("Gemini API request timed out.") from exc
+                if isinstance(exc.reason, TimeoutError):
+                    raise LLMProviderError("Gemini API request timed out.", code="timeout") from None
+                raise LLMProviderError("Gemini API connection failed.") from None
+            except TimeoutError:
+                raise LLMProviderError("Gemini API request timed out.", code="timeout") from None
 
         try:
             data = json.loads(response_body)
@@ -138,9 +148,3 @@ def _extract_json_object(text: str) -> str:
     if start == -1 or end == -1 or end <= start:
         raise LLMProviderError("Gemini output did not contain a JSON object.")
     return cleaned[start : end + 1]
-
-
-def _shorten(value: str, max_length: int = 500) -> str:
-    if len(value) <= max_length:
-        return value
-    return f"{value[: max_length - 3]}..."

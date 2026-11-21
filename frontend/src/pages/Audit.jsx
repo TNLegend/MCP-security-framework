@@ -9,7 +9,7 @@ const PAGE_SIZE = 20;
 const EMPTY_EVENTS = [];
 function Audit({ events = EMPTY_EVENTS, loading = false }) {
   const [query, setQuery] = useState("");
-  const [selectedEvent, setSelectedEvent] = useState(null);
+  const [selectedEventId, setSelectedEventId] = useState(null);
   const [page, setPage] = useState(1);
   const [snapshot, setSnapshot] = useState(null);
   const [pageData, setPageData] = useState({
@@ -74,23 +74,26 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
     }
   }, [events, page, query]);
 
-  useEffect(() => {
-    if (selectedEvent && !pageData.items.some((item) => item.id === selectedEvent.id)) {
-      setSelectedEvent(null);
-    }
-  }, [pageData.items, selectedEvent]);
+  const selectedEvent = pageData.items.find((item) => item.id === selectedEventId);
 
   const pageCount = Math.max(1, Math.ceil(pageData.total / PAGE_SIZE));
 
   function openEvent(event, record) {
     eventControl.current = event.currentTarget;
-    setSelectedEvent(record);
+    setSelectedEventId(record.id);
     window.requestAnimationFrame(() => detailHeading.current?.focus());
   }
 
   function closeEvent() {
-    setSelectedEvent(null);
+    setSelectedEventId(null);
     eventControl.current?.focus();
+  }
+
+  function refreshResults() {
+    setSnapshot(null);
+    setSelectedEventId(null);
+    setPage(1);
+    setRetryCount((value) => value + 1);
   }
 
   if (loading && pageData.items.length === 0 && !pageLoading) {
@@ -118,7 +121,7 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
         </div>
       )}
       <p className="hint-text" role="note">See who changed what. Original records remain available in Details.
-        {snapshot ? " This search is anchored to the same latest-event boundary during pagination; new events do not shift the result pages. Clear or change search to refresh." : " A consistent page boundary is established when results load."}
+        {snapshot ? " This search is anchored to the same latest-event boundary during pagination; new events do not shift the result pages. Use Refresh results to include newer events." : " A consistent page boundary is established when results load."}
       </p>
       <div className="action-panel inline-form">
         <label>
@@ -127,7 +130,7 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
             onChange={(event) => {
               setQuery(event.target.value);
               setSnapshot(null);
-              setSelectedEvent(null);
+              setSelectedEventId(null);
               setPage(1);
             }}
             placeholder="action, actor, target..."
@@ -135,7 +138,8 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
             value={query}
           />
         </label>
-        {query && <button onClick={() => { setQuery(""); setSnapshot(null); setSelectedEvent(null); setPage(1); }} type="button">Clear search</button>}
+        {query && <button onClick={() => { setQuery(""); refreshResults(); }} type="button">Clear search</button>}
+        <button type="button" disabled={pageLoading} onClick={refreshResults}>Refresh results</button>
       </div>
       {pageLoading && <p className="hint-text" role="status">Searching audit events...</p>}
       <div aria-busy={pageLoading} aria-label="Audit events table" className="table-shell audit-table" tabIndex={0}>
@@ -192,7 +196,7 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
       <Pagination
         label="Audit events"
         onPageChange={(next) => {
-          setSelectedEvent(null);
+          setSelectedEventId(null);
           setPage(next);
         }}
         page={page}
@@ -266,22 +270,34 @@ function RelatedSecurityTimeline() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const request = useRef(0);
+  useEffect(() => () => { request.current += 1; }, []);
   const validId = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(targetId);
 
   async function show(event) {
     event.preventDefault();
     if (busy || !validId) return;
+    const generation = ++request.current;
     setBusy(true);
     setError("");
     setResult(null);
     try {
       const response = await fetchRelatedSecurityTimeline(kind, targetId);
-      setResult(response);
+      if (generation === request.current) setResult(response);
     } catch (err) {
-      setError(safeErrorMessage(err) || "Related audit evidence is unavailable.");
+      if (generation === request.current) {
+        setError(safeErrorMessage(err) || "Related audit evidence is unavailable.");
+      }
     } finally {
-      setBusy(false);
+      if (generation === request.current) setBusy(false);
     }
+  }
+
+  function resetResponse() {
+    request.current += 1;
+    setResult(null);
+    setError("");
+    setBusy(false);
   }
 
   return (
@@ -292,7 +308,7 @@ function RelatedSecurityTimeline() {
       <form className="inline-form" onSubmit={show}>
         <label>Correlation target
           <select value={kind} onChange={(event) => {
-            setKind(event.target.value); setResult(null); setError("");
+            setKind(event.target.value); resetResponse();
           }}>
             <option value="runtime_operation">MCP operation</option>
             <option value="cloud_scan">Cloud audit scan</option>
@@ -303,7 +319,7 @@ function RelatedSecurityTimeline() {
             maxLength={36} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
             onChange={(event) => {
               setTargetId(event.target.value.trim().toLowerCase());
-              setResult(null); setError("");
+              resetResponse();
             }}/>
         </label>
         <button type="submit" disabled={!validId || busy}>
@@ -312,16 +328,17 @@ function RelatedSecurityTimeline() {
       </form>
       {error && <p role="alert">{error} No actions were replayed.</p>}
       {result && <div aria-label="Related security records">
+        <p>Recorded target: <code>{targetId}</code>.</p>
         <p role="status">{result.events.length} stored related event(s) returned.
           {result.truncated ? " The response is bounded and additional events may exist." : ""}
         </p>
         {result.events.length ? <ol>
           {result.events.map((item) => <li key={item.source + ":" + item.id}>
             <strong>{item.source.replaceAll("_", " ")}</strong>
-            {" ? "}{formatDate(item.timestamp)}
-            {" ? "}{item.event_code}
-            {item.result && <>{" ? "}{item.result}</>}
-            {" ? "}<code>{item.id}</code>
+            {" · "}{formatDate(item.timestamp)}
+            {" · "}{item.event_code}
+            {item.result && <>{" · "}{item.result}</>}
+            {" · "}<code>{item.id}</code>
           </li>)}
         </ol> : <p>No events were found under this exact ID. This does not establish that no activity occurred.</p>}
         <p><strong>Evidence limits:</strong> {result.limitations}</p>

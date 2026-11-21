@@ -21,6 +21,7 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
   const [caseReconciliation, setCaseReconciliation] = useState(null);
 
   async function inspectUnresolvedCases() {
+    setCaseReconciliation(null);
     setInvestigationBusy(true);
     setInvestigationError("");
     try {
@@ -33,6 +34,7 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
   }
 
   async function reconcileCase(operationId) {
+    setCaseReconciliation(null);
     setInvestigationBusy(true);
     setInvestigationError("");
     try {
@@ -246,8 +248,8 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
             <ul>{unresolvedCases.items.map((item) => (
               <li key={item.operation_id}>
                 <strong>{item.tool_name}</strong>
-                {" ? "}{formatDate(item.created_at)}
-                {" ? "}<code>{item.operation_id}</code>
+                {" · "}{formatDate(item.created_at)}
+                {" · "}<code>{item.operation_id}</code>
                 <button type="button" className="tiny-action"
                   disabled={investigationBusy}
                   onClick={() => reconcileCase(item.operation_id)}>
@@ -320,7 +322,7 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
               </button>
               <button
                 className="danger-action"
-                disabled={busy || loading || !preview || preview.planned <= 0}
+                disabled={busy || loading || !preview?.preview_fingerprint || preview.planned <= 0}
                 onClick={() => runCleanup(false)}
                 type="button"
               >
@@ -330,6 +332,9 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
             {preview && (
               <div className="operations-preview">
                 <strong>Retention preview</strong>
+                {preview.planned > 0 && !preview.preview_fingerprint && (
+                  <p role="status">This preview is missing its verification fingerprint. Run Preview again before applying cleanup.</p>
+                )}
                 <span>Planned: {preview.planned}</span>
                 <span>Expired: {preview.eligible_expired}</span>
                 <span>Over max rows: {preview.eligible_over_limit}</span>

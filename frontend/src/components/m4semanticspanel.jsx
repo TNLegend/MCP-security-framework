@@ -1,6 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { fetchM4Semantics } from "../api/client";
 
+function descriptionError(error) {
+  if (error?.code === "request_timeout") return "The description check timed out. Try again later or review the recorded tool description.";
+  if (error?.code === "network_error") return "The application could not reach the server. Check the connection and retry.";
+  if (error?.status === 401) return "Your session has expired. Sign in again to run the description check.";
+  if (error?.status === 403) return "An administrator session is required to run the description check.";
+  if (error?.status === 409) return "Current description evidence is unavailable. Refresh or rediscover the tool and try again.";
+  if (error?.status === 429) return "The local description analyzer is busy. Try again later.";
+  return "The description check is unavailable. Review the tool description directly or check the analyzer in System health.";
+}
+
 function showHead(event, field) {
   const value = event?.classification?.heads?.[field];
   return value?.label || "Unresolved";
@@ -32,7 +42,7 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
     setWaiting(false);
   }, [currentToolIdentity]);
 
-  async function runM4() {
+  async function runDescriptionCheck() {
     if (!tool?.id || waiting) return;
     const key = currentToolIdentity;
     const generation = ++requestGeneration.current;
@@ -54,7 +64,7 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
       setResult(out);
     } catch (err) {
       if (generation === requestGeneration.current) {
-        setError(err?.message || "Description analysis unavailable");
+        setError(descriptionError(err));
       }
     } finally {
       if (generation === requestGeneration.current) setWaiting(false);
@@ -102,7 +112,7 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
         </section></details>
       )}
       <button type="button" className="secondary-action"
-        disabled={!tool?.id || waiting} onClick={runM4}>
+        disabled={!tool?.id || waiting} onClick={runDescriptionCheck}>
         {waiting ? "Analyzing tool description…" : "Analyze description"}
       </button>
       {requestKey && waiting && (
@@ -193,7 +203,7 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
           )}
           {events.length === 0 && (
             <p className="empty-state">
-              No predicate detected. This does not prove absence of capabilities.
+              No action was identified in the description reviewed. The tool’s actual capabilities are still unverified.
             </p>
           )}
           <div className="finding-list">
@@ -245,8 +255,7 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
             </p>
           )}
           <p className="hint-text" role="note">
-            This experimental report is not stored as an approval, risk decision,
-            policy, finding or runtime permission.
+            This report is advisory. Security review and approval use their own recorded evidence.
           </p>
           </details>
         </>

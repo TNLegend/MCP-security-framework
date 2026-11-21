@@ -11,6 +11,10 @@ const ERROR_MESSAGES = Object.freeze({
 });
 
 let csrfToken = "";
+let sessionGeneration = 0;
+
+export const SESSION_EXPIRED_EVENT = "mcp-control-plane-session-expired";
+const SESSION_ERROR_CODES = new Set(["Not authenticated", "Invalid session", "Invalid user"]);
 
 export class ApiError extends Error {
   constructor(message, { status = 0, code = "request_failed", fieldErrors = [] } = {}) {
@@ -24,6 +28,7 @@ export class ApiError extends Error {
 
 export function setCsrfToken(value) {
   csrfToken = value || "";
+  sessionGeneration += 1;
 }
 
 function csrfFromCookie() {
@@ -38,6 +43,7 @@ export function hasControlPlaneSession() {
 }
 
 async function request(path, options = {}) {
+  const generation = sessionGeneration;
   const { timeoutMs = REQUEST_TIMEOUT_MS, ...requestOptions } = options;
   const headers = { ...(requestOptions.headers || {}) };
   const method = requestOptions.method || "GET";
@@ -70,7 +76,7 @@ async function request(path, options = {}) {
         payload = null;
       }
       if (controller.signal.aborted) throw new ApiError("Request timed out.", { code: "request_timeout", status: 0 });
-      throw apiErrorFromResponse(response.status, payload, text);
+      throw errorFromRequest(response.status, payload, text, generation);
     }
     if (response.status === 204) return null;
     const text = await response.text();
@@ -95,6 +101,7 @@ async function request(path, options = {}) {
 }
 
 async function requestBlob(path) {
+  const generation = sessionGeneration;
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -113,7 +120,7 @@ async function requestBlob(path) {
         payload = null;
       }
       if (controller.signal.aborted) throw new ApiError("Request timed out.", { code: "request_timeout", status: 0 });
-      throw apiErrorFromResponse(response.status, payload, text);
+      throw errorFromRequest(response.status, payload, text, generation);
     }
     const blob = await response.blob();
     if (controller.signal.aborted) throw new ApiError("Request timed out.", { code: "request_timeout", status: 0 });
@@ -133,6 +140,16 @@ async function requestBlob(path) {
   } finally {
     globalThis.clearTimeout(timeout);
   }
+}
+
+function errorFromRequest(status, payload, text, generation) {
+  const error = apiErrorFromResponse(status, payload, text);
+  // The same API also uses 401 for invalid credentials and a wrong current password.
+  if (generation === sessionGeneration && status === 401 && SESSION_ERROR_CODES.has(error.code)
+    && typeof window !== "undefined") {
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+  }
+  return error;
 }
 
 export function apiErrorFromResponse(status, payload, text = "") {
@@ -585,6 +602,7 @@ export async function fetchAIToolTemplateSuggestion(toolId, draftRevisionId = nu
     draftRevisionId,
   ), {
     method: "POST",
+    timeoutMs: 60_000,
   });
 }
 
@@ -592,7 +610,7 @@ export async function fetchAIToolSecurityPackDraft(toolId, draftRevisionId = nul
   return request(withDraftRevision(
     `/control-plane/security-packs/tools/${toolId}/ai-pack-draft`,
     draftRevisionId,
-  ), { method: "POST" });
+  ), { method: "POST", timeoutMs: 60_000 });
 }
 
 export async function createToolSecurityPackDraft(toolId, payload) {

@@ -98,14 +98,17 @@ class GroqProvider(BaseLLMProvider):
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 response_body = response.read().decode("utf-8")
         except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            exc.close()
             raise LLMProviderError(
-                f"Groq API returned HTTP {exc.code}: {_shorten(detail)}"
-            ) from exc
+                f"Groq API returned HTTP {exc.code}.",
+                code="rate_limited" if exc.code == 429 else "unavailable",
+            ) from None
         except URLError as exc:
-            raise LLMProviderError(f"Groq API request failed: {exc.reason}") from exc
-        except TimeoutError as exc:
-            raise LLMProviderError("Groq API request timed out.") from exc
+            if isinstance(exc.reason, TimeoutError):
+                raise LLMProviderError("Groq API request timed out.", code="timeout") from None
+            raise LLMProviderError("Groq API connection failed.") from None
+        except TimeoutError:
+            raise LLMProviderError("Groq API request timed out.", code="timeout") from None
 
         try:
             data = json.loads(response_body)
@@ -132,9 +135,3 @@ def _extract_json_object(text: str) -> str:
     if start == -1 or end == -1 or end <= start:
         raise LLMProviderError("Groq output did not contain a JSON object.")
     return cleaned[start : end + 1]
-
-
-def _shorten(value: str, max_length: int = 500) -> str:
-    if len(value) <= max_length:
-        return value
-    return f"{value[: max_length - 3]}..."

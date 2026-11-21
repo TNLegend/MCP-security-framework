@@ -695,22 +695,40 @@ both the backend and Gateway. Every distribution is bounded, checked for an exac
 archive layout, verified against the explicit signer allowlist, imported only after
 signature verification, and activated by restarting both processes together.
 
-Lot 6 adds Controlled AI Assistance inside Tool Analysis. The assistant is ADMIN-only,
-advisory-only, and evidence-bound: a completed analysis must match the tool's current
-fingerprint before a provider is called. Tool descriptions, schemas, findings, and the
-optional operator question are treated as untrusted data; provider context is bounded
-and sensitive-looking values are redacted.
+### AI assistance in Security review
 
-The AI Assist tab supports Explain, Risk summary, Suggest next step, Compare options,
-and Draft onboarding. Normal advisory modes may reference only evidence, templates,
-and adapters supplied by the framework. Unknown IDs and unsupported actions fail
-closed. Draft onboarding reuses the constrained Security Pack onboarding path and
-returns a non-authoritative preview only.
+**Explain with AI** is available to ADMIN users. The framework checks that the latest
+completed analysis matches the selected tool. The browser also binds each request
+to its displayed analysis ID, fingerprint, context hash, and review state. A change
+requires refreshing the tool evidence before requesting assistance again.
 
-Controlled AI cannot approve or block a tool, publish a revision, grant capabilities,
-install or sign adapters, modify OPA, execute MCP calls, or disable Emergency Deny.
-Successful and failed assistance requests are audited. See
-`CONTROLLED_AI_ASSISTANCE.md` for the trust boundary and guarantees.
+Explain, risk summary, next steps, and option comparison use the configured provider
+to rank known evidence, template, or adapter references. The framework produces the
+security summary, risk factors, uncertainties, and recommended action. Unknown IDs
+are rejected. If findings are missing, open the recorded analysis and resolve the
+gap before making a decision. Evidence selection and provider confidence are advisory.
+
+The configured provider and its fallback receive bounded analysis metadata and any
+optional operator question. Template and Security Pack drafting also send the tool
+name, a bounded description, input paths, and declared behavior hints. Raw schemas,
+schema defaults, and finding bodies are excluded from these requests. Keep credentials
+and private information out of questions and tool descriptions. The GUI distinguishes
+quota limits, timeouts and unavailable assistance, with manual review still available.
+
+AI-generated onboarding previews must be reviewed and put into a draft through the
+existing workflow. AI assistance cannot approve a tool, publish policy, grant a
+capability, or execute a call. The contextual assistant audits successes and failures.
+The local **Description check** uses separate local model evidence and remains advisory.
+The demo command-line agent uses the same HTTP clients for tool proposals and follows
+the Gateway flow separately.
+
+The existing Gemini and Groq models can be configured through `GEMINI_MODEL` and
+`GROQ_MODEL`. The defaults remain `gemini-3.1-flash-lite` and `openai/gpt-oss-20b`.
+Gemini uses header authentication with Generate Content. Groq uses Chat Completions
+with JSON Object Mode and omits reasoning from GPT-OSS replies. The provider modules
+use the configured `LLM_TIMEOUT_SECONDS` per provider (20 seconds by default).
+Consult the [Gemini Generate Content reference](https://ai.google.dev/api/generate-content)
+and [Groq Chat Completions reference](https://console.groq.com/docs/api-reference).
 
 Lot 7 adds Runtime Operations. Governed calls persist bounded mediation, policy,
 upstream MCP, and result-guard timings. The authenticated Operations page exposes
@@ -1566,6 +1584,22 @@ python -B tests/gui_browser_smoke.py browser-dist --chrome 'C:/Program Files/Goo
 arguments. Serve `browser-dist` on loopback to run `cloud_workflows.browser.py`
 with that URL and the `--chromium` argument. These suites exercise synthetic data
 and intercept API traffic, including fixture mutations.
+
+The Lot 9 browser suites use the same built application and command arguments.
+
+- `accessibility_workflows.browser.py` checks keyboard navigation, route focus,
+  browser history, dialog focus and session recovery for ADMIN and VIEWER.
+- `lot9_evidence.browser.py` checks uncertain Runtime dispatch, obsolete audit
+  responses after a target change, IAM result pagination and older Build scans.
+- `ai_workflows.browser.py` checks evidence-bound assistance, unavailable results
+  and advisory suggestions with a simulated provider response.
+
+Refresh events and Refresh results start a new read of Runtime and Audit History.
+An Audit History snapshot stays stable between pages until refreshed. Build scan
+filters apply to the loaded history. Load older scans extends it up to the
+service's offset limit. Cloud audit history shows the latest 100 audit records.
+The detailed scan collections and IAM comparison results have separate paging.
+An uncertain Runtime outcome requires reconciliation before a retry.
 
 Validate OPA/Rego policies:
 

@@ -18,8 +18,15 @@ import {
   schemaLeafPaths,
 } from "./contractUtils";
 import AdapterGuidancePanel from "./AdapterGuidancePanel";
+import { assistantErrorMessage } from "../utils/controlledAI";
 
-function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
+function ToolContractOnboarding(props) {
+  const { isAdmin, tool } = props;
+  const context = JSON.stringify([tool.id, tool.current_fingerprint, isAdmin]);
+  return <ToolContractWorkspace {...props} key={context} />;
+}
+
+function ToolContractWorkspace({ isAdmin, onComplete, tool }) {
   const [catalog, setCatalog] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
   const [adapterGuidance, setAdapterGuidance] = useState(null);
@@ -163,6 +170,7 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
   }
 
   async function askAi() {
+    if (!isAdmin || busy || contractDraft) return;
     setBusy(true);
     setError("");
     setMessage("");
@@ -174,14 +182,9 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
       setTemplateId(suggestion.template_id);
       setMappings(suggestion.argument_mappings || {});
       setFixedResources({});
-      setMessage(`Suggestion received from ${suggestion.provider}.`);
+      setMessage("AI suggested a template. Review the mapped inputs and required bindings before saving a draft.");
     } catch (err) {
-      const message = safeErrorMessage(err);
-      setError(
-        /security_pack_ai_unavailable|Gemini API returned HTTP 503|controlled_ai_unavailable/i.test(message)
-          ? "AI suggestion is temporarily unavailable. Choose a template manually or try again later."
-          : message
-      );
+      setError(assistantErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -353,8 +356,8 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
 
   return (
     <div className="contract-onboarding">
-      {error && <div className="error-banner">{error}</div>}
-      {message && <div className="success-banner">{message}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
+      {message && <div className="success-banner" role="status">{message}</div>}
 
       {suggestions.length === 0 && !selectedTemplate && !packBuilderOpen && (
         <div className="no-template-workflow">
@@ -421,6 +424,9 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
             </button>
           )}
         </div>
+        {isAdmin && suggestions.length > 0 && !contractDraft && (
+          <p className="hint-text">AI suggestions send the tool description and input fields to the configured AI provider or its fallback.</p>
+        )}
 
         {selectedTemplate && (
           <>

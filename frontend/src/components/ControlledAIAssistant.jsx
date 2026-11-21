@@ -1,10 +1,8 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
-import {
-  requestControlledAIAssistance,
-  safeErrorMessage,
-} from "../api/client";
+import { requestControlledAIAssistance } from "../api/client";
 import { createAdvisoryResponseGuard } from "../utils/advisoryResponseGuard";
+import { assistantErrorMessage, currentAssistantAnalysis, matchesAssistantResponse } from "../utils/controlledAI";
 
 
 const MODES = [
@@ -15,6 +13,15 @@ const MODES = [
   ["DRAFT_ONBOARDING", "Draft onboarding"],
 ];
 
+const ACTIONS = {
+  NO_CHANGE: "Keep the current configuration",
+  KEEP_BLOCKED: "Keep the tool blocked",
+  HUMAN_REVIEW: "Review the current findings and approval state",
+  CREATE_CONTRACT_DRAFT: "Review the proposed contract draft",
+  CREATE_SECURITY_PACK_DRAFT: "Review the proposed security pack draft",
+  REVIEW_ADAPTER: "Review the adapter with an administrator",
+  REANALYZE: "Run the tool analysis again",
+};
 
 function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
   const [mode, setMode] = useState("EXPLAIN");
@@ -24,12 +31,8 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
   const [error, setError] = useState("");
 
   const currentAnalysis = bundle?.analyses?.[0] || null;
-  const contextFresh = Boolean(
-    tool?.current_fingerprint
-      && currentAnalysis?.fingerprint
-      && tool.current_fingerprint === currentAnalysis.fingerprint,
-  );
-  const canAsk = Boolean(isAdmin && tool?.id && contextFresh && !busy);
+  const expectedAnalysis = currentAssistantAnalysis(tool, currentAnalysis);
+  const canAsk = Boolean(isAdmin && tool?.id && expectedAnalysis && !busy);
   const guardRef = useRef(null);
   if (guardRef.current === null) {
     guardRef.current = createAdvisoryResponseGuard();
@@ -37,7 +40,7 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
   const contextKey = JSON.stringify([
     tool?.id ?? null,
     tool?.current_fingerprint ?? null,
-    currentAnalysis?.id ?? null,
+    expectedAnalysis,
     isAdmin,
   ]);
 
@@ -51,15 +54,6 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
     return () => guardRef.current.invalidate();
   }, [contextKey]);
 
-  const evidenceSummary = useMemo(() => {
-    if (!currentAnalysis) return "No completed analysis evidence is loaded.";
-    return [
-      currentAnalysis.analysis_status,
-      currentAnalysis.risk_level,
-      currentAnalysis.drift_status,
-    ].filter(Boolean).join(" / ");
-  }, [currentAnalysis]);
-
   async function submit(event) {
     event.preventDefault();
     if (!canAsk) return;
@@ -72,14 +66,19 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
       const payload = {
         mode,
         question: question.trim() || null,
+        expected_analysis: expectedAnalysis,
       };
       const response = await requestControlledAIAssistance(tool.id, payload);
       if (guardRef.current.accepts(request, contextKey)) {
-        setResult(response);
+        if (matchesAssistantResponse(response, tool.id, mode, expectedAnalysis)) {
+          setResult(response);
+        } else {
+          setError(assistantErrorMessage({ code: "controlled_ai_analysis_changed" }));
+        }
       }
     } catch (err) {
       if (guardRef.current.accepts(request, contextKey)) {
-        setError(safeErrorMessage(err));
+        setError(assistantErrorMessage(err));
       }
     } finally {
       if (guardRef.current.accepts(request, contextKey)) {
@@ -89,16 +88,23 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
   }
 
   return (
-    <section className="controlled-ai-panel" aria-label="Controlled AI assistance">
+    <section className="controlled-ai-panel" aria-label="AI assistance">
       <div className="controlled-ai-guardrail">
-        <div><strong>AI explanation</strong><span>Helpful guidance, not a security decision.</span></div>
+        <div><strong>AI assistance</strong><span>Explore the selected tool’s analysis or review possible next steps.</span></div>
       </div>
+      <dl className="inline-metadata">
+        <div><dt>Analysis</dt><dd>{expectedAnalysis ? humanize(currentAnalysis.analysis_status) : "Current analysis unavailable"}</dd></div>
+        <div><dt>Review</dt><dd>{expectedAnalysis ? humanize(currentAnalysis.review_status) : "Unavailable"}</dd></div>
+      </dl>
+      {bundle?.errors?.findings && (
+        <p role="status">The findings could not be loaded in this view. Check the Findings tab before acting on advice.</p>
+      )}
       <details className="operator-technical-details">
-        <summary>Analysis context</summary>
+        <summary>Technical details</summary>
         <div className="controlled-ai-context">
-          <div><span>Evidence</span><strong>{evidenceSummary}</strong></div>
+          <div><span>Analysis record</span><strong>{expectedAnalysis?.id ?? "Unavailable"}</strong></div>
           <div><span>Tool fingerprint</span><strong title={tool?.current_fingerprint || ""}>{shorten(tool?.current_fingerprint)}</strong></div>
-          <div><span>Evidence status</span><strong>{contextFresh ? "Current" : "Out of date or unavailable"}</strong></div>
+          <div><span>Analysis context hash</span><strong title={expectedAnalysis?.context_hash || ""}>{shorten(expectedAnalysis?.context_hash)}</strong></div>
         </div>
       </details>
       {!isAdmin && (
@@ -108,9 +114,9 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
       )}
 
       {isAdmin && (
-        <form className="controlled-ai-form" onSubmit={submit}>
+        <form aria-busy={busy} className="controlled-ai-form" onSubmit={submit}>
           <p className="hint-text" role="note">
-            Uses your configured AI provider. Analysis data may be shared with it.
+            Sends analysis metadata and your question to the configured AI provider and, if needed, its fallback. Onboarding help also sends tool metadata.
           </p>
           <details className="operator-technical-details">
             <summary>Ask a specific question or choose another type of help</summary>
@@ -132,18 +138,21 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
                 placeholder="What would you like to understand?"
                 value={question} />
             </label>
-            <p className="hint-text">Do not enter passwords or secrets.</p>
+            <p className="hint-text">Keep credentials and sensitive data out of your question.</p>
           </details>
           <button disabled={!canAsk} type="submit">
-            {busy ? "Explaining..." : "Explain this result"}
+            {busy ? "Requesting assistance…" : (mode === "EXPLAIN"
+              ? "Explain this result"
+              : MODES.find(([value]) => value === mode)?.[1])}
           </button>
-          {!contextFresh && (
-            <p role="status">A current analysis is needed before AI can explain it.</p>
+          {!expectedAnalysis && (
+            <p role="status">Refresh the selected tool or run its analysis before requesting assistance.</p>
           )}
         </form>
       )}
 
-      {error && <div className="error-banner">{error}</div>}
+      <p className="visually-hidden" role="status">{busy ? "Requesting AI assistance." : result ? "AI assistance is ready." : ""}</p>
+      {error && <div className="error-banner" role="alert">{error}</div>}
       {result && <ControlledAIResult result={result} />}
     </section>
   );
@@ -159,24 +168,27 @@ function ControlledAIResult({ result }) {
   if (!safeResult) {
     return <div className="controlled-ai-result" role="alert">
       <h4>AI explanation withheld</h4>
-      <p>The response failed the required advisory-only safeguards
-        (human review required, non-authoritative, no Runtime mutation).
-        No generated content or suggested action is displayed. Retry
-        only after the AI provider and response validation are checked.</p>
+      <p>The response did not meet the safeguards for advisory content. Continue using the recorded analysis and normal review workflow.</p>
     </div>;
   }
+  const isDraft = result.draft_kind !== "NONE";
   return (
     <div className="controlled-ai-result">
-      <h4>AI explanation ? advisory only</h4>
+      <h4>{isDraft ? "AI-generated onboarding proposal" : "AI-assisted review"}</h4>
       <section className="controlled-ai-section">
-        <h5>What it means</h5>
+        <h5>{isDraft ? "What was proposed" : "What the framework recorded"}</h5>
         <p>{result.summary}</p>
       </section>
       <section className="controlled-ai-section">
-        <h5>What to review</h5>
+        <h5>What to do next</h5>
+        <p><strong>{ACTIONS[result.recommended_action] || "Review the recorded analysis"}</strong></p>
         <p>{result.rationale}</p>
       </section>
-      <p className="hint-text">AI suggestions must be checked by an administrator.</p>
+      <StringList title={isDraft ? "Proposal uncertainties" : "What remains unknown"} values={result.uncertainties} />
+      {!result.evidence_refs?.length && (
+        <p className="hint-text">No evidence references were selected. Review the findings and recorded analysis directly.</p>
+      )}
+      <p className="hint-text">An administrator reviews any suggestions through the normal approval workflow.</p>
       <details className="operator-technical-details">
         <summary>Supporting evidence and advanced options</summary>
         <div className="controlled-ai-result-heading">
@@ -186,17 +198,15 @@ function ControlledAIResult({ result }) {
             <span>{result.fallback_used ? "Fallback provider" : "Configured provider"}</span>
           </div>
         </div>
-        <p>Suggested action: {humanize(result.recommended_action)}.
-          Reported confidence: {formatConfidence(result.confidence)}.</p>
+        <p>Advisory confidence: {formatConfidence(result.confidence)}. This score describes the assistance only.</p>
         <StringList title="Risk factors" values={result.risk_factors} />
-        <StringList title="Uncertainties" values={result.uncertainties} />
-        <StringList title="Evidence references" values={result.evidence_refs} />
+        <StringList title={isDraft ? "Related analysis references" : "Framework evidence references selected by AI"} values={result.evidence_refs} />
         <OptionList title="Template options" values={result.template_options} />
         <OptionList title="Adapter options" values={result.adapter_options} />
-        {result.draft_kind !== "NONE" && (
+        {isDraft && (
           <section className="controlled-ai-section">
-            <h5>Unapproved draft preview ? {humanize(result.draft_kind)}</h5>
-            <p>This is not a published configuration or permission.</p>
+            <h5>{humanize(result.draft_kind)} preview</h5>
+            <p>Review the proposed draft before using the approval workflow.</p>
             <pre className="controlled-ai-preview">{JSON.stringify(result.draft_preview, null, 2)}</pre>
           </section>
         )}
@@ -238,13 +248,13 @@ function OptionList({ title, values = [] }) {
 
 
 function shorten(value) {
-  if (!value) return "-";
+  if (!value) return "Unavailable";
   return value.length > 18 ? `${value.slice(0, 12)}...${value.slice(-6)}` : value;
 }
 
 
 function humanize(value) {
-  return String(value || "-").replaceAll("_", " ").toLowerCase().replace(
+  return String(value || "Unknown").replaceAll("_", " ").toLowerCase().replace(
     /(^|\s)\S/g,
     (character) => character.toUpperCase(),
   );
@@ -252,9 +262,7 @@ function humanize(value) {
 
 
 function formatConfidence(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return "-";
-  return `${Math.round(numeric * 100)}%`;
+  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "Unavailable";
 }
 
 

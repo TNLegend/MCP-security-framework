@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from agent.llm_providers.base import LLMProviderError, provider_failure_code
 from agent.llm_providers.gemini_provider import GeminiProvider
 from agent.llm_providers.groq_provider import GroqProvider
 from app.models.control_plane import ControlPlaneConfigRevision
@@ -20,6 +21,7 @@ from app.models.tool_analysis import (
 from app.schemas.control_plane import ControlPlaneConfigContent
 from app.schemas.controlled_ai import (
     ControlledAIAssistancePublic,
+    ControlledAIExpectedAnalysis,
     ControlledAIOptionPublic,
     ControlledAIRecommendedAction,
 )
@@ -83,8 +85,23 @@ def generate_controlled_ai_assistance(
     mode: str,
     question: str | None = None,
     draft_revision_id: str | None = None,
+    expected_analysis: ControlledAIExpectedAnalysis | None = None,
 ) -> ControlledAIAssistancePublic:
     analysis = _latest_current_analysis(db, tool)
+    if expected_analysis is not None and (
+        expected_analysis.id != analysis.id
+        or expected_analysis.fingerprint != analysis.fingerprint
+        or expected_analysis.context_hash != analysis.analysis_context_hash
+        or (
+            expected_analysis.analysis_status is not None
+            and expected_analysis.analysis_status != analysis.analysis_status
+        )
+        or (
+            expected_analysis.review_status is not None
+            and expected_analysis.review_status != analysis.review_status
+        )
+    ):
+        raise ControlledAIAssistanceError("controlled_ai_analysis_changed")
     findings = tuple(
         db.scalars(
             select(ToolAnalysisFinding)
@@ -117,10 +134,8 @@ def generate_controlled_ai_assistance(
         )
 
     context = _build_context(
-        tool=tool,
         analysis=analysis,
         findings=findings,
-        baseline=baseline,
         suggestions=suggestions,
         guidance=guidance,
         evidence_refs=evidence_refs,
@@ -260,27 +275,17 @@ def _authoritative_summary(
 ) -> str:
     accepted = {"APPROVED", "ADMIN_ALLOWED"}
     if analysis.analysis_status in accepted and analysis.review_status in accepted:
-        disposition = (
-            "The current fingerprint is accepted by both authoritative analysis and review gates."
-        )
+        disposition = "The recorded analysis and human review accept this version of the tool."
     elif "BLOCKED" in {analysis.analysis_status, analysis.review_status}:
-        disposition = "The current authoritative security state is blocked."
+        disposition = "The recorded analysis or review blocks this version of the tool."
     elif "ANALYSIS_FAILED" in {analysis.analysis_status, analysis.review_status}:
-        disposition = "The latest authoritative analysis failed and requires reanalysis."
+        disposition = "The latest analysis failed. A new analysis is required."
     else:
-        disposition = (
-            "The current authoritative state is not accepted and remains subject to human review."
-        )
+        disposition = "The current state still requires human review."
     return (
-        "Authoritative framework state: "
-        f"analysis={analysis.analysis_status}; "
-        f"review={analysis.review_status}; "
-        f"risk={analysis.risk_level}; "
-        f"drift={analysis.drift_status}. "
         f"{disposition} "
-        f"The latest analysis has {len(findings)} finding(s). "
-        f"The framework supplied {template_count} template candidate(s) and "
-        f"{adapter_count} adapter candidate(s) for advisory comparison."
+        f"The analysis has {len(findings)} findings. "
+        f"The framework found {template_count} template and {adapter_count} adapter candidates."
     )
 
 
@@ -291,23 +296,20 @@ def _authoritative_rationale(
 ) -> str:
     if recommended_action == "NO_CHANGE":
         return (
-            "The current fingerprint has a completed analysis and both authoritative "
-            "analysis and review gates are accepted. Controlled AI cannot change that state; "
-            "the safest advisory action is no configuration change."
+            "The current tool version has completed both the analysis and review. "
+            "Check the published contract and runtime permissions separately."
         )
     if recommended_action == "KEEP_BLOCKED":
         return (
-            "At least one current authoritative security gate is BLOCKED. Controlled AI "
-            "cannot relax or override that decision."
+            "The recorded analysis or review requires the tool to remain blocked. "
+            "Open the recorded findings and review before reconsidering the decision."
         )
     if recommended_action == "REANALYZE":
         return (
-            "The current authoritative analysis state is ANALYSIS_FAILED. A fresh analyzer "
-            "run is required before any security decision can be reconsidered."
+            "A current analysis must complete before the tool can be evaluated again."
         )
     return (
-        "The current authoritative analysis/review state is not accepted. Controlled AI "
-        "cannot approve it; an administrator must use the normal review workflow."
+        "An administrator must review the recorded findings through the approval workflow."
     )
 
 
@@ -379,26 +381,15 @@ def _deterministic_uncertainties(
 
 def _build_context(
     *,
-    tool: MCPTool,
     analysis: ToolAnalysis,
     findings: tuple[ToolAnalysisFinding, ...],
-    baseline: ToolApprovedBaseline | None,
     suggestions: tuple[dict[str, Any], ...],
     guidance: dict[str, Any],
     evidence_refs: tuple[str, ...],
 ) -> dict[str, Any]:
+    # The provider ranks references and candidate IDs. Detailed evidence stays
+    # in the framework and does not belong in this outbound prompt.
     raw = {
-        "tool": {
-            "id": tool.id,
-            "name": tool.name,
-            "title": tool.title,
-            "description": tool.description,
-            "input_schema": tool.input_schema,
-            "output_schema": tool.output_schema,
-            "annotations": tool.annotations,
-            "execution": tool.execution,
-            "current_fingerprint": tool.current_fingerprint,
-        },
         "analysis": {
             "id": analysis.id,
             "fingerprint": analysis.fingerprint,
@@ -411,10 +402,6 @@ def _build_context(
             "deterministic_critical_finding": analysis.deterministic_critical_finding == "true",
             "consistency_status": analysis.consistency_status,
             "drift_status": analysis.drift_status,
-            "semantic_scores": analysis.semantic_scores,
-            "consistency_result": analysis.consistency_result,
-            "drift_result": analysis.drift_result,
-            "analyzer_revision": analysis.analyzer_revision,
         },
         "findings": [
             {
@@ -423,33 +410,23 @@ def _build_context(
                 "source": finding.source,
                 "severity": finding.severity,
                 "confidence": finding.confidence,
-                "evidence": finding.evidence,
-                "recommendation": finding.recommendation,
             }
             for finding in findings
         ],
-        "baseline": (
-            {
-                "fingerprint": baseline.fingerprint,
-                "analysis_context_hash": baseline.analysis_context_hash,
-                "approval_source": baseline.approval_source,
-                "analyzer_revision": baseline.analyzer_revision,
-            }
-            if baseline
-            else None
-        ),
         "candidate_templates": [
             {
                 "template_id": item["template_id"],
                 "title": item["title"],
                 "capabilities": item.get("capabilities", ()),
                 "confidence": item["confidence"],
-                "argument_mappings": item.get("argument_mappings", {}),
                 "missing_bindings": item.get("missing_bindings", ()),
             }
             for item in suggestions
         ],
-        "candidate_adapters": list(guidance.get("closest_adapters", ())),
+        "candidate_adapters": [
+            {"adapter_id": item["adapter_id"], "family": item.get("family")}
+            for item in guidance.get("closest_adapters", ())
+        ],
         "evidence_refs": evidence_refs,
         "guardrails": {
             "advisory_only": True,
@@ -524,6 +501,7 @@ def _generate_advice(prompt: str) -> tuple[_AIAdvice, str, bool]:
     names = [primary]
     if fallback and fallback != primary:
         names.append(fallback)
+    failures = []
     for index, name in enumerate(names):
         provider_type = provider_types.get(name)
         if provider_type is None:
@@ -532,10 +510,12 @@ def _generate_advice(prompt: str) -> tuple[_AIAdvice, str, bool]:
             raw = provider_type().generate_json(prompt)
             advice = _AIAdvice.model_validate(raw)
             return advice, name, index > 0
+        except LLMProviderError as exc:
+            failures.append(exc.code)
         except Exception:
             continue
 
-    raise ControlledAIAssistanceError("controlled_ai_unavailable")
+    raise ControlledAIAssistanceError(f"controlled_ai_{provider_failure_code(failures)}")
 
 
 def _draft_onboarding_response(
@@ -619,15 +599,14 @@ def _draft_onboarding_response(
             draft_kind="SECURITY_PACK",
             draft_preview=_sanitize_for_ai(preview),
             uncertainties=tuple(pack.get("uncertainties", ())),
-            confidence=0.5,
         )
     except SecurityPackOnboardingError as exc:
         raw_code = str(exc).split(":", 1)[0]
-        safe_code = (
-            "controlled_ai_unavailable"
-            if raw_code == "security_pack_ai_unavailable"
-            else "controlled_ai_draft_unavailable"
-        )
+        safe_code = {
+            "security_pack_ai_unavailable": "controlled_ai_unavailable",
+            "security_pack_ai_rate_limited": "controlled_ai_rate_limited",
+            "security_pack_ai_timeout": "controlled_ai_timeout",
+        }.get(raw_code, "controlled_ai_draft_unavailable")
         raise ControlledAIAssistanceError(safe_code) from exc
 
 

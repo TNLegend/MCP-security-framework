@@ -78,11 +78,11 @@ export function analysisModuleCards(tool, analysis, bundle) {
     },
     {
       id: "M3",
-      title: "Instruction manipulation",
-      status: "SHADOW ? not exposed",
-      explanation: "M3's independent SHADOW report is not persisted in this analysis API. M4 directive candidates are not an M3 verdict.",
+      title: "Prompt injection protection",
+      status: "Independent detection report unavailable",
+      explanation: "This analysis record has no independent prompt injection detection report. The description analysis may still identify candidate instructions.",
       detail: m4?.m3 && Array.isArray(m4.m3.model_directives)
-        ? m4.m3.model_directives.length + " M4 directive candidate(s), not proof of injection."
+        ? m4.m3.model_directives.length + " candidate instruction(s) from the description analysis. Injection is unconfirmed."
         : "Independent M3 outcome unavailable in this record.",
     },
     {
@@ -130,5 +130,5 @@ export function driftChangeDescription(change) {
     change.path, change.capability, change.category && change.value
       ? change.category + ": " + change.value : null,
   ].filter(existing);
-  return { title: key, detail: specific.length ? specific.join(" ? ") : "Exact change recorded" };
+  return { title: key, detail: specific.length ? specific.join(" · ") : "Exact change recorded" };
 }

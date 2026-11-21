@@ -1,4 +1,4 @@
-import { formatServerTime } from "../utils/serverTime.js";
+import { formatServerTime, parseServerTime } from "../utils/serverTime.js";
 import "./workflowPages.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -20,6 +20,8 @@ import {
   startLocalBuildScan,
 } from "../api/client";
 
+const SCAN_BATCH_SIZE = 500;
+const MAX_SCAN_OFFSET = 10000;
 const DEFAULT_REASON = "Run Build Security before publishing or deploying this MCP source.";
 
 function BuildSecurity({
@@ -34,6 +36,11 @@ function BuildSecurity({
   );
   const [scanners, setScanners] = useState([]);
   const [scans, setScans] = useState([]);
+  const [scanOffset, setScanOffset] = useState(0);
+  const [scanHistoryMore, setScanHistoryMore] = useState(false);
+  const [scanHistoryLoading, setScanHistoryLoading] = useState(false);
+  const [scanHistoryError, setScanHistoryError] = useState("");
+  const scanHistoryRequest = useRef(false);
   const [selectedScan, setSelectedScan] = useState(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -114,7 +121,7 @@ function BuildSecurity({
       ].some((value) => String(value || "").toLowerCase().includes(query));
     }).sort((left, right) => {
       if (scanSort === "NAME") return (left.display_name || "").localeCompare(right.display_name || "");
-      const byDate = (Date.parse(left.created_at) || 0) - (Date.parse(right.created_at) || 0);
+      const byDate = (parseServerTime(left.created_at).getTime() || 0) - (parseServerTime(right.created_at).getTime() || 0);
       return scanSort === "OLDEST" ? byDate : -byDate;
     });
   }, [activeServers, scanSearch, scanSourceFilter, scanSources, scanStatusFilter, scanSort, scans]);
@@ -126,10 +133,13 @@ function BuildSecurity({
   async function loadBuildData() {
     const request = ++buildDataRequest.current;
     setLoading(true);
+    scanHistoryRequest.current = false;
+    setScanHistoryLoading(false);
+    setScanHistoryError("");
     setError("");
     const requests = [
       fetchBuildScanners(),
-      fetchBuildScans({ limit: 500 }),
+      fetchBuildScans({ limit: SCAN_BATCH_SIZE }),
     ];
     if (isAdmin) {
       requests.push(fetchBuildSourceBindings(), fetchBuildScanSources());
@@ -144,7 +154,10 @@ function BuildSecurity({
       failures.push(safeErrorMessage(results[0].reason));
     }
     if (results[1].status === "fulfilled") {
-      setScans(results[1].value || []);
+      const firstBatch = results[1].value || [];
+      setScans(firstBatch);
+      setScanOffset(firstBatch.length);
+      setScanHistoryMore(firstBatch.length === SCAN_BATCH_SIZE);
     } else {
       failures.push(safeErrorMessage(results[1].reason));
     }
@@ -176,6 +189,34 @@ function BuildSecurity({
       setError(failures.join(" "));
     }
     setLoading(false);
+  }
+
+  async function loadOlderScans() {
+    if (loading || scanHistoryRequest.current || !scanHistoryMore ||
+        scanOffset > MAX_SCAN_OFFSET) return;
+    const request = buildDataRequest.current;
+    scanHistoryRequest.current = true;
+    setScanHistoryLoading(true);
+    setScanHistoryError("");
+    try {
+      const older = await fetchBuildScans({ limit: SCAN_BATCH_SIZE, offset: scanOffset });
+      if (request !== buildDataRequest.current) return;
+      const loadedIds = new Set(scans.map((scan) => scan.id));
+      if (older.some((scan) => loadedIds.has(scan.id))) {
+        setScanHistoryError("History changed while loading. Refresh the scan list before browsing older records.");
+        return;
+      }
+      setScans([...scans, ...older]);
+      setScanOffset(scanOffset + older.length);
+      setScanHistoryMore(older.length === SCAN_BATCH_SIZE);
+    } catch (err) {
+      if (request === buildDataRequest.current) setScanHistoryError(safeErrorMessage(err));
+    } finally {
+      if (request === buildDataRequest.current) {
+        scanHistoryRequest.current = false;
+        setScanHistoryLoading(false);
+      }
+    }
   }
 
   useEffect(() => {
@@ -782,6 +823,17 @@ function BuildSecurity({
           </div>
         </div>
         {loading && <p className="workflow-progress" role="status">Refreshing scan history…</p>}
+        {scanHistoryMore && <p className="hint-text">
+          Filters apply to the {scans.length} loaded scans. {scanOffset > MAX_SCAN_OFFSET
+            ? "The service limit for browsing older records has been reached."
+            : "Load older records to extend this search."}
+        </p>}
+        {scanHistoryError && <p role="alert">{scanHistoryError}</p>}
+        {scanHistoryMore && scanOffset <= MAX_SCAN_OFFSET &&
+          <button type="button" className="secondary-action" onClick={loadOlderScans}
+            disabled={scanHistoryLoading || loading}>
+            {scanHistoryLoading ? "Loading older scans…" : "Load older scans"}
+          </button>}
         <div className="table-wrap" role="region" aria-label="Build scan history table" tabIndex={0}>
           <table>
             <thead>
@@ -823,7 +875,7 @@ function BuildSecurity({
                   <td colSpan="7">
                     {scans.length === 0
                       ? "No Build Security scan has been recorded yet."
-                      : "No Build scan matches the current search/filter."}
+                      : "No loaded Build scan matches the current filters."}
                   </td>
                 </tr>
               )}

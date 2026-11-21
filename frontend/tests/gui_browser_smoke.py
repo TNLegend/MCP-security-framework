@@ -1,6 +1,7 @@
 """Browser regression for a built GUI. All API traffic is intercepted locally."""
 import argparse
 import functools
+import json
 import re
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -88,7 +89,13 @@ class MockAPI:
             payload = {}
             headers["Set-Cookie"] = "mcp_control_plane_csrf=; Path=/; Max-Age=0"
         elif path.endswith("/cleanup") and method == "POST":
-            payload = {"planned": 2, "deleted": 2}
+            cleanup = json.loads(route.request.post_data)
+            if cleanup["dry_run"]:
+                payload = {"planned": 2, "deleted": 0, "preview_fingerprint": DIGEST}
+            elif cleanup.get("expected_preview_fingerprint") == DIGEST:
+                payload = {"planned": 2, "deleted": 2}
+            else:
+                payload, status = {"detail": "Preview no longer matches the candidate rows."}, 409
         elif method != "GET":
             payload, status = {"detail": "This mutation is outside the browser fixture."}, 409
         else:
@@ -169,7 +176,7 @@ def navigate(page, label, width):
     navigation = page.get_by_role("navigation", name="Main navigation")
     if width <= 600 or page.locator(".security-console").count() and width <= 760:
         page.get_by_role("button", name="Open navigation menu").click()
-    navigation.get_by_role("button", name=label, exact=True).click()
+    navigation.get_by_role("link", name=label, exact=True).click()
     expect(page.get_by_role("heading", level=2, name=VIEWS[label], exact=True)).to_be_visible()
 
 
@@ -206,7 +213,7 @@ def main():
                         expect(page.get_by_role("heading", name="Security overview")).to_be_visible()
                         for label in VIEWS:
                             if label == "Users" and role == "VIEWER":
-                                expect(page.get_by_role("navigation", name="Main navigation").get_by_role("button", name="Users", exact=True)).to_have_count(0)
+                                expect(page.get_by_role("navigation", name="Main navigation").get_by_role("link", name="Users", exact=True)).to_have_count(0)
                                 continue
                             try:
                                 navigate(page, label, width)

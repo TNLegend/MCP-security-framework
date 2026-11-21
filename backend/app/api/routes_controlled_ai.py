@@ -48,6 +48,7 @@ def assist_tool_analysis(
             mode=payload.mode,
             question=payload.question,
             draft_revision_id=payload.draft_revision_id,
+            expected_analysis=payload.expected_analysis,
         )
     except ControlledAIAssistanceError as exc:
         record_control_plane_audit(
@@ -65,7 +66,12 @@ def assist_tool_analysis(
             },
         )
         db.commit()
-        status_code = 409 if exc.code == "controlled_ai_current_analysis_required" else 503
+        status_code = {
+            "controlled_ai_current_analysis_required": 409,
+            "controlled_ai_analysis_changed": 409,
+            "controlled_ai_rate_limited": 429,
+            "controlled_ai_timeout": 504,
+        }.get(exc.code, 503)
         if exc.code in {
             "v2_draft_required",
             "controlled_ai_configuration_invalid",

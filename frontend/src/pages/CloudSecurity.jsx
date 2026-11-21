@@ -1,5 +1,6 @@
 import { formatServerTime } from "../utils/serverTime.js";
 import { useEffect, useRef, useState } from "react";
+import { validateRecordedPage } from "../utils/recordedPage.js";
 import "./cloudSecurity.css";
 import {
   manualMappingCoverage, isMappingBoundToCurrentContext, canRequestManualAudit,
@@ -106,6 +107,10 @@ function cloudError(err) {
     prowler_audit_role_required: "Configure a temporary read-only AWS role before an advanced audit.",
     PROWLER_AUDIT_ROLE_REQUIRED: "A temporary AWS audit role is required.",
     PROWLER_NOT_INSTALLED: "The advanced scanner is unavailable; no scan was performed.",
+    IAM_MCP_PUBLISHED_CONFIGURATION_MISSING:
+      "No security configuration has been published. Review and publish the signed configuration in Security rules before mapping IAM permissions.",
+    IAM_MCP_PUBLISHED_CONFIGURATION_UNVERIFIED:
+      "The published security configuration could not be verified. Check its integrity in Security rules before continuing the IAM review.",
     IAM_MCP_SIGNED_SERVER_CONTRACT_NOT_FOUND: "No published signed MCP contract matches the selected server.",
     IAM_MCP_SIGNED_TOOL_APPROVAL_MISSING: "A published MCP tool contract has no matching observation approval. Review and approve the tool before mapping cloud permissions.",
     IAM_MCP_UNMAPPED_EFFECTS_REQUIRE_ACKNOWLEDGEMENT:
@@ -233,7 +238,7 @@ function IAMPolicyEvidence({ item }) {
       {reverse && <p><strong>IAM statement:</strong> policy statement index
         {Number.isInteger(facts.policy_statement_index) && facts.policy_statement_index >= 0
           ? " " + (facts.policy_statement_index + 1) : " not recorded"};
-        {" ? "}<code>{facts.action || "Action unverified"}</code>
+        {" · "}<code>{facts.action || "Action unverified"}</code>
         {" on "}<code>{facts.resource || "Resource unverified"}</code>.
         {facts.role_usage_operator_declared === "SHARED"
           ? " This role is declared shared; other consumers may need the permission."
@@ -366,6 +371,8 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [iamPageLoading, setIamPageLoading] = useState(false);
   const [iamPageError, setIamPageError] = useState("");
   const [collectionBusy, setCollectionBusy] = useState(null);
+  const collectionRequest = useRef(false);
+  const iamPageRequest = useRef(false);
   const [collectionError, setCollectionError] = useState("");
   const [deployGovernance, setDeployGovernance] = useState(null);
   const [governanceError, setGovernanceError] = useState("");
@@ -673,6 +680,8 @@ export default function CloudSecurity({ isAdmin = false }) {
   function clearScanDetails() {
     // Invalidate outstanding network requests when changing the AWS environment.
     scanDetailGeneration.current += 1;
+    collectionRequest.current = false;
+    iamPageRequest.current = false;
     setDetails(null);
     setDetailsLoading(false);
     setDetailError("");
@@ -695,12 +704,14 @@ export default function CloudSecurity({ isAdmin = false }) {
   }
 
   async function loadNextCloudCollection(collection) {
-    if (!details?.scan?.id || collectionBusy ||
+    if (!details?.scan?.id || collectionRequest.current ||
         !["resources", "findings", "evidence", "events"].includes(collection) ||
         !details.collection_coverage?.[collection]?.truncated) return;
     const scanId = details.scan.id;
     const generation = scanDetailGeneration.current;
-    const offset = details[collection]?.length ?? 0;
+    const previousItems = details[collection] || [];
+    const offset = previousItems.length;
+    collectionRequest.current = true;
     setCollectionBusy(collection);
     setCollectionError("");
     try {
@@ -708,16 +719,11 @@ export default function CloudSecurity({ isAdmin = false }) {
         scanId, collection, { offset, limit: 100 },
       );
       if (generation !== scanDetailGeneration.current) return;
-      if (page.collection !== collection || page.offset !== offset ||
-          page.returned !== page.items.length) {
-        throw new Error("Scan evidence page did not match the requested collection.");
-      }
+      validateRecordedPage(page, previousItems, collection);
       setDetails((current) => {
         if (!current || current.scan.id !== scanId ||
             current[collection].length !== offset) return current;
-        const seen = new Set(current[collection].map((item) => item.id));
-        const extra = page.items.filter((item) => !seen.has(item.id));
-        const combined = [...current[collection], ...extra];
+        const combined = [...current[collection], ...page.items];
         return {
           ...current,
           [collection]: combined,
@@ -733,39 +739,40 @@ export default function CloudSecurity({ isAdmin = false }) {
       });
     } catch {
       if (generation === scanDetailGeneration.current) {
-        setCollectionError("Additional scan records could not be verified. Previously loaded evidence remains visible; retry the read-only page request.");
+        setCollectionError("Additional scan records could not be verified. Previously loaded evidence remains visible. Refresh details before loading more records.");
       }
     } finally {
-      if (generation === scanDetailGeneration.current) setCollectionBusy(null);
+      if (generation === scanDetailGeneration.current) {
+        collectionRequest.current = false;
+        setCollectionBusy(null);
+      }
     }
   }
 
   async function loadMoreIAMComparisons() {
-    if (iamPageLoading || !iamPage?.has_more || !details ||
+    if (iamPageRequest.current || !iamPage?.has_more || !details ||
         details.scan.kind !== "IAM_MCP") return;
     const scanId = details.scan.id;
     const generation = scanDetailGeneration.current;
     const offset = iamRows.length;
+    iamPageRequest.current = true;
     setIamPageLoading(true);
     setIamPageError("");
     try {
       const next = await fetchIAMMCPResultsPage(scanId, { offset, limit: 100 });
       if (generation !== scanDetailGeneration.current) return;
-      if (next.offset !== offset || next.returned !== next.items.length) {
-        throw new Error("IAM comparison page did not match the requested cursor.");
-      }
-      setIamRows((current) => {
-        if (current.length !== offset) return current;
-        const known = new Set(current.map((item) => item.id));
-        return [...current, ...next.items.filter((item) => !known.has(item.id))];
-      });
+      validateRecordedPage(next, iamRows);
+      setIamRows((current) => current.length === offset ? [...current, ...next.items] : current);
       setIamPage(next);
     } catch {
       if (generation === scanDetailGeneration.current) {
-        setIamPageError("The next IAM comparison page could not be verified. Already loaded results are preserved; retry without rerunning the audit.");
+        setIamPageError("The next IAM comparison page could not be verified. Already loaded results are preserved. Refresh details before loading more records.");
       }
     } finally {
-      if (generation === scanDetailGeneration.current) setIamPageLoading(false);
+      if (generation === scanDetailGeneration.current) {
+        iamPageRequest.current = false;
+        setIamPageLoading(false);
+      }
     }
   }
 
@@ -773,6 +780,8 @@ export default function CloudSecurity({ isAdmin = false }) {
     setActiveTask("cloud-detail");
     if (focusReview) window.requestAnimationFrame(() => detailHeadingRef.current?.focus());
     const generation = ++scanDetailGeneration.current;
+    collectionRequest.current = false;
+    iamPageRequest.current = false;
     setDetails(null);
     setDetailsLoading(true);
     setDetailError("");
@@ -799,8 +808,10 @@ export default function CloudSecurity({ isAdmin = false }) {
       setDetails(item);
       const loads = [];
       if (item.scan.kind === "IAM_MCP") {
-        loads.push(fetchIAMMCPResultsPage(scanId).then(page =>
-          ({ kind: "iam", value: page })));
+        loads.push(fetchIAMMCPResultsPage(scanId).then((page) => {
+          validateRecordedPage(page, []);
+          return { kind: "iam", value: page };
+        }));
       }
       if (["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(item.scan.kind)) {
         loads.push(fetchDeployGovernanceHistory(scanId).then(value =>
@@ -1504,14 +1515,14 @@ export default function CloudSecurity({ isAdmin = false }) {
         )}
         <h4>Configuration scan history</h4>
         <CloudScanTable scans={iacScans} loading={loading} onOpen={showScan}
-          metric="source_file_count" label="Terraform scan history" empty="No Terraform scans yet." />
+          metric="source_file_count" label="Terraform scan history" empty="No Terraform scans appear in the recent audit records." />
       </section>
 
       <section id="cloud-scans" className="detail-panel cloud-task-panel" hidden={activeTask !== "cloud-scans"}>
         <div className="cloud-detail-heading">
           <div>
             <h3>Audit history</h3>
-            <p>Review scans for the selected AWS environment and Terraform scans.</p>
+            <p>Review scans for the selected AWS environment and Terraform scans from the most recent 100 audit records.</p>
           </div>
           <label>Audit type
             <select value={historyKind} onChange={(event) => setHistoryKind(event.target.value)}>
@@ -1523,7 +1534,7 @@ export default function CloudSecurity({ isAdmin = false }) {
         </div>
         {running > 0 && <p role="status">{running} queued or running. This list updates automatically.</p>}
         <CloudScanTable scans={visibleHistory} loading={loading} onOpen={showScan} mixed
-          label="Cloud audit history" empty="No audits match this environment and audit type." />
+          label="Cloud audit history" empty="No recent audit records match this environment and audit type." />
       </section>
 
       <section id="cloud-detail" className="detail-panel cloud-task-panel" hidden={activeTask !== "cloud-detail"}>

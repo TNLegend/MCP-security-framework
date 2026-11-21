@@ -42,6 +42,7 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
 
   const requestGeneration = useRef(0);
   const detailHeading = useRef(null);
+  const hasLoadedPage = useRef(false);
   const eventControl = useRef(null);
   const entries = page.items;
   const appliedFilterCount = Object.values(activeFilters).filter((value) => value !== null && value !== undefined && value !== "").length;
@@ -51,7 +52,7 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
   );
 
   useEffect(() => {
-    if (cursorStack.length === 1 && Object.keys(activeFilters).length === 0) {
+    if (!hasLoadedPage.current && cursorStack.length === 1 && Object.keys(activeFilters).length === 0) {
       setPage(normalizePage(initialPage));
     }
   }, [initialPage]);
@@ -75,6 +76,7 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
     try {
       const result = await fetchRuntimeLogs({ ...filters, limit: PAGE_SIZE, cursor });
       if (generation !== requestGeneration.current) return;
+      hasLoadedPage.current = true;
       setPage(normalizePage(result));
       setActiveFilters(filters);
       setCursorStack(cursors);
@@ -137,8 +139,12 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
   return (
     <section className="page-section activity-page">
       <div className="section-heading">
-        <h2>Tool activity</h2>
-        <p>{page.summary.total} outcome event(s) matching filters; pending intent events are listed separately.</p>
+        <div>
+          <h2>Tool activity</h2>
+          <p>{page.summary.total} outcome event(s) matching filters. The table also includes recorded authorization intents.</p>
+        </div>
+        <button type="button" className="secondary-action"
+          disabled={pageLoading} onClick={() => loadPage(activeFilters, [null])}>Refresh events</button>
       </div>
       {error && <div className="error-banner" role="alert">{error} Previous results are retained when available.</div>}
       <p className="hint-text" role="note">
@@ -179,12 +185,13 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
 
       <div className="summary-grid runtime-summary-grid">
         <SummaryCard label="Outcome events" value={page.summary.total} />
-        <SummaryCard label="Allowed" value={page.summary.allowed} />
-        <SummaryCard label="Blocked" value={page.summary.blocked} />
-        <SummaryCard label="Executed" value={page.summary.executed} />
-        <SummaryCard label="Skipped" value={page.summary.skipped} />
+        <SummaryCard label="ALLOW decisions" value={page.summary.allowed} />
+        <SummaryCard label="BLOCK decisions" value={page.summary.blocked} />
+        <SummaryCard label="Execution recorded" value={page.summary.executed} />
+        <SummaryCard label="Skipped or blocked without confirmed execution" value={page.summary.skipped} />
         <SummaryCard label="Errors" value={page.summary.errors} />
       </div>
+      <p className="hint-text">Counters describe recorded events and may overlap.</p>
 
       <div className="runtime-layout investigation-layout">
         <div className="runtime-section">
@@ -246,7 +253,7 @@ function RuntimeLogsTable({ logs, selectedLogId, onSelectLog }) {
   return (
     <div aria-label="Runtime events table" className="table-shell runtime-table" tabIndex={0}>
       <table>
-        <thead><tr><th>Time</th><th>Phase</th><th>Tool</th><th>Decision</th><th>Rule</th><th>Config Rev</th><th>Executed</th><th>Execution Status</th><th>Severity</th><th>Agent</th><th>Server</th></tr></thead>
+        <thead><tr><th>Time</th><th>Phase</th><th>Tool</th><th>Decision</th><th>Rule</th><th>Config Rev</th><th>Dispatch evidence</th><th>Execution status</th><th>Severity</th><th>Agent</th><th>Server</th></tr></thead>
         <tbody>
           {logs.map((log) => (
             <tr className={(log.id === selectedLogId ? "selected-row " : "") + "selectable-record"} key={log.id}
@@ -281,11 +288,14 @@ function RuntimeLogDetailPanel({ log, detailHeading, onClose }) {
       </div>
       <SecurityExplanation record={log} />
       <RuntimeReconciliation key={log.operation_id || `legacy-${log.id}`} operationId={log.operation_id} />
+      <details className="operator-technical-details">
+        <summary>Request, policy and transport records</summary>
       <div className="metadata-grid runtime-metadata-grid">
-        <MetadataSection title="Runtime context" items={[["Operation ID", log.operation_id], ["Audit phase", log.event_phase], ["Agent", log.agent_id], ["Session ID", log.session_id], ["Server ID", log.server_id], ["Tool", log.tool_name], ["Argument summary", log.arguments_summary, "structured"], ["created_at", formatDate(log.created_at)]]} />
-        <MetadataSection title="Policy decision" items={[["Decision", log.decision, "decision"], ["Rule ID", log.rule_id], ["Decision reason", log.decision_reason], ["Severity", log.severity, "severity"], ["Configuration revision", log.control_plane_revision_number], ["control_plane_content_hash", log.control_plane_content_hash]]} />
-        <MetadataSection title="Transport and execution" items={[["Client protocol profile", log.client_protocol_profile_id], ["Upstream protocol profile", log.upstream_protocol_profile_id], ["Executed", executionDisplay(log)], ["Execution status", log.execution_status, "execution"], ["Result summary", log.result_summary], ["Error summary", log.error_summary]]} />
+        <MetadataSection title="Runtime context" items={[["Operation ID", log.operation_id], ["Audit phase", log.event_phase], ["Agent", log.agent_id], ["Session ID", log.session_id], ["Server ID", log.server_id], ["Tool", log.tool_name], ["Argument summary", log.arguments_summary, "structured"], ["Recorded at", formatDate(log.created_at)]]} />
+        <MetadataSection title="Policy decision" items={[["Decision", log.decision, "decision"], ["Rule ID", log.rule_id], ["Decision reason", log.decision_reason], ["Severity", log.severity, "severity"], ["Configuration revision", log.control_plane_revision_number], ["Configuration digest", log.control_plane_content_hash]]} />
+        <MetadataSection title="Transport and execution" items={[["Client protocol profile", log.client_protocol_profile_id], ["Upstream protocol profile", log.upstream_protocol_profile_id], ["Dispatch evidence", executionDisplay(log)], ["Execution status", log.execution_status, "execution"], ["Result summary", log.result_summary], ["Error summary", log.error_summary]]} />
       </div>
+      </details>
     </section>
   );
 }
@@ -311,6 +321,7 @@ function RuntimeReconciliation({ operationId }) {
     setBusy(true);
     setError("");
     setResult(null);
+    setEvents(null);
     try {
       const [reconciliation, phases] = await Promise.allSettled([
         fetchRuntimeOperationReconciliation(operationId),
@@ -349,11 +360,11 @@ function RuntimeReconciliation({ operationId }) {
           : <ol>{events.map((event) => <li key={event.id}>
               <strong>{event.event_phase === "intent" ? "Authorization intent" :
                 event.event_phase === "outcome" ? "Execution outcome" : "Legacy or unclassified event"}</strong>
-              {" ? "}{formatDate(event.created_at)}
-              {" ? "}Decision {event.decision || "not recorded"}
-              {" ? "}{event.execution_status || "status not recorded"}
-              {" ? "}Dispatch {event.dispatch_state || "unverified"}
-              {event.rule_id && <>{" ? "}Rule <code>{event.rule_id}</code></>}
+              {" · "}{formatDate(event.created_at)}
+              {" · "}Decision {event.decision || "not recorded"}
+              {" · "}{event.execution_status || "status not recorded"}
+              {" · "}Dispatch {event.dispatch_state || "unverified"}
+              {event.rule_id && <>{" · "}Rule <code>{event.rule_id}</code></>}
             </li>)}</ol>}
         {!events.some((event) => event.event_phase === "outcome") && <p role="note">
           No recorded outcome was found. This does not prove that the tool was not executed.

@@ -1,4 +1,5 @@
 import explanationCatalog from "../../../shared/explanation_catalog.json";
+import { executionDisplay } from "../utils/runtimePresentation.js";
 
 // Shared explanatory shell. A reason is shown as verified only if the
 // producer supplied a recorded, closed-schema diagnostic. Never infer from a
@@ -16,7 +17,7 @@ const nextActions = Object.fromEntries(
 
 
 const runtimeDecisionMeaning = Object.freeze({
-  ALLOW: "The policy permitted this operation; this is not proof that it was sent or completed.",
+  ALLOW: "The policy permitted this operation. Admission and execution are checked separately.",
   BLOCK: "The effective control refused or withheld the operation. Check the phase and dispatch state.",
   WARN: "The policy allowed the request with an advisory warning. Later guards can still block it.",
   LOG_ONLY: "The policy allows observation and logging; later guards still apply.",
@@ -30,7 +31,7 @@ export default function SecurityExplanation({ record }) {
   const laterGuard = Boolean(
     originalOpa && (
       originalOpa !== record?.decision ||
-      record?.opa_rule_id !== record?.rule_id
+      (record?.opa_rule_id && record?.rule_id && record.opa_rule_id !== record.rule_id)
     )
   );
   const explanation = record?.opa_explanation || record?.explanation;
@@ -49,20 +50,12 @@ export default function SecurityExplanation({ record }) {
   const failedChecks = verified ? explanation.failed_checks : [];
   const failedEffects = verified ? explanation.failed_effects : [];
   const failedCodes = [...new Set([...failedChecks, ...failedEffects.map((value) => value.check)])];
-  const unknown = record?.execution_status === "upstream_outcome_unknown";
-  const dispatch = record?.dispatch_state;
-  let impact;
-  if (unknown || dispatch === "SENT_OUTCOME_UNKNOWN") {
-    impact = "The call may have reached the MCP server. Its effects are not established. Do not retry automatically; reconcile first.";
-  } else if (dispatch === "SENT_CONFIRMED" || record?.executed === true) {
-    impact = record?.execution_status === "result_blocked"
-      ? "The tool was called, but its response was withheld. Remote effects may already have occurred. Do not retry automatically."
-      : "The tool was called. Check the execution result separately from the policy decision.";
-  } else if (dispatch === "NOT_SENT" || record?.executed === false) {
-    impact = "No tool execution is recorded for this event. Inspect linked intent and outcome events for the full operation.";
-  } else {
-    impact = "Dispatch was not independently established for this historic event.";
-  }
+  const unknown = record?.execution_status === "upstream_outcome_unknown" ||
+    record?.dispatch_state === "SENT_OUTCOME_UNKNOWN";
+  const status = record?.execution_status;
+  const impact = status === "result_blocked" && !unknown
+    ? "The tool was called and its response was withheld. Remote effects may already have occurred. Reconcile before retrying."
+    : executionDisplay(record);
   return (
     <section className="detail-panel" aria-label="Security decision explanation">
       <h4>Why was this decision made?</h4>
@@ -76,16 +69,16 @@ export default function SecurityExplanation({ record }) {
         }</p>
       )}
       {originalOpa && <p><strong>Original OPA decision:</strong> {originalOpa}
-        {record?.opa_rule_id ? " (" + record.opa_rule_id + ")" : ""}.
+        .
         {laterGuard
           ? " A separate Proxy control subsequently imposed " + (record?.decision || "a new outcome") +
-            " under rule " + (record?.rule_id || "not recorded") + "."
+            "."
           : " No later conflicting Proxy decision is recorded in this event."}</p>}
       {!originalOpa && <p><strong>OPA provenance:</strong> No verified OPA verdict is recorded.
         {record?.decision_basis === "FAIL_CLOSED_TECHNICAL"
           ? " A required security verification failed or was unavailable, so execution was refused as a precaution. This is not evidence of an OPA policy violation."
           : " This may be a pre-policy refusal or an older event. Do not infer an OPA verdict."}</p>}
-      {laterGuard && <p><strong>Why the final control intervened:</strong> {
+      {laterGuard && !guardInfo && <p><strong>Recorded reason for the final control:</strong> {
         record?.decision_reason || "The later guard reason was not recorded."
       }</p>}
       {guardInfo && <section aria-label="Recorded Proxy guard explanation">
@@ -96,7 +89,6 @@ export default function SecurityExplanation({ record }) {
             RESULT_GUARD: "After the upstream call, while checking its result",
             FAIL_CLOSED: "When a required security verification was unavailable" }[guard.phase]
         }.</p>
-        <p><strong>Recommended action:</strong> {guardInfo.next_action}</p>
         <p><strong>Evidence limit:</strong> This event preserves the internal guard rule
           and phase, not raw arguments or the remote content that triggered it.</p>
       </section>}
@@ -108,7 +100,7 @@ export default function SecurityExplanation({ record }) {
           <li key={i}>Effect <code>{item.effect_id}</code> needs capability <code>{item.capability}</code>: {checkLabels[item.check] || item.check}.</li>
         ))}</ul>}
       </> : verified && (originalOpa || record?.decision) === "ALLOW" ? (
-        <p>The recorded V2 policy authorization checks passed. Subsequent admission, dispatch, result guards and execution are separate steps.</p>
+        <p>The recorded policy authorization checks passed. Subsequent admission, dispatch, result guards and execution are separate steps.</p>
       ) : !guardInfo && (
         <p><strong>Evidence limitation:</strong> No detailed checks were preserved for this event.
           Its rule and reason alone cannot establish which authorization condition failed.</p>
@@ -116,7 +108,9 @@ export default function SecurityExplanation({ record }) {
       <p><strong>Impact:</strong> {impact}</p>
       {laterGuard && <p><strong>After-OPA review:</strong> Inspect the effective Proxy rule and its recorded reason separately from the OPA authorization. Never widen a permission merely to bypass this guard.</p>}
       <p><strong>What to do next:</strong> {unknown
-        ? "Use the operation ID and reconciliation view to verify the server-side outcome before any replay."
+        ? record?.operation_id
+          ? "Check the recorded phases, then verify the MCP server’s own audit trail before replaying the operation."
+          : "Verify the MCP server’s own audit trail before replaying. This record has no operation ID."
         : guardInfo ? guardInfo.next_action
         : failedCodes.length
           ? [...new Set(failedCodes.map((code) => nextActions[code]).filter(Boolean))].join(" ")
@@ -127,6 +121,7 @@ export default function SecurityExplanation({ record }) {
         <p>Original OPA rule: <code>{record?.opa_rule_id || "Not recorded"}</code></p>
         <p>Original OPA policy revision: {record?.opa_policy_revision || "Not recorded"}</p>
         <p>Basis: {record?.decision_basis || "Not recorded"}</p>
+        {guardInfo && <p>Recorded guard phase: <code>{guard.phase}</code></p>}
         <p>Policy revision: {record?.policy_revision || "Not recorded"}</p>
         <p>Operation ID: <code>{record?.operation_id || "Legacy event without an operation ID"}</code></p>
         <p>Explanation version: {verified ? "OPA V2/1" : guardInfo ? "Proxy guard/1" : "Not recorded"}</p>

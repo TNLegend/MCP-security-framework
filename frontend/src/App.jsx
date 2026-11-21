@@ -12,6 +12,7 @@ import {
   fetchControlPlaneMe,
   hasControlPlaneSession,
   setCsrfToken,
+  SESSION_EXPIRED_EVENT,
   loginControlPlane,
   logoutControlPlane,
   fetchPolicies,
@@ -49,6 +50,7 @@ const pages = [
   { id: "users", label: "Users", group: "Settings", adminOnly: true },
 ];
 const navigationGroups = ["Home", "Tools", "Security", "Monitoring", "Settings"];
+const SESSION_EXPIRED_NOTICE = "Your session expired or was revoked. Sign in again.";
 
 const EMPTY_RUNTIME_LOG_PAGE = {
   items: [],
@@ -61,6 +63,21 @@ function pageFromLocation() {
   if (parseOAuthReturn(window.location.hash)) return "inventory";
   const view = new URLSearchParams(window.location.search).get("view");
   return pages.some((page) => page.id === view) ? view : "dashboard";
+}
+
+function toolFromLocation() {
+  if (pageFromLocation() !== "analysis") return null;
+  return new URLSearchParams(window.location.search).get("tool");
+}
+
+function pageUrl(pageId, toolId = null) {
+  const url = new URL(window.location.href);
+  if (pageId === "dashboard") url.searchParams.delete("view");
+  else url.searchParams.set("view", pageId);
+  if (pageId === "analysis" && toolId !== null) url.searchParams.set("tool", toolId);
+  else url.searchParams.delete("tool");
+  url.hash = "";
+  return url;
 }
 
 const navIcons = {
@@ -91,11 +108,14 @@ function App() {
   const [oauthReturn, setOAuthReturn] = useState(() => parseOAuthReturn(window.location.hash));
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const mobileNavButtonRef = useRef(null);
-  const [analysisEntryToolId, setAnalysisEntryToolId] = useState(null);
+  const [analysisEntryToolId, setAnalysisEntryToolId] = useState(toolFromLocation);
+  const mainRef = useRef(null);
+  const focusMainOnRender = useRef(false);
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [loginError, setLoginError] = useState("");
   const [loginNotice, setLoginNotice] = useState("");
+  const [sessionCheckFailed, setSessionCheckFailed] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [logoutError, setLogoutError] = useState("");
   const [signingOut, setSigningOut] = useState(false);
@@ -142,43 +162,76 @@ function App() {
   );
 
   function navigateToPage(pageId, toolId = null) {
+    focusMainOnRender.current = true;
     setMobileNavOpen(false);
-    setAnalysisEntryToolId(pageId === "analysis" ? toolId : null);
-    if (pageId !== pageFromLocation()) {
-      const url = new URL(window.location.href);
-      if (pageId === "dashboard") url.searchParams.delete("view");
-      else url.searchParams.set("view", pageId);
-      url.hash = "";
+    const requestedTool = pageId === "analysis" && toolId !== null ? String(toolId) : null;
+    const url = pageUrl(pageId, requestedTool);
+    if (url.href !== window.location.href) {
       window.history.pushState(null, "", url);
       window.scrollTo({ top: 0, behavior: "instant" });
     }
+    if (pageId === requestedPage && requestedTool === analysisEntryToolId) {
+      mainRef.current?.focus({ preventScroll: true });
+      focusMainOnRender.current = false;
+    }
+    setAnalysisEntryToolId(requestedTool);
     setActivePage(pageId);
+  }
+
+  function endSession({ error: sessionError = "", notice = "" } = {}) {
+    loadDataGeneration.current += 1;
+    setCsrfToken("");
+    setUser(null);
+    setAccountOpen(false);
+    setMobileNavOpen(false);
+    setReadStates({});
+    setHealth(null);
+    setRuntimeStatus(null);
+    setOperationsSummary(null);
+    setServers([]);
+    setTools([]);
+    setPolicies([]);
+    setRuntimeLogPage(EMPTY_RUNTIME_LOG_PAGE);
+    setToolAnalyses([]);
+    setConfigRevisions([]);
+    setActiveRevision(null);
+    setEmergencyDenies([]);
+    setAuditEvents([]);
+    setUsers([]);
+    setDashboardRefreshedAt(null);
+    setError("");
+    setLogoutError("");
+    setSessionCheckFailed(false);
+    setLoginError(sessionError);
+    setLoginNotice(notice);
   }
 
   useEffect(() => {
     if (!oauthReturn) return;
     // A backend callback uses a fragment, so OAuth tokens must not be
     // inferred or stored by this frontend. Remove only the result marker.
-    const url = new URL(window.location.href);
-    url.searchParams.set("view", "inventory");
-    url.hash = "";
-    window.history.replaceState(null, "", url);
+    window.history.replaceState(null, "", pageUrl("inventory"));
   }, [oauthReturn]);
 
-  async function restoreSession() {
+  async function restoreSession({ focusContent = false } = {}) {
+    setLoginError("");
+    setSessionCheckFailed(false);
     if (!hasControlPlaneSession()) {
       setUser(null);
       setAuthLoading(false);
       return;
     }
+    setAuthLoading(true);
     try {
       const me = await fetchControlPlaneMe();
+      focusMainOnRender.current = focusContent;
       setUser(me);
     } catch (err) {
       setUser(null);
-      setLoginError(err?.status === 401
-        ? "Your session expired or was revoked. Sign in again."
-        : "The server could not verify the existing session. This may be a network or backend outage, not an expired password. Check service health before retrying.");
+      const expired = err?.status === 401;
+      setSessionCheckFailed(!expired);
+      setLoginError(expired ? SESSION_EXPIRED_NOTICE
+        : "The sign-in service could not verify your session. Check your connection and try again.");
     } finally {
       setAuthLoading(false);
     }
@@ -189,10 +242,14 @@ function App() {
       setLoginError("");
       setLoginNotice("");
       const payload = await loginControlPlane(username, password);
+      setSessionCheckFailed(false);
+      focusMainOnRender.current = true;
       setUser(payload.user);
       return true;
     } catch (err) {
-      setLoginError(err.message || "Login failed");
+      if (err.status === 401) setLoginError("Invalid username or password.");
+      else if (err.status === 429) setLoginError("Too many sign-in attempts. Wait and try again.");
+      else setLoginError("The sign-in service could not complete your request. Check your connection and try again.");
       return false;
     }
   }
@@ -202,11 +259,10 @@ function App() {
     setLogoutError("");
     try {
       await logoutControlPlane();
-      loadDataGeneration.current += 1;
-      setReadStates({});
-      setUser(null);
+      endSession({ notice: "You signed out." });
     } catch (err) {
-      setLogoutError(err.message || "Sign out failed. Please try again.");
+      if (err.status === 401) endSession({ error: SESSION_EXPIRED_NOTICE });
+      else setLogoutError("Sign out could not be confirmed. Check your connection and try again.");
     } finally {
       setSigningOut(false);
     }
@@ -226,12 +282,10 @@ function App() {
           return;
         }
         if (err?.status === 401) {
-          setUser(null);
-          setUsers([]);
-          setError("");
+          endSession({ error: SESSION_EXPIRED_NOTICE });
           return;
         }
-        setError("Current Control Plane session could not be refreshed.");
+        setError("The sign-in service could not verify your session. Check your connection, then select Refresh.");
         return;
       }
       if (generation !== loadDataGeneration.current) {
@@ -299,8 +353,7 @@ function App() {
 
       setDashboardRefreshedAt(new Date());
       if (unauthorized) {
-        setUser(null);
-        setError("");
+        endSession({ error: SESSION_EXPIRED_NOTICE });
       } else if (failed.length > 0) {
         setError(`Some Control Center data could not be refreshed: ${failed.join(", ")}.`);
       } else {
@@ -316,16 +369,18 @@ function App() {
   useEffect(() => {
     restoreSession();
     function onHistoryChange() {
+      focusMainOnRender.current = true;
       setActivePage(pageFromLocation());
-      setAnalysisEntryToolId(null);
+      setAnalysisEntryToolId(toolFromLocation());
       setMobileNavOpen(false);
+      setAccountOpen(false);
     }
     window.addEventListener("popstate", onHistoryChange);
     return () => window.removeEventListener("popstate", onHistoryChange);
   }, []);
 
   function closeMobileNavigation(event) {
-    if (event.key !== "Escape" || !mobileNavOpen) return;
+    if (event.key !== "Escape" || !mobileNavOpen || event.target.closest?.('[role="dialog"]')) return;
     setMobileNavOpen(false);
     mobileNavButtonRef.current?.focus();
   }
@@ -335,6 +390,21 @@ function App() {
       loadData();
     }
   }, [user?.id]);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    const onSessionExpired = () => endSession({ error: SESSION_EXPIRED_NOTICE });
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+  }, [Boolean(user)]);
+
+  useEffect(() => {
+    document.title = `${user ? currentPage.label : "Sign in"} · MCP Security Framework`;
+    if (user && focusMainOnRender.current) {
+      mainRef.current?.focus({ preventScroll: true });
+      focusMainOnRender.current = false;
+    }
+  }, [Boolean(user), activePage, analysisEntryToolId]);
 
   const pageContent = useMemo(() => {
     if (activePage === "inventory") {
@@ -472,12 +542,17 @@ function App() {
   }
 
   if (!user) {
-    return <LoginView error={loginError} notice={loginNotice} onLogin={handleLogin} />;
+    return <LoginView error={loginError} notice={loginNotice} onLogin={handleLogin}
+      onRetrySession={sessionCheckFailed ? () => restoreSession({ focusContent: true }) : null} />;
   }
 
   return (
     <div className="app-shell security-console" onKeyDown={closeMobileNavigation}>
-      <a className="skip-navigation" href="#main-content">Skip to content</a>
+      <a className="skip-navigation" href="#main-content" onClick={(event) => {
+        event.preventDefault();
+        mainRef.current?.focus();
+        mainRef.current?.scrollIntoView({ block: "start" });
+      }}>Skip to content</a>
       <aside className="console-sidebar">
         <div className="console-brand">
           <span className="console-brand-icon"><NavigationIcon page="analysis" /></span>
@@ -505,21 +580,20 @@ function App() {
               <span className="app-nav-group-label">{group}</span>
               <div className="app-nav-group-links">
                 {items.map((page) => (
-                  <button
+                  <a
                     aria-current={activePage === page.id ? "page" : undefined}
                     className={activePage === page.id ? "active" : ""}
+                    href={pageUrl(page.id).href}
                     key={page.id}
-                    onClick={() => {
+                    onClick={(event) => {
+                      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return;
+                      event.preventDefault();
                       navigateToPage(page.id);
-                      if (window.matchMedia("(max-width: 760px)").matches) {
-                        mobileNavButtonRef.current?.focus();
-                      }
                     }}
-                    type="button"
                   >
                     <NavigationIcon page={page.id} />
                     <span>{page.label}</span>
-                  </button>
+                  </a>
                 ))}
               </div>
             </div>
@@ -541,8 +615,8 @@ function App() {
           <button className="secondary-action" disabled={loading || signingOut} onClick={loadData} type="button">
             {loading ? "Refreshing…" : "Refresh"}
           </button>
-          <button className="secondary-action" type="button" aria-expanded={accountOpen}
-            onClick={() => setAccountOpen((current) => !current)}>
+          <button className="secondary-action" type="button" aria-haspopup="dialog"
+            onClick={() => setAccountOpen(true)}>
             My account
           </button>
           <button className="secondary-action" disabled={signingOut} onClick={handleLogout} type="button">
@@ -550,8 +624,8 @@ function App() {
           </button>
         </div>
       </header>
-      <main id="main-content" className="console-content" tabIndex={-1}>
-        <h1 className="visually-hidden">Security center</h1>
+      <main id="main-content" className="console-content" aria-label={currentPage.label} ref={mainRef} tabIndex={-1}>
+        <h1 className="visually-hidden">Security Center</h1>
         {(error || logoutError) && <div className="error-banner" role="alert">{logoutError || error}</div>}
         {oauthReturn && <div className="detail-panel" role="status">
           <strong>OAuth connection return</strong>
@@ -566,13 +640,9 @@ function App() {
         </div>}
         {accountOpen && <AccountPasswordPanel
           onClose={() => setAccountOpen(false)}
-          onChanged={() => {
-            setAccountOpen(false);
-            setUser(null);
-            setCsrfToken("");
-            setLoginError("");
-            setLoginNotice("Your password has been changed and all sessions were revoked. Sign in again with your new password.");
-          }}
+          onChanged={() => endSession({
+            notice: "Your password changed and all sessions were revoked. Sign in again with your new password.",
+          })}
         />}
         {pageContent}
       </main>
@@ -580,11 +650,18 @@ function App() {
   );
 }
 
-function LoginView({ error, notice, onLogin }) {
+function LoginView({ error, notice, onLogin, onRetrySession }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
   const [busy, setBusy] = useState(false);
+  const headingRef = useRef(null);
+  const usernameRef = useRef(null);
+  const passwordRef = useRef(null);
+
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
 
   async function submit(event) {
     event.preventDefault();
@@ -594,6 +671,7 @@ function LoginView({ error, notice, onLogin }) {
     const errors = validateLogin({ username, password });
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) {
+      (errors.username ? usernameRef : passwordRef).current?.focus();
       return;
     }
     setBusy(true);
@@ -601,6 +679,7 @@ function LoginView({ error, notice, onLogin }) {
       const success = await onLogin(username.trim(), password);
       if (!success) {
         setPassword("");
+        passwordRef.current?.focus();
       }
     } finally {
       setBusy(false);
@@ -617,15 +696,17 @@ function LoginView({ error, notice, onLogin }) {
           <p>Review MCP tools, cloud permissions and runtime activity in one place.</p>
         </div>
         <section className="login-panel" aria-labelledby="sign-in-heading">
-          <h1 id="sign-in-heading">Sign in</h1>
+          <h1 id="sign-in-heading" ref={headingRef} tabIndex={-1}>Sign in</h1>
           <p className="login-description">Use your Security Center account.</p>
           {error && <div className="error-banner" role="alert">{error}</div>}
           {notice && <div className="success-banner" role="status">{notice}</div>}
-        <form onSubmit={submit} className="login-form">
+          {onRetrySession && <button className="secondary-action session-retry" type="button" disabled={busy}
+            onClick={onRetrySession}>Retry session check</button>}
+        <form onSubmit={submit} className="login-form" aria-busy={busy}>
           <label>
             Username
             <input
-              aria-describedby="login-username-error"
+              aria-describedby={fieldErrors.username ? "login-username-error" : undefined}
               aria-invalid={Boolean(fieldErrors.username)}
               autoComplete="username"
               maxLength={LIMITS.usernameMax}
@@ -634,6 +715,7 @@ function LoginView({ error, notice, onLogin }) {
                 setFieldErrors((current) => clearFieldError(current, "username"));
               }}
               required
+              ref={usernameRef}
               type="text"
               value={username}
             />
@@ -642,7 +724,7 @@ function LoginView({ error, notice, onLogin }) {
           <label>
             Password
             <input
-              aria-describedby="login-password-error"
+              aria-describedby={fieldErrors.password ? "login-password-error" : undefined}
               aria-invalid={Boolean(fieldErrors.password)}
               autoComplete="current-password"
               maxLength={LIMITS.passwordMax}
@@ -651,6 +733,7 @@ function LoginView({ error, notice, onLogin }) {
                 setFieldErrors((current) => clearFieldError(current, "password"));
               }}
               required
+              ref={passwordRef}
               type="password"
               value={password}
             />

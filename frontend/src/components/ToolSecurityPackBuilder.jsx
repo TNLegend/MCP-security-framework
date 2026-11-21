@@ -9,6 +9,7 @@ import {
   declarativeManifestFromForm,
   packFormFromManifest,
 } from "./securityPackUtils";
+import { assistantErrorMessage } from "../utils/controlledAI";
 
 function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool }) {
   const initialForm = useMemo(() => blankPackForTool(tool), [tool]);
@@ -52,7 +53,7 @@ function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool })
       setForm(packFormFromManifest(proposal.manifest));
       setUncertainties(proposal.uncertainties || []);
     } catch (err) {
-      setError(safeErrorMessage(err));
+      setError(assistantErrorMessage(err));
       // Keep the blank editor available when AI suggestions fail.
       setMode("blank");
     } finally {
@@ -123,10 +124,13 @@ function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool })
           Advanced JSON
         </button>
       </div>
-      {error && <div className="error-banner">{error}</div>}
+      <p className="hint-text">AI-assisted drafting sends the tool description and input fields to the configured AI provider or its fallback. Review the proposal before adding it to a draft.</p>
+      {mode === "ai" && busy && <p role="status">Requesting AI assistance…</p>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
       {uncertainties.length > 0 && (
-        <div className="warning-banner">
-          Review the AI proposal: {uncertainties.join("; ")}
+        <div className="warning-banner" role="status">
+          <strong>Uncertainties to review</strong>
+          <ul>{uncertainties.map((uncertainty, index) => <li key={index}>{uncertainty}</li>)}</ul>
         </div>
       )}
       <form className="tool-pack-form" onSubmit={submit}>

@@ -257,7 +257,7 @@ def check(browser, url, role, width):
     navigation = page.get_by_role("navigation", name="Main navigation")
     if not navigation.is_visible():
         page.get_by_role("button", name="Open navigation menu").click()
-    navigation.get_by_role("button", name="Cloud security", exact=True).click()
+    navigation.get_by_role("link", name="Cloud security", exact=True).click()
     task_nav = page.get_by_role("navigation", name="Cloud security tasks")
     expect(task_nav.get_by_role("button")).to_have_count(6)
     expect(page.get_by_text("Quality assurance", exact=True)).to_have_count(1)

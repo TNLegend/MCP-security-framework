@@ -7,7 +7,17 @@ DEFAULT_TIMEOUT_SECONDS = 20.0
 
 
 class LLMProviderError(Exception):
-    pass
+    def __init__(self, message: str, *, code: str = "unavailable"):
+        super().__init__(message)
+        self.code = code
+
+
+def provider_failure_code(failures: list[str]) -> str:
+    if "rate_limited" in failures:
+        return "rate_limited"
+    if "timeout" in failures:
+        return "timeout"
+    return "unavailable"
 
 
 class BaseLLMProvider:
