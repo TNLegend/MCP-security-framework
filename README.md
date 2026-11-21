@@ -2136,3 +2136,24 @@ The remaining planned work is:
 - controlled adversarial validation across Build, Deploy, and Runtime evidence;
 - audit/report generation and governance mappings;
 - optional SOC/Wazuh/Sigma integration if time permits.
+## Windows Phase 8 qualification (November 2026)
+
+The real `start_framework.bat` was verified from a fresh Windows clone with a
+declared PostgreSQL binary prerequisite, a separate database and local ports.
+Installation, a fully initialized runtime and first ADMIN login succeeded.
+The official fresh-install self-check returned 16/16. Build Security scanners
+Semgrep, Gitleaks and Trivy, plus optional Checkov/Terraform and Prowler's
+local CLI/OCSF path, were tested with synthetic inputs. Prowler was **not**
+re-run against a real AWS account during this qualification. Controlled isolated
+PostgreSQL and OPA outages and recovery were checked without altering the
+main deployment. `NextUpdate` is respected for both Trivy provisioning and
+Build Security availability.
+
+Windows delivery is **qualified with limitations**; it is not a guarantee of
+cloud compliance, externally authorized AWS IAM coverage, production scanner
+sandbox isolation, or a green run of every historical research test. The
+maintained Deploy/OPA/portability QA suite passed 238 tests; the historical
+full-QA collector still has six unrelated legacy import/fixture errors.
+Linux installation remains **outside scope and not tested**. Do not claim
+Linux portability from this Windows result. More evidence and limitations:
+https://github.com/TNLegend/mcp-security-qualification/blob/feature/phase8-portability-qualification/docs/phase8_windows_security_qualification_20261121.md
