@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
@@ -87,6 +88,22 @@ def _bootstrap_wheel() -> Path | None:
             return None
     return cache
 
+def postinstall_probe(*, attempts: int = 3, delay_seconds: float = 2.0) -> bool:
+    """Allow bounded first-start stabilization for Prowler's heavy Windows CLI.
+
+    A successful install must still pass the strict metadata and CLI version
+    checks. Never treat transient failure as success without a verified retry.
+    """
+    if attempts < 1:
+        raise ValueError("postinstall_attempts_must_be_positive")
+    for attempt in range(attempts):
+        if probe():
+            return True
+        if attempt + 1 < attempts:
+            time.sleep(delay_seconds)
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
@@ -158,7 +175,7 @@ def main() -> int:
         cwd=PROWLER_DIR, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, timeout=30, check=False,
     )
-    if integrity.returncode or not probe():
+    if integrity.returncode or not postinstall_probe():
         print("PROWLER_POSTINSTALL_VERIFICATION_FAILED")
         return 1
     print(f"PROWLER_READY_{PROWLER_VERSION}")
