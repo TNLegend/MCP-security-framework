@@ -123,5 +123,82 @@
     "upstream_oauth_token_exchange_failed",
     "upstream_oauth_token_expiry_invalid",
     "upstream_oauth_token_response_invalid"
-  ]
+  ],
+  "runtime_guards": {
+    "canonical_arguments_changed_before_execution": {
+      "phase": "PRE_DISPATCH",
+      "title": "Canonical tool arguments changed since authorization.",
+      "next_action": "Inspect the operation binding and approved arguments before another call."
+    },
+    "cross_call_data_exfiltration_guard": {
+      "phase": "PRE_DISPATCH",
+      "title": "A cross-call data-flow protection refused dispatch.",
+      "next_action": "Review data origin, destination and allowed information flow."
+    },
+    "dispatch_admission_unavailable": {
+      "phase": "FAIL_CLOSED",
+      "title": "Final dispatch authorization could not be verified.",
+      "next_action": "Check the admission service and reconcile the operation."
+    },
+    "human_review_hold_active": {
+      "phase": "PRE_DISPATCH",
+      "title": "An active human-review hold refused dispatch.",
+      "next_action": "Check the current security review and approved observation."
+    },
+    "invalid_tool_arguments_guard": {
+      "phase": "PRE_POLICY",
+      "title": "Arguments did not pass tool schema validation.",
+      "next_action": "Correct the arguments against the signed tool schema."
+    },
+    "inventory_error": {
+      "phase": "FAIL_CLOSED",
+      "title": "Authoritative tool inventory could not be verified.",
+      "next_action": "Restore inventory/readiness and review tool fingerprints."
+    },
+    "policy_error": {
+      "phase": "FAIL_CLOSED",
+      "title": "A required policy decision could not be established.",
+      "next_action": "Check policy service health; do not interpret this as an OPA rule denial."
+    },
+    "request_preparation_error": {
+      "phase": "PRE_POLICY",
+      "title": "Preparing the MCP call failed safely.",
+      "next_action": "Inspect the request normalization and schema validation codes."
+    },
+    "runtime_audit_unavailable": {
+      "phase": "FAIL_CLOSED",
+      "title": "Durable Runtime audit was unavailable.",
+      "next_action": "Restore Runtime audit persistence before retrying."
+    },
+    "shared_taint_persistence_failed": {
+      "phase": "FAIL_CLOSED",
+      "title": "Required data-flow audit persistence was unavailable.",
+      "next_action": "Restore the audit store. Do not bypass this protection."
+    },
+    "specialized_adapter_result_blocked": {
+      "phase": "RESULT_GUARD",
+      "title": "The MCP result was withheld by an adapter validation.",
+      "next_action": "Review the adapter's approved contract and recorded result status."
+    },
+    "trusted_identity_required": {
+      "phase": "PRE_POLICY",
+      "title": "Trusted agent identity was not established.",
+      "next_action": "Review the agent binding and session verification."
+    },
+    "unsafe_resource_guard": {
+      "phase": "PRE_DISPATCH",
+      "title": "The resource protection refused the request.",
+      "next_action": "Check the resource scope and signed binding without exposing its value."
+    },
+    "unsafe_tool_result_blocked": {
+      "phase": "RESULT_GUARD",
+      "title": "The MCP result was withheld by the output security guard.",
+      "next_action": "Inspect sanitized findings. The remote operation may have effects; do not automatically retry."
+    },
+    "unsupported_mcp_protocol_profile": {
+      "phase": "PRE_POLICY",
+      "title": "The protocol profile is unsupported for this server.",
+      "next_action": "Compare the negotiated profile with the approved server configuration."
+    }
+  }
 }

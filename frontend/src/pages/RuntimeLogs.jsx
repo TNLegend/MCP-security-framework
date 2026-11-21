@@ -3,7 +3,7 @@ import { executionDisplay } from "../utils/runtimePresentation.js";
 import SecurityExplanation from "../components/securityexplanation.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { fetchRuntimeLogs, fetchRuntimeOperationReconciliation } from "../api/client";
+import { fetchRuntimeLogs, fetchRuntimeOperationEvents, fetchRuntimeOperationReconciliation } from "../api/client";
 
 const PAGE_SIZE = 20;
 const ERROR_STATUSES = new Set([
@@ -294,8 +294,10 @@ function RuntimeReconciliation({ operationId }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [events, setEvents] = useState(null);
 
   useEffect(() => {
+    setEvents(null);
     setResult(null);
     setError("");
   }, [operationId]);
@@ -310,8 +312,19 @@ function RuntimeReconciliation({ operationId }) {
     setError("");
     setResult(null);
     try {
-      const data = await fetchRuntimeOperationReconciliation(operationId);
-      setResult(data);
+      const [reconciliation, phases] = await Promise.allSettled([
+        fetchRuntimeOperationReconciliation(operationId),
+        fetchRuntimeOperationEvents(operationId),
+      ]);
+      if (reconciliation.status === "fulfilled") {
+        setResult(reconciliation.value);
+      }
+      if (phases.status === "fulfilled" && Array.isArray(phases.value)) {
+        setEvents(phases.value);
+      }
+      if (reconciliation.status === "rejected" || phases.status === "rejected") {
+        setError("Some operation evidence could not be loaded. Missing data does not establish non-execution.");
+      }
     } catch {
       setError("Reconciliation data is unavailable. Do not assume the remote action did not occur.");
     } finally {
@@ -328,6 +341,24 @@ function RuntimeReconciliation({ operationId }) {
         {busy ? "Checking..." : "Check operation " + operationId.slice(0, 8)}
       </button>
       {error && <p role="alert">{error}</p>}
+      {events && <div aria-label="Recorded phases for this operation">
+        <h5>Recorded intent and outcome</h5>
+        {events.length === 0
+          ? <p>No phases are currently recorded under this operation ID.
+            Do not conclude that the upstream tool did not run.</p>
+          : <ol>{events.map((event) => <li key={event.id}>
+              <strong>{event.event_phase === "intent" ? "Authorization intent" :
+                event.event_phase === "outcome" ? "Execution outcome" : "Legacy or unclassified event"}</strong>
+              {" ? "}{formatDate(event.created_at)}
+              {" ? "}Decision {event.decision || "not recorded"}
+              {" ? "}{event.execution_status || "status not recorded"}
+              {" ? "}Dispatch {event.dispatch_state || "unverified"}
+              {event.rule_id && <>{" ? "}Rule <code>{event.rule_id}</code></>}
+            </li>)}</ol>}
+        {!events.some((event) => event.event_phase === "outcome") && <p role="note">
+          No recorded outcome was found. This does not prove that the tool was not executed.
+        </p>}
+      </div>}
       {result && <div role="status">
         <p><strong>Reconciliation:</strong> {result.state}</p>
         <p>Intent recorded: {result.intent_recorded ? "Yes" : "No"}.

@@ -38,6 +38,14 @@ export default function SecurityExplanation({ record }) {
     explanation?.scope === "runtime_security_model_v2" &&
     Array.isArray(explanation?.failed_checks) &&
     Array.isArray(explanation?.failed_effects);
+  const guard = record?.guard_explanation;
+  const guardInfo = guard?.explanation_version === 1 &&
+    guard?.source === "proxy_internal_guard" &&
+    guard?.phase === explanationCatalog.runtime_guards?.[guard?.rule_id]?.phase &&
+    guard?.rule_id === record?.rule_id &&
+    record?.decision === "BLOCK" &&
+    ["GUARD", "PRE_POLICY_GATE", "FAIL_CLOSED_TECHNICAL"].includes(record?.decision_basis)
+      ? explanationCatalog.runtime_guards[guard.rule_id] : null;
   const failedChecks = verified ? explanation.failed_checks : [];
   const failedEffects = verified ? explanation.failed_effects : [];
   const failedCodes = [...new Set([...failedChecks, ...failedEffects.map((value) => value.check)])];
@@ -80,6 +88,18 @@ export default function SecurityExplanation({ record }) {
       {laterGuard && <p><strong>Why the final control intervened:</strong> {
         record?.decision_reason || "The later guard reason was not recorded."
       }</p>}
+      {guardInfo && <section aria-label="Recorded Proxy guard explanation">
+        <p><strong>Recorded internal control:</strong> {guardInfo.title}</p>
+        <p><strong>When it intervened:</strong> {
+          { PRE_POLICY: "Before policy evaluation",
+            PRE_DISPATCH: "Before dispatch to the MCP server",
+            RESULT_GUARD: "After the upstream call, while checking its result",
+            FAIL_CLOSED: "When a required security verification was unavailable" }[guard.phase]
+        }.</p>
+        <p><strong>Recommended action:</strong> {guardInfo.next_action}</p>
+        <p><strong>Evidence limit:</strong> This event preserves the internal guard rule
+          and phase, not raw arguments or the remote content that triggered it.</p>
+      </section>}
       {verified && failedCodes.length > 0 ? <>
         <p><strong>Verified failed checks:</strong> The recorded policy evaluation identified:</p>
         <ul>{failedCodes.map((code) => <li key={code}>{checkLabels[code] || "Unrecognized diagnostic code"}.</li>)}</ul>
@@ -89,7 +109,7 @@ export default function SecurityExplanation({ record }) {
         ))}</ul>}
       </> : verified && (originalOpa || record?.decision) === "ALLOW" ? (
         <p>The recorded V2 policy authorization checks passed. Subsequent admission, dispatch, result guards and execution are separate steps.</p>
-      ) : (
+      ) : !guardInfo && (
         <p><strong>Evidence limitation:</strong> No detailed checks were preserved for this event.
           Its rule and reason alone cannot establish which authorization condition failed.</p>
       )}
@@ -97,6 +117,7 @@ export default function SecurityExplanation({ record }) {
       {laterGuard && <p><strong>After-OPA review:</strong> Inspect the effective Proxy rule and its recorded reason separately from the OPA authorization. Never widen a permission merely to bypass this guard.</p>}
       <p><strong>What to do next:</strong> {unknown
         ? "Use the operation ID and reconciliation view to verify the server-side outcome before any replay."
+        : guardInfo ? guardInfo.next_action
         : failedCodes.length
           ? [...new Set(failedCodes.map((code) => nextActions[code]).filter(Boolean))].join(" ")
           : "Inspect the recorded rule, source configuration and related audit events."}</p>
@@ -108,7 +129,7 @@ export default function SecurityExplanation({ record }) {
         <p>Basis: {record?.decision_basis || "Not recorded"}</p>
         <p>Policy revision: {record?.policy_revision || "Not recorded"}</p>
         <p>Operation ID: <code>{record?.operation_id || "Legacy event without an operation ID"}</code></p>
-        <p>Explanation version: {verified ? "1" : "Not recorded"}</p>
+        <p>Explanation version: {verified ? "OPA V2/1" : guardInfo ? "Proxy guard/1" : "Not recorded"}</p>
       </details>
     </section>
   );

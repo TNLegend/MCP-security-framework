@@ -41,6 +41,7 @@ class RuntimeCall(Base):
     opa_rule_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     opa_policy_revision: Mapped[str | None] = mapped_column(String(96), nullable=True)
     opa_explanation: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    guard_explanation: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     decision_basis: Mapped[str | None] = mapped_column(String(40), nullable=True)
     dispatch_state: Mapped[str | None] = mapped_column(String(40), nullable=True)
     severity: Mapped[str | None] = mapped_column(String(50), nullable=True)

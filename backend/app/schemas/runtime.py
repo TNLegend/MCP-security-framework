@@ -3,7 +3,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.schemas.runtime_explanation import RuntimeExplanation
+from app.schemas.runtime_explanation import RuntimeExplanation, RuntimeGuardExplanation
 
 
 class RuntimeCallCreate(BaseModel):
@@ -22,6 +22,12 @@ class RuntimeCallCreate(BaseModel):
             raise ValueError("runtime_outcome_status_invalid")
         if self.opa_explanation is not None and self.opa_decision is None:
             raise ValueError("opa_explanation_requires_validated_opa_decision")
+        if self.guard_explanation is not None and (
+            self.guard_explanation.rule_id != self.rule_id or
+            self.decision != "BLOCK" or
+            self.decision_basis not in {"GUARD", "PRE_POLICY_GATE", "FAIL_CLOSED_TECHNICAL"}
+        ):
+            raise ValueError("runtime_guard_provenance_inconsistent")
         if self.executed and self.dispatch_state in {"PENDING", "NOT_SENT"}:
             raise ValueError("runtime_dispatch_state_conflicts_with_execution")
         if (self.dispatch_state == "SENT_OUTCOME_UNKNOWN" and
@@ -45,7 +51,8 @@ class RuntimeCallCreate(BaseModel):
     opa_rule_id: str | None = Field(default=None, max_length=128, pattern=r"^[a-z0-9._-]+$")
     opa_policy_revision: str | None = Field(default=None, max_length=96, pattern=r"^[a-z0-9._-]+$")
     opa_explanation: RuntimeExplanation | None = None
-    decision_basis: Literal["POLICY", "FAIL_CLOSED_TECHNICAL", "GUARD", "EMERGENCY", "UNKNOWN"] | None = None
+    guard_explanation: RuntimeGuardExplanation | None = None
+    decision_basis: Literal["POLICY", "PRE_POLICY_GATE", "FAIL_CLOSED_TECHNICAL", "GUARD", "EMERGENCY", "UNKNOWN"] | None = None
     dispatch_state: Literal["PENDING", "NOT_SENT", "SENT_CONFIRMED", "SENT_OUTCOME_UNKNOWN"] | None = None
     severity: str | None = None
     control_plane_revision_id: str | None = None
@@ -91,7 +98,8 @@ class RuntimeCallRead(BaseModel):
     opa_rule_id: str | None = Field(default=None, max_length=128, pattern=r"^[a-z0-9._-]+$")
     opa_policy_revision: str | None = Field(default=None, max_length=96, pattern=r"^[a-z0-9._-]+$")
     opa_explanation: RuntimeExplanation | None = None
-    decision_basis: Literal["POLICY", "FAIL_CLOSED_TECHNICAL", "GUARD", "EMERGENCY", "UNKNOWN"] | None = None
+    guard_explanation: RuntimeGuardExplanation | None = None
+    decision_basis: Literal["POLICY", "PRE_POLICY_GATE", "FAIL_CLOSED_TECHNICAL", "GUARD", "EMERGENCY", "UNKNOWN"] | None = None
     dispatch_state: Literal["PENDING", "NOT_SENT", "SENT_CONFIRMED", "SENT_OUTCOME_UNKNOWN"] | None = None
     severity: str | None = None
     control_plane_revision_id: str | None = None

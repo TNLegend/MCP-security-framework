@@ -1,7 +1,7 @@
 import base64
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Path
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -122,6 +122,27 @@ def list_runtime_logs(
             errors=summary_row[5],
         ),
     )
+
+
+@router.get("/logs/operations/{operation_id}", response_model=list[RuntimeCallRead])
+def read_runtime_operation_events(
+    operation_id: str = Path(
+        pattern=r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$"
+    ),
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    """Read only recorded phases for one operation, without running the tool.
+
+    Unrecorded phases remain absent, not assumed to have succeeded. Legacy
+    events with no operation ID cannot be correlated retrospectively.
+    """
+    return db.scalars(
+        select(RuntimeCall)
+        .where(RuntimeCall.operation_id == operation_id)
+        .order_by(RuntimeCall.created_at.asc(), RuntimeCall.id.asc())
+        .limit(3)
+    ).all()
 
 
 def _runtime_log_filters(

@@ -61,6 +61,7 @@ REQUIRED_RUNTIME_CALL_COLUMNS = {
     "opa_rule_id",
     "opa_policy_revision",
     "opa_explanation",
+    "guard_explanation",
     "explanation",
     "policy_revision",
     "decision_basis",

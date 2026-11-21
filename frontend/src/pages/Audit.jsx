@@ -1,7 +1,7 @@
 import { formatServerTime } from "../utils/serverTime.js";
 import { useEffect, useRef, useState } from "react";
 
-import { fetchAuditEventPage, safeErrorMessage } from "../api/client";
+import { fetchAuditEventPage, fetchRelatedSecurityTimeline, safeErrorMessage } from "../api/client";
 import { Pagination } from "../components/Pagination";
 
 const PAGE_SIZE = 20;
@@ -110,6 +110,7 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
         <h2>Audit history</h2>
         <p>{pageData.total} event(s) · 20 per page</p>
       </div>
+      <RelatedSecurityTimeline />
       {error && (
         <div className="error-banner investigation-error" role="alert">
           <span>{error} Previous results are retained when available.</span>
@@ -255,6 +256,76 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
           </details>
         </section>
       )}
+    </section>
+  );
+}
+
+function RelatedSecurityTimeline() {
+  const [kind, setKind] = useState("runtime_operation");
+  const [targetId, setTargetId] = useState("");
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const validId = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(targetId);
+
+  async function show(event) {
+    event.preventDefault();
+    if (busy || !validId) return;
+    setBusy(true);
+    setError("");
+    setResult(null);
+    try {
+      const response = await fetchRelatedSecurityTimeline(kind, targetId);
+      setResult(response);
+    } catch (err) {
+      setError(safeErrorMessage(err) || "Related audit evidence is unavailable.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="detail-panel" aria-label="Related security event timeline">
+      <h3>Related security timeline</h3>
+      <p>Correlate recorded events by an exact immutable operation or scan ID.
+        Similar names, timestamps and resource labels are never treated as proof of a connection.</p>
+      <form className="inline-form" onSubmit={show}>
+        <label>Correlation target
+          <select value={kind} onChange={(event) => {
+            setKind(event.target.value); setResult(null); setError("");
+          }}>
+            <option value="runtime_operation">MCP operation</option>
+            <option value="cloud_scan">Cloud audit scan</option>
+          </select>
+        </label>
+        <label>Recorded UUID
+          <input type="text" value={targetId}
+            maxLength={36} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+            onChange={(event) => {
+              setTargetId(event.target.value.trim().toLowerCase());
+              setResult(null); setError("");
+            }}/>
+        </label>
+        <button type="submit" disabled={!validId || busy}>
+          {busy ? "Checking..." : "Show related events"}
+        </button>
+      </form>
+      {error && <p role="alert">{error} No actions were replayed.</p>}
+      {result && <div aria-label="Related security records">
+        <p role="status">{result.events.length} stored related event(s) returned.
+          {result.truncated ? " The response is bounded and additional events may exist." : ""}
+        </p>
+        {result.events.length ? <ol>
+          {result.events.map((item) => <li key={item.source + ":" + item.id}>
+            <strong>{item.source.replaceAll("_", " ")}</strong>
+            {" ? "}{formatDate(item.timestamp)}
+            {" ? "}{item.event_code}
+            {item.result && <>{" ? "}{item.result}</>}
+            {" ? "}<code>{item.id}</code>
+          </li>)}
+        </ol> : <p>No events were found under this exact ID. This does not establish that no activity occurred.</p>}
+        <p><strong>Evidence limits:</strong> {result.limitations}</p>
+      </div>}
     </section>
   );
 }

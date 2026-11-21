@@ -293,6 +293,26 @@ export async function fetchRuntimeLogs(filters = {}) {
   return request(`/runtime/logs${suffix}`);
 }
 
+export async function fetchRelatedSecurityTimeline(kind, id) {
+  if (!["runtime_operation", "cloud_scan"].includes(kind) ||
+      !/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(String(id || ""))) {
+    throw new ApiError("Choose a valid exact operation or cloud scan ID.", {
+      code: "invalid_related_security_target",
+    });
+  }
+  return request("/control-plane/audit/related/" + kind + "/" +
+    encodeURIComponent(id));
+}
+
+export async function fetchRuntimeOperationEvents(operationId) {
+  if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(String(operationId || ""))) {
+    throw new ApiError("Operation ID is missing or invalid.", {
+      code: "invalid_runtime_operation_id",
+    });
+  }
+  return request("/runtime/logs/operations/" + encodeURIComponent(operationId));
+}
+
 export async function fetchHealth() {
   return request("/health");
 }
