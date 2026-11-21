@@ -90,7 +90,12 @@ def _sdk_session(env: CloudEnvironment):
                              DurationSeconds=900)
         keys=data["Credentials"]
         # In-memory only for this scan. Never persist, log or return these values.
+        # Preserve the validated source profile for boto3's config lookup.
+        # With no [default] profile, botocore can otherwise reject temporary
+        # role credentials before making any AWS request (ProfileNotFound).
+        # Explicit temporary keys remain in memory; do not persist them.
         return boto3.Session(
+            profile_name=env.profile_name if env.credential_mode == "NAMED_PROFILE" else None,
             aws_access_key_id=keys["AccessKeyId"],
             aws_secret_access_key=keys["SecretAccessKey"],
             aws_session_token=keys["SessionToken"],

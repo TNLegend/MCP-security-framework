@@ -164,6 +164,55 @@ def test_root_source_cannot_assume_audit_role(monkeypatch):
         module._sdk_session(e)
     assert called==[]
 
+def test_assumed_role_keeps_named_profile_when_no_default_exists(monkeypatch, tmp_path):
+    """AWS CLI login profiles need not define [default] for an assumed role."""
+    import boto3
+    import app.services.cloud_security as module
+
+    config = tmp_path / "config"
+    config.write_text("[profile cloud-audit]\\nregion = eu-west-3\\n".replace("\\n", "\n"), encoding="utf-8")
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "missing-credentials"))
+    monkeypatch.setenv("AWS_PROFILE", "default")
+
+    real_session = boto3.Session
+    calls = []
+
+    class FakeSTS:
+        def get_caller_identity(self):
+            return {"Arn": "arn:aws:iam::123456789012:user/operator", "Account": "123456789012"}
+
+        def assume_role(self, **kwargs):
+            assert kwargs["RoleArn"] == "arn:aws:iam::123456789012:role/CloudAudit"
+            return {"Credentials": {
+                "AccessKeyId": "SYNTHETIC_ACCESS", "SecretAccessKey": "SYNTHETIC_SECRET",
+                "SessionToken": "SYNTHETIC_SESSION",
+            }}
+
+    class FakeBase:
+        def client(self, name, **kwargs):
+            assert name == "sts"
+            return FakeSTS()
+
+    def make_session(**kwargs):
+        calls.append(kwargs)
+        if "aws_access_key_id" not in kwargs:
+            assert kwargs["profile_name"] == "cloud-audit"
+            return FakeBase()
+        session = real_session(**kwargs)
+        session.client("sts")  # No network I/O, but config resolution occurs.
+        return session
+
+    monkeypatch.setattr(module.boto3, "Session", make_session)
+    environment = SimpleNamespace(
+        credential_mode="NAMED_PROFILE", profile_name="cloud-audit",
+        regions=["eu-west-3"], role_arn="arn:aws:iam::123456789012:role/CloudAudit",
+    )
+    session = module._sdk_session(environment)
+    assert calls[1]["profile_name"] == "cloud-audit"
+    assert session.get_credentials().access_key == "SYNTHETIC_ACCESS"
+
+
 def test_only_selected_aws_services_are_collected():
     e=SimpleNamespace(id="e"*36,regions=["eu-west-3"],services=["S3"])
     c=Collector(e,scan())
