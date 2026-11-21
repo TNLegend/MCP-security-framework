@@ -135,11 +135,34 @@ def compare_policy(action: str, resource: str, statements: list[dict],
     POTENTIAL_MISSING, never a proven missing effective permission.
     """
     broad: set[str] = set()
+    unresolved: set[str] = set()
     complex_seen = False
     matching_allow = False
     for item in statements:
-        if not isinstance(item, dict) or item.get("Condition") or "NotAction" in item or "NotResource" in item:
+        if not isinstance(item, dict):
             complex_seen = True
+            unresolved.add("IAM_UNRECOGNIZED_IDENTITY_STATEMENT")
+            continue
+        # Unknown policies never become an effective AWS permission verdict.
+        # Record the type of unverified statement without exposing its
+        # conditions, action patterns or resource values.
+        if "NotAction" in item or "NotResource" in item:
+            complex_seen = True
+            unresolved.add(
+                "IAM_NEGATED_ALLOW_POTENTIALLY_BROAD"
+                if item.get("Effect") == "Allow"
+                else "IAM_NEGATED_STATEMENT_NOT_EVALUATED"
+            )
+            continue
+        if "Condition" in item:
+            complex_seen = True
+            unresolved.add(
+                "IAM_CONDITIONAL_DENY_NOT_EVALUATED"
+                if item.get("Effect") == "Deny"
+                else "IAM_CONDITIONAL_ALLOW_NOT_EVALUATED"
+                if item.get("Effect") == "Allow"
+                else "IAM_CONDITIONAL_STATEMENT_NOT_EVALUATED"
+            )
             continue
         if not _matches(item.get("Action", []), action, action=True) or not _matches(item.get("Resource", []), resource):
             continue
@@ -162,11 +185,11 @@ def compare_policy(action: str, resource: str, statements: list[dict],
                and _matches(pattern,action,action=True) for pattern in actions):
             broad.add("IAM_BROAD_ACTION_ALLOW")
     if broad:
-        return "POTENTIAL_EXCESS", "IAM_ALLOW_SCOPE_BROADER_THAN_SIGNED_MCP", sorted(broad)
+        return "POTENTIAL_EXCESS", "IAM_ALLOW_SCOPE_BROADER_THAN_SIGNED_MCP", sorted(broad | unresolved)
     if matching_allow:
-        return "UNKNOWN", "IAM_EXACT_IDENTITY_ALLOW_EFFECTIVE_UNKNOWN", []
+        return "UNKNOWN", "IAM_EXACT_IDENTITY_ALLOW_EFFECTIVE_UNKNOWN", sorted(unresolved)
     if complex_seen:
-        return "UNKNOWN", "IAM_COMPLEX_POLICY_UNRESOLVED", []
+        return "UNKNOWN", "IAM_COMPLEX_POLICY_UNRESOLVED", sorted(unresolved)
     return "POTENTIAL_MISSING", "IAM_IDENTITY_ALLOW_NOT_FOUND_RESOURCE_POLICY_UNVERIFIED", []
 
 

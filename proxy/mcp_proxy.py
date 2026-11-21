@@ -569,7 +569,7 @@ class MCPProxy:
             }
             decision = _fail_closed_proxy_decision(
                 rule_id="policy_error",
-                reason=f"Policy decision failed: {exc}",
+                reason="Runtime policy evaluation failed; call blocked as a precaution.",
             )
             decision_data = decision.model_dump(mode="json")
             return self._skip_response(
@@ -1520,7 +1520,7 @@ class MCPProxy:
     ) -> dict[str, Any]:
         decision = _fail_closed_proxy_decision(
             rule_id="inventory_error",
-            reason=error_summary,
+            reason="Tool inventory verification failed; call blocked as a precaution.",
         )
         decision_data = decision.model_dump(mode="json")
         log_payload = build_runtime_log(
@@ -1529,7 +1529,7 @@ class MCPProxy:
             server_id=None,
             executed=False,
             execution_status="blocked",
-            error_summary=error_summary,
+            error_summary="inventory_error",
             status="blocked",
         )
         runtime_log = self._send_runtime_log(log_payload)
