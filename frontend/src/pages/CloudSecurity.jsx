@@ -408,7 +408,7 @@ const deployFailedChecks = Object.freeze({
   UNRESOLVED_IAM_OBSERVATIONS: "The scan includes unresolved IAM observations.",
   UNRESOLVED_CLOUD_CHECKS: "Some cloud or scanner checks were not assessed.",
 });
-function DeployEvidenceExplanation({ decision }) {
+export function DeployEvidenceExplanation({ decision }) {
   const failures = decision?.failed_checks;
   return (
     <div className="detail-panel" aria-label="Deploy decision evidence">
