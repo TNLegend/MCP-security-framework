@@ -226,6 +226,14 @@ def vulnerability_db_is_fresh(
     age = current - updated_at
     if age < timedelta(minutes=-5):
         return False
+
+    # Trivy announces when the next vulnerability database refresh is due.
+    # A database whose NextUpdate has passed must not be treated as fresh
+    # merely because a longer operator-configured max-age window remains.
+    if "NextUpdate" in metadata:
+        next_update = _metadata_datetime(metadata["NextUpdate"])
+        if next_update is None or current >= next_update:
+            return False
     return age <= timedelta(hours=settings.build_scan_trivy_db_max_age_hours)
 
 
