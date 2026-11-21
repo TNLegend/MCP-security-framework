@@ -529,10 +529,19 @@ function getDecisionBadgeClass(decision) {
   return "badge-muted";
 }
 
-function getExecutionBadgeClass(status) {
+export function getExecutionBadgeClass(status) {
   const normalized = String(status || "").toLowerCase();
   if (normalized === "success") return "badge-success";
+  // A withheld response is an enforced security block, not an ordinary
+  // grey/inconclusive execution. Do not mistake an uncertain upstream
+  // outcome for confirmed non-execution or a safe automatic retry.
+  if (normalized === "result_blocked" || normalized === "blocked"
+      || normalized === "policy_blocked") return "badge-block badge-danger";
+  if (normalized === "authorized_pending_execution"
+      || normalized === "upstream_outcome_unknown"
+      || normalized === "audit_completion_failed") return "badge-warn badge-warning";
   if (ERROR_STATUSES.has(normalized)) return "badge-danger";
+  if (!normalized || normalized === "unknown") return "badge-unknown";
   return "badge-muted";
 }
 

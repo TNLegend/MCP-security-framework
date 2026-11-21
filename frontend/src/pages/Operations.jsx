@@ -262,7 +262,16 @@ function Operations({ initialOperationId = null, isAdmin = false, loading = fals
           <h3>Runtime storage</h3>
           <dl className="compact-dl">
             <Row label="Rows" value={storage?.total_rows} />
-            <Row label="Unresolved MCP operations" value={storage?.unresolved_intents} />
+            <div>
+              <dt>Unresolved MCP operations</dt>
+              <dd><button type="button" className="tiny-action"
+                aria-label="Inspect unresolved MCP operations from summary"
+                aria-controls="unresolved-investigation-list"
+                disabled={investigationBusy}
+                onClick={inspectUnresolvedCases}>
+                {storage?.unresolved_intents ?? "-"}
+              </button></dd>
+            </div>
             <Row label="Intent grace" value={storage?.intent_grace_seconds != null ? storage.intent_grace_seconds + " seconds" : "-"} />
             <Row label="Retention" value={storage ? storage.retention_days + " days" : "-"} />
             <Row label="Max rows" value={storage?.max_rows} />
@@ -287,7 +296,7 @@ function Operations({ initialOperationId = null, isAdmin = false, loading = fals
             {investigationBusy ? "Loading investigation..." : "Investigate unresolved operations"}
           </button>
           {investigationError && <p role="alert">{investigationError}</p>}
-          {unresolvedCases && <div className="operator-investigation-list">
+          {unresolvedCases && <div className="operator-investigation-list" id="unresolved-investigation-list">
             <p role="status">{unresolvedCases.returned} unresolved operation(s)
               shown{unresolvedCases.truncated ? "; more exist beyond this 50-row limit" : ""}.
               These are not confirmed failures or safe retry candidates.</p>

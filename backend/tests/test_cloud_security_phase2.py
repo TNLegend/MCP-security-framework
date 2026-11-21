@@ -299,6 +299,27 @@ def test_cross_account_expected_id_is_checked_on_first_connection(monkeypatch):
         module.check_connection(bad)
 
 
+
+@pytest.mark.parametrize("action_pattern", ["*", "s3:*", "S3:Get*"])
+def test_iam_action_wildcard_is_broad_not_unreadable(action_pattern):
+    from app.services.cloud_iam_mcp_security import (
+        compare_policy, matching_identity_policy_evidence,
+    )
+    action = "s3:GetObject"
+    resource = "arn:aws:s3:::synthetic-bucket/key"
+    statements = [{"Effect": "Allow", "Action": action_pattern, "Resource": "*"}]
+    status, reason, warnings = compare_policy(action, resource, statements)
+    assert status == "POTENTIAL_EXCESS"
+    assert reason == "IAM_ALLOW_SCOPE_BROADER_THAN_SIGNED_MCP"
+    assert "IAM_BROAD_ACTION_ALLOW" in warnings
+    assert "IAM_BROAD_RESOURCE_ALLOW" in warnings
+    proof = matching_identity_policy_evidence(action, resource, statements)
+    assert proof["matching_clause_count"] == 1
+    assert proof["matching_unconditional_clauses"][0]["action_pattern"] == action_pattern
+    assert proof["matching_unconditional_clauses"][0]["action_broader"] is True
+    assert proof["matching_unconditional_clauses"][0]["resource_broader"] is True
+
+
 def test_only_selected_aws_services_are_collected():
     e=SimpleNamespace(id="e"*36,regions=["eu-west-3"],services=["S3"])
     c=Collector(e,scan())
