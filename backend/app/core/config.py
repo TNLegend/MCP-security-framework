@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     upstream_oauth_callback_url: str = ""
     mcp_gateway_host: str = "127.0.0.1"
     mcp_gateway_port: int = 9001
+    mcp_lab_port: int = Field(default=9000, ge=1, le=65535)
     agent_identity_jwks_url: str = "<configure>"
 
     postgres_host: str = "127.0.0.1"

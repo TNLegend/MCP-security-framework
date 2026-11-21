@@ -624,7 +624,7 @@ def gateway_base_url() -> str:
 
 
 def mcp_lab_base_url() -> str:
-    return "http://127.0.0.1:9000"
+    return f"http://127.0.0.1:{settings.mcp_lab_port}"
 
 
 def opa_command() -> list[str] | None:
@@ -679,7 +679,7 @@ def mcp_lab_command(python_executable: Path) -> list[str]:
         "--host",
         "127.0.0.1",
         "--port",
-        "9000",
+        str(settings.mcp_lab_port),
     ]
 
 

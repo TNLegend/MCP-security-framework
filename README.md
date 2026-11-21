@@ -46,7 +46,8 @@ database credentials. An invalid explicit path fails prerequisite checks
 instead of silently executing an unrelated binary from PATH.
 
 On a machine already running another framework instance, assign unused
-PostgreSQL, backend, frontend, Gateway, OPA and identity-provider ports
+PostgreSQL, backend, frontend, Gateway, MCP Lab (MCP_LAB_PORT), OPA and
+identity-provider ports
 and matching API/callback URLs before launching the second instance.
 Never connect a fresh installation to the production database solely to
 make installation checks pass.
