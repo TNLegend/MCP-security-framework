@@ -326,7 +326,7 @@ def _normalize_checkov(report: bytes, source: Path) -> list[dict]:
             raise ValueError("IAC_CHECKOV_REPORT_INVALID")
         path = _safe_path(item.get("file_path"), source, checkov_project_path=True)
         rule = _rule(item.get("check_id"))
-        resource_hash = hashlib.sha256(str(item.get("resource", "")).encode()).hexdigest()[:16]
+        resource_hash = hashlib.sha256(str(item.get("resource", "")).encode()).hexdigest()
         logical_resource_hash = _logical_resource_hash(item.get("resource"))
         sev = item.get("severity")
         severity = str(sev).upper() if sev is not None else "UNKNOWN"
@@ -372,7 +372,7 @@ def _normalize_trivy(report: bytes, source: Path) -> list[dict]:
             cause = item.get("CauseMetadata") or {}
             line = cause.get("StartLine") if isinstance(cause, dict) else None
             line_no = line if isinstance(line, int) and line > 0 else None
-            resource_hash = hashlib.sha256(str(item.get("ID", "") + "|" + str(line_no)).encode()).hexdigest()[:16]
+            resource_hash = hashlib.sha256(str(item.get("ID", "") + "|" + str(line_no)).encode()).hexdigest()
             logical_resource_hash = _logical_resource_hash(cause.get("Resource")) if isinstance(cause, dict) else None
             normalized.append({"scanner": "trivy", "rule": rule, "file": path,
                                "resource_hash": resource_hash,

@@ -156,8 +156,8 @@ def _verify_iac(scan, resources, evidence, findings, resource_by_id) -> bool:
                     not target or item.resource_id != target.id or
                     summary.get("source_fingerprint") != source or
                     summary.get("rule") != item.rule_id or
-                    not isinstance(summary.get("line"), int) or
-                    summary["line"] < 0 or
+                    (summary.get("line") is not None and
+                     (type(summary["line"]) is not int or summary["line"] <= 0)) or
                     not isinstance(summary.get("resource_hash"), str) or
                     not _SHA.fullmatch(summary["resource_hash"])):
                 return False
