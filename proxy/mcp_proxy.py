@@ -93,6 +93,11 @@ class DispatchAdmissionRejected(RuntimeError):
 
 SUPPORTED_RUNTIME_OBLIGATIONS = {"LOG", "WARN"}
 VALID_POLICY_EFFECTS = {"ALLOW", "DENY", "DEFER"}
+# RT-07: the active product path prepares only security model V2, whose
+# policy emits exactly ALLOW or BLOCK. Legacy V1 decisions (WARN, LOG_ONLY,
+# ASK_APPROVAL, LIMIT) have no end-to-end runtime workflow; if one is ever
+# returned for a V2 request the call fails closed instead of being guessed.
+V2_RUNTIME_DECISIONS = frozenset({"ALLOW", "BLOCK"})
 
 
 def _can_execute_policy_decision(decision: PolicyDecision) -> tuple[bool, str | None]:
@@ -641,6 +646,32 @@ class MCPProxy:
                 message="Tool call skipped because resource resolution is unsafe.",
                 error_summary=unsafe_resource_reason,
                 skip_reason=unsafe_resource_reason,
+            )
+
+        if (
+            prepared_request.security_model_version == "2"
+            and decision.decision.value not in V2_RUNTIME_DECISIONS
+        ):
+            # The verified OPA snapshot above stays attached to the call, so
+            # the original legacy decision remains traceable in the audit row.
+            decision = _fail_closed_proxy_decision(
+                rule_id="unsupported_policy_decision_for_security_model",
+                reason=(
+                    "The policy returned a decision the V2 runtime model does not "
+                    "support; call blocked as a precaution."
+                ),
+                severity="high",
+                policy_revision="proxy-decision-contract-v1",
+            )
+            return self._skip_response(
+                tool_call=prepared_tool_call,
+                server_id=server["id"],
+                decision=decision.model_dump(mode="json"),
+                status="blocked",
+                execution_status="blocked",
+                message="Tool call skipped: unsupported policy decision for security model V2.",
+                error_summary="unsupported_policy_decision_for_security_model",
+                skip_reason="unsupported_policy_decision_for_security_model",
             )
 
         can_execute, skip_reason = _can_execute_policy_decision(decision)
@@ -1666,6 +1697,7 @@ class MCPProxy:
         prepared_tool_call["resource_type"] = prepared_request.resource_type
         prepared_tool_call["resource_scope"] = prepared_request.resource_scope
         prepared_tool_call["required_capability"] = prepared_request.required_capability
+        prepared_tool_call["effect_summary"] = prepared_request.effect_summary
         prepared_tool_call["canonical_resource"] = prepared_request.canonical_resource
         prepared_tool_call["resource_sensitivity"] = prepared_request.resource_sensitivity
         prepared_tool_call["resource_resolution_status"] = (

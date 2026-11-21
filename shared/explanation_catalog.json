@@ -110,6 +110,7 @@
     "tool_call_blocked",
     "unsafe_tool_result_blocked",
     "unsupported_mcp_protocol_profile",
+    "unsupported_policy_decision_for_security_model",
     "unsupported_policy_obligation",
     "upstream_auth_error",
     "upstream_credential_invalid",
@@ -199,6 +200,11 @@
       "phase": "PRE_POLICY",
       "title": "The protocol profile is unsupported for this server.",
       "next_action": "Compare the negotiated profile with the approved server configuration."
+    },
+    "unsupported_policy_decision_for_security_model": {
+      "phase": "PRE_DISPATCH",
+      "title": "The policy returned a legacy decision the active V2 security model does not support.",
+      "next_action": "Check the deployed runtime policy bundle; V2 emits only ALLOW or BLOCK."
     }
   }
 }

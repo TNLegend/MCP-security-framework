@@ -279,6 +279,52 @@ function RuntimeLogsTable({ logs, selectedLogId, onSelectLog }) {
   );
 }
 
+const EFFECT_SUMMARY_LIMITS = {
+  REFERENCE_VALUES_NOT_RECORDED: "Resource values and arguments are not recorded; only identifiers and counts.",
+  SCOPE_AUTHORIZATION_DECIDED_BY_OPA: "Listed scopes are configured candidates for the resource type. Whether a scope matched is decided by the policy, see the decision above.",
+  EFFECTS_TRUNCATED: "This tool declares more effects than this summary keeps (16).",
+  NON_EXPLICIT_REFERENCE_PRESENT: "At least one effect uses a non-explicit (opaque or derived) resource reference.",
+  UNRESOLVED_BINDING_PRESENT: "At least one resource binding was not resolved for this call.",
+};
+
+// RT-12: restitute every effect the Proxy prepared, never just the first one.
+// The data is the Proxy's bounded summary; nothing is inferred in the browser.
+export function ToolEffectsSummary({ summary }) {
+  const effects = summary && typeof summary === "object" && Array.isArray(summary.effects) ? summary.effects : null;
+  if (!effects) return null;
+  return (
+    <section className="tool-effects-summary" aria-labelledby="tool-effects-heading">
+      <h4 id="tool-effects-heading">
+        Tool effects requested ({effects.length}{summary.effect_count > effects.length ? ` of ${summary.effect_count}` : ""})
+      </h4>
+      <div className="table-shell">
+        <table>
+          <thead>
+            <tr><th scope="col">Effect</th><th scope="col">Required capability</th><th scope="col">Resource types</th><th scope="col">Reference precision</th><th scope="col">References</th><th scope="col">Candidate scopes</th></tr>
+          </thead>
+          <tbody>
+            {effects.map((effect) => (
+              <tr key={effect.effect_id}>
+                <td>{displayValue(effect.effect_id)}</td>
+                <td><code>{displayValue(effect.capability)}</code></td>
+                <td>{effect.resource_types?.length ? effect.resource_types.join(", ") : "None"}</td>
+                <td>{displayValue(effect.reference_precision)}{effect.binding_statuses?.length ? ` (${effect.binding_statuses.join(", ")})` : ""}</td>
+                <td>{Number.isInteger(effect.reference_count) ? effect.reference_count : "Unknown"}</td>
+                <td>{effect.candidate_scope_ids?.length ? effect.candidate_scope_ids.join(", ") : "None configured"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {Array.isArray(summary.limits) && summary.limits.length > 0 && (
+        <ul className="evidence-limits" aria-label="Limits of this summary">
+          {summary.limits.map((code) => <li key={code}>{EFFECT_SUMMARY_LIMITS[code] || code}</li>)}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function RuntimeLogDetailPanel({ log, detailHeading, onClose }) {
   return (
     <section className="detail-panel investigation-detail" aria-labelledby="runtime-event-heading">
@@ -287,6 +333,7 @@ function RuntimeLogDetailPanel({ log, detailHeading, onClose }) {
         <button onClick={onClose} type="button">Close details</button>
       </div>
       <SecurityExplanation record={log} />
+      <ToolEffectsSummary summary={log.arguments_summary} />
       <RuntimeReconciliation key={log.operation_id || `legacy-${log.id}`} operationId={log.operation_id} />
       <details className="operator-technical-details">
         <summary>Request, policy and transport records</summary>

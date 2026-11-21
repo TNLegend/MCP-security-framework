@@ -79,6 +79,76 @@ class PreparedToolRequest:
     security_contract: dict[str, Any] | None = None
     capability_catalog: tuple[dict[str, Any], ...] = ()
     adapter_resolutions: tuple[dict[str, Any], ...] = ()
+    effect_summary: dict[str, Any] | None = None
+
+
+MAX_SUMMARY_EFFECTS = 16
+MAX_SUMMARY_ITEMS = 8
+
+
+def summarize_v2_effects(
+    contract: ToolSecurityContract,
+    effect_facts: list[NormalizedEffectFacts] | tuple[NormalizedEffectFacts, ...],
+    authority_scopes: tuple[AuthorityResourceScope, ...],
+) -> dict[str, Any]:
+    """RT-12: bounded audit summary of EVERY effect of a V2 contract.
+
+    Records identifiers and counts only. Reference values (paths, object keys,
+    URLs), argument values and scope canonical values are never included.
+    Scope authorisation is decided by OPA: listed scope IDs are the configured
+    candidates for the effect's resource types, not proof of a match.
+    """
+    facts_by_effect = {facts.effect_id: facts for facts in effect_facts}
+    effects: list[dict[str, Any]] = []
+    opaque = False
+    unresolved = False
+    for effect in contract.effects[:MAX_SUMMARY_EFFECTS]:
+        facts = facts_by_effect.get(effect.effect_id)
+        declared_types = {b.resource_type for b in effect.resource_bindings}
+        fixed = getattr(effect, "fixed_resource", None)
+        if fixed is not None:
+            declared_types.add(fixed.resource_type)
+        resource_types = sorted(declared_types)
+        candidate_scopes = sorted({
+            scope.scope_id for scope in authority_scopes
+            if scope.resource_type in resource_types
+        })
+        if facts is None:
+            precision = "NOT_RESOLVED"
+            binding_statuses: list[str] = []
+            reference_count = 0
+            unresolved = True
+        else:
+            precision = facts.effective_reference_precision.value
+            binding_statuses = sorted({b.status for b in facts.bindings})
+            reference_count = sum(len(b.references) for b in facts.bindings)
+            if facts.effective_reference_precision != ReferencePrecision.EXPLICIT:
+                opaque = True
+            if any(status != "resolved" for status in binding_statuses):
+                unresolved = True
+        effects.append({
+            "effect_id": effect.effect_id,
+            "capability": effect.capability,
+            "resource_types": resource_types[:MAX_SUMMARY_ITEMS],
+            "reference_precision": precision,
+            "binding_statuses": binding_statuses[:MAX_SUMMARY_ITEMS],
+            "reference_count": reference_count,
+            "candidate_scope_ids": candidate_scopes[:MAX_SUMMARY_ITEMS],
+        })
+    limits = ["REFERENCE_VALUES_NOT_RECORDED", "SCOPE_AUTHORIZATION_DECIDED_BY_OPA"]
+    if len(contract.effects) > MAX_SUMMARY_EFFECTS:
+        limits.append("EFFECTS_TRUNCATED")
+    if opaque:
+        limits.append("NON_EXPLICIT_REFERENCE_PRESENT")
+    if unresolved:
+        limits.append("UNRESOLVED_BINDING_PRESENT")
+    return {
+        "summary_version": 1,
+        "effect_count": len(contract.effects),
+        "capabilities": sorted({e.capability for e in contract.effects})[:MAX_SUMMARY_EFFECTS],
+        "effects": effects,
+        "limits": limits,
+    }
 
 
 def prepare_tool_request_v2(
@@ -235,16 +305,22 @@ def prepare_tool_request_v2(
         else None
     )
     request_flags, request_sensitivity = _v2_request_sensitivity(effect_facts)
+    multi_effect = len(contract.effects) > 1
     return PreparedToolRequest(
         arguments=dict(arguments) if not errors else {},
         canonical_arguments_hash=canonical_hash if not errors else EMPTY_ARGUMENTS_HASH,
         arguments_valid=not errors,
         validation_error_codes=_sanitize_error_codes(errors),
-        operation=first_effect.capability,
-        required_capability=first_effect.capability,
+        # RT-12: never present the first effect as the whole tool.
+        operation="multiple_effects" if multi_effect else first_effect.capability,
+        required_capability="multiple" if multi_effect else first_effect.capability,
         resource_adapter=first_facts.adapter_id if first_facts else "unknown",
-        resource_type=first_binding.resource_type if first_binding else "none",
-        resource_scope="v2_authority_scopes",
+        resource_type=(
+            "multiple" if multi_effect
+            else first_binding.resource_type if first_binding else "none"
+        ),
+        resource_scope="decided_by_policy",
+        effect_summary=summarize_v2_effects(contract, effect_facts, authority_scopes),
         canonical_resource=(
             first_reference.canonical_value
             if first_reference is not None and not errors
@@ -359,13 +435,15 @@ def _invalid_v2(
     contract: ToolSecurityContract,
 ) -> PreparedToolRequest:
     first = contract.effects[0]
+    multi_effect = len(contract.effects) > 1
     return PreparedToolRequest(
         arguments={},
         canonical_arguments_hash=EMPTY_ARGUMENTS_HASH,
         arguments_valid=False,
         validation_error_codes=_sanitize_error_codes(error_codes),
-        operation=first.capability,
-        required_capability=first.capability,
+        operation="multiple_effects" if multi_effect else first.capability,
+        required_capability="multiple" if multi_effect else first.capability,
+        effect_summary=summarize_v2_effects(contract, (), ()),
         resource_adapter="unknown",
         resource_type="unknown",
         resource_scope="invalid",

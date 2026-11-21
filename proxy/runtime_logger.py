@@ -108,6 +108,80 @@ def summarize_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
         "resource_resolution_status": _safe_summary_name(
             str(tool_call.get("resource_resolution_status") or "unknown")
         ),
+        **(
+            {"effects": effects_summary}
+            if (effects_summary := _safe_effect_summary(tool_call.get("effect_summary")))
+            else {}
+        ),
+    }
+
+
+_SUMMARY_LIMIT_CODES = frozenset({
+    "REFERENCE_VALUES_NOT_RECORDED",
+    "SCOPE_AUTHORIZATION_DECIDED_BY_OPA",
+    "EFFECTS_TRUNCATED",
+    "NON_EXPLICIT_REFERENCE_PRESENT",
+    "UNRESOLVED_BINDING_PRESENT",
+})
+
+
+def _safe_effect_summary(value: Any) -> dict[str, Any] | None:
+    """RT-12: re-validate the Proxy-built multi-effect summary before audit.
+
+    Only identifiers, enumerated statuses and counts survive; anything
+    unexpected drops the whole summary rather than persisting raw data.
+    """
+    if not isinstance(value, dict) or value.get("summary_version") != 1:
+        return None
+    effects = value.get("effects")
+    count = value.get("effect_count")
+    if not isinstance(effects, list) or len(effects) > 16:
+        return None
+    if not isinstance(count, int) or isinstance(count, bool) or not 0 <= count <= 10_000:
+        return None
+    limits = value.get("limits")
+    if not isinstance(limits, list) or not all(
+        isinstance(item, str) and item in _SUMMARY_LIMIT_CODES for item in limits
+    ):
+        return None
+
+    def names(items: Any) -> list[str] | None:
+        if not isinstance(items, list) or len(items) > 16:
+            return None
+        if not all(isinstance(item, str) and 0 < len(item) <= 128 for item in items):
+            return None
+        return [_safe_summary_name(item) for item in items]
+
+    safe_effects = []
+    for item in effects:
+        if not isinstance(item, dict):
+            return None
+        resource_types = names(item.get("resource_types"))
+        statuses = names(item.get("binding_statuses"))
+        scopes = names(item.get("candidate_scope_ids"))
+        references = item.get("reference_count")
+        if None in (resource_types, statuses, scopes):
+            return None
+        if not isinstance(references, int) or isinstance(references, bool) or references < 0:
+            return None
+        safe_effects.append({
+            "effect_id": _safe_summary_name(item.get("effect_id")),
+            "capability": _safe_summary_name(item.get("capability")),
+            "resource_types": resource_types,
+            "reference_precision": _safe_summary_name(item.get("reference_precision")),
+            "binding_statuses": statuses,
+            "reference_count": min(references, 10_000),
+            "candidate_scope_ids": scopes,
+        })
+    capabilities = names(value.get("capabilities"))
+    if capabilities is None:
+        return None
+    return {
+        "summary_version": 1,
+        "effect_count": count,
+        "capabilities": capabilities,
+        "effects": safe_effects,
+        "limits": sorted(set(limits)),
     }
 
 
@@ -238,7 +312,14 @@ def build_runtime_log(
     error_summary: str | None = None,
     status: str | None = None,
 ) -> dict[str, Any]:
-    decision_value = decision.get("decision", "LOG_ONLY")
+    # RT-07: a missing or unrecognised decision is never recorded as an
+    # authorisation. It maps to status "unknown_decision" below.
+    raw_decision_value = decision.get("decision")
+    decision_value = (
+        raw_decision_value
+        if isinstance(raw_decision_value, str) and raw_decision_value in STATUS_BY_DECISION
+        else "UNKNOWN"
+    )
     argument_summary = summarize_arguments(tool_call)
     explanation = summarize_policy_evidence(decision)
     original_opa = _verified_opa_provenance(tool_call)

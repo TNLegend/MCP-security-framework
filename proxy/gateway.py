@@ -28,6 +28,7 @@ from app.services.published_configuration import (
 from proxy.backend_client import BackendClient, BackendClientError
 from proxy.mcp_origin import MCPOriginError, MCPOriginValidator
 from proxy.mcp_proxy import MCPProxy, protocol_verdict_expired
+from proxy.runtime_logger import safe_runtime_error_code
 from proxy.protocol_profiles import (
     LEGACY_PROFILE_ID,
     LEGACY_PROTOCOL_VERSIONS,
@@ -689,6 +690,17 @@ class MCPGateway:
         # from executed: remote effects can precede result or audit failures.
         proxy_status = proxy_result.get("status")
         effect_possible = bool(proxy_result.get("mcp_called"))
+        # RT-10: give the agent a stable, non-sensitive correlation reference
+        # the operator can search in Tool activity. Never echo remote text.
+        runtime_log_payload = proxy_result.get("runtime_log")
+        operation_id = (
+            runtime_log_payload.get("operation_id")
+            if isinstance(runtime_log_payload, dict) else None
+        )
+        reference = {
+            "operation_id": operation_id if isinstance(operation_id, str) else None,
+            "runtime_log_id": proxy_result.get("runtime_log_id"),
+        }
         if proxy_status == "error":
             error_message = (
                 "audit_completion_failed"
@@ -705,18 +717,44 @@ class MCPGateway:
                     "rule_id": proxy_result.get("rule_id"),
                     "effect_possible": effect_possible,
                     "retry_unsafe": effect_possible,
+                    **reference,
                 },
             )
         if proxy_status == "blocked":
+            # A result guard can withhold the response of a call that DID
+            # reach the MCP server. Never present that as "not executed".
+            withheld = proxy_result.get("execution_status") == "result_blocked"
             return _jsonrpc_error(
                 payload.get("id"),
                 -32003,
-                "tool_call_blocked",
+                "tool_result_withheld" if withheld else "tool_call_blocked",
                 403,
                 data={
                     "rule_id": proxy_result.get("rule_id"),
                     "skip_reason": proxy_result.get("skip_reason"),
+                    "reason_code": safe_runtime_error_code(
+                        proxy_result.get("skip_reason") or proxy_result.get("rule_id")
+                    ),
                     "effect_possible": effect_possible,
+                    "retry_unsafe": effect_possible,
+                    **reference,
+                },
+            )
+        if proxy_status == "approval_required":
+            # RT-07: a deferred (legacy ASK_APPROVAL) decision is never
+            # dispatched and there is no runtime approval queue to wait for.
+            return _jsonrpc_error(
+                payload.get("id"),
+                -32003,
+                "tool_call_not_dispatched_policy_deferred",
+                403,
+                data={
+                    "rule_id": proxy_result.get("rule_id"),
+                    "reason_code": "policy_deferred",
+                    "runtime_approval_workflow": False,
+                    "effect_possible": effect_possible,
+                    "retry_unsafe": effect_possible,
+                    **reference,
                 },
             )
         if (

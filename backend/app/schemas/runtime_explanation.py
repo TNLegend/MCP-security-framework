@@ -64,6 +64,7 @@ class RuntimeGuardExplanation(BaseModel):
         "policy_error",
         "inventory_error",
         "dispatch_admission_unavailable",
+        "unsupported_policy_decision_for_security_model",
     ]
     phase: Literal["PRE_POLICY", "PRE_DISPATCH", "RESULT_GUARD", "FAIL_CLOSED"]
     model_config = ConfigDict(extra="forbid")
