@@ -59,6 +59,8 @@ class ControlledAIAssistancePublic(BaseModel):
     analysis_id: int
     analysis_context_hash: str | None = Field(default=None, max_length=64)
     summary: str = Field(min_length=1, max_length=2500)
+    # Generated prose is advisory only, never a framework disposition.
+    ai_explanation: str | None = Field(default=None, max_length=1800)
     risk_factors: tuple[str, ...] = Field(default=(), max_length=12)
     recommended_action: ControlledAIRecommendedAction
     rationale: str = Field(min_length=1, max_length=2500)

@@ -118,8 +118,7 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
           <p className="hint-text" role="note">
             Sends analysis metadata and your question to the configured AI provider and, if needed, its fallback. Onboarding help also sends tool metadata.
           </p>
-          <details className="operator-technical-details">
-            <summary>Ask a specific question or choose another type of help</summary>
+          <div className="controlled-ai-question">
             <label>
               Type of help
               <select disabled={busy} onChange={(event) => {
@@ -138,8 +137,8 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
                 placeholder="What would you like to understand?"
                 value={question} />
             </label>
-            <p className="hint-text">Keep credentials and sensitive data out of your question.</p>
-          </details>
+            <p className="hint-text">Ask about an actual finding or risk for a more useful explanation. Do not enter credentials or sensitive data.</p>
+          </div>
           <button disabled={!canAsk} type="submit">
             {busy ? "Requesting assistance…" : (mode === "EXPLAIN"
               ? "Explain this result"
@@ -177,7 +176,17 @@ export function ControlledAIResult({ result }) {
       <h4>{isDraft ? "AI-generated onboarding proposal" : "AI-assisted review"}</h4>
       <section className="controlled-ai-section">
         <h5>{isDraft ? "What the AI proposed" : "AI interpretation of recorded evidence"}</h5>
+        {result.ai_explanation ? (
+          <>
+            <p>{result.ai_explanation}</p>
+            <p className="hint-text">AI-generated explanation. Verify it against the recorded security findings; it is not an authorization.</p>
+          </>
+        ) : (
+          <p className="hint-text">The AI did not provide a specific explanation. The recorded findings below remain the source of truth.</p>
+        )}
+        <h5>Recorded security facts</h5>
         <p>{result.summary}</p>
+        <StringList title="Evidence behind this result" values={result.risk_factors} />
       </section>
       <section className="controlled-ai-section">
         <h5>What to do next</h5>
@@ -199,7 +208,7 @@ export function ControlledAIResult({ result }) {
           </div>
         </div>
         <p>Advisory confidence: {formatConfidence(result.confidence)}. This score describes the assistance only.</p>
-        <StringList title="Risk factors" values={result.risk_factors} />
+        <p>Displayed findings are recorded by the framework, not invented by the AI.</p>
         <StringList title={isDraft ? "Related analysis references" : "Framework evidence references selected by AI"} values={result.evidence_refs} />
         <OptionList title="Template options" values={result.template_options} />
         <OptionList title="Adapter options" values={result.adapter_options} />
@@ -207,13 +216,64 @@ export function ControlledAIResult({ result }) {
           <section className="controlled-ai-section">
             <h5>{humanize(result.draft_kind)} preview</h5>
             <p>Review the proposed draft before using the approval workflow.</p>
-            <pre className="controlled-ai-preview">{JSON.stringify(result.draft_preview, null, 2)}</pre>
+            <DraftPreview draft={result.draft_preview} />
           </section>
         )}
       </details>
     </div>
   );
 }
+
+function DraftPreview({ draft }) {
+  if (!draft || typeof draft !== "object" || Array.isArray(draft)) {
+    return <p>There is no readable configuration proposal to review.</p>;
+  }
+  return (
+    <dl className="compact-dl controlled-ai-proposal" aria-label="Proposed configuration fields">
+      {Object.entries(draft).slice(0, 24).map(([key, value]) => (
+        <div key={key}>
+          <dt>{humanize(key)}</dt>
+          <dd><DraftFieldValue value={value} depth={0} /></dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function DraftFieldValue({ value, depth }) {
+  if (value === null || value === undefined) return <>Not specified</>;
+  if (typeof value === "boolean") return <>{value ? "Yes" : "No"}</>;
+  if (typeof value === "string" || typeof value === "number") {
+    return <>{String(value)}</>;
+  }
+  if (depth >= 3) return <>Further nested settings require administrator review</>;
+  if (Array.isArray(value)) {
+    if (!value.length) return <>No entries</>;
+    return (
+      <ul>
+        {value.slice(0, 20).map((item, index) => (
+          <li key={index}><DraftFieldValue value={item} depth={depth + 1} /></li>
+        ))}
+      </ul>
+    );
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value).slice(0, 20);
+    if (!entries.length) return <>No entries</>;
+    return (
+      <dl className="compact-dl">
+        {entries.map(([key, item]) => (
+          <div key={key}>
+            <dt>{humanize(key)}</dt>
+            <dd><DraftFieldValue value={item} depth={depth + 1} /></dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+  return <>Unsupported setting; review the original proposal</>;
+}
+
 
 function StringList({ title, values = [] }) {
   if (!values?.length) return null;

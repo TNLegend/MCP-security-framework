@@ -57,6 +57,9 @@ class ControlledAIAssistanceError(Exception):
 
 
 class _AIAdvice(BaseModel):
+    # Optional for backwards compatibility with providers returning the
+    # historical four-field selection contract.
+    explanation: str = Field(default="", max_length=1800)
     evidence_refs: tuple[str, ...] = Field(default=(), max_length=32)
     template_ids: tuple[str, ...] = Field(default=(), max_length=8)
     adapter_ids: tuple[str, ...] = Field(default=(), max_length=8)
@@ -167,6 +170,9 @@ def generate_controlled_ai_assistance(
             template_count=len(suggestions),
             adapter_count=len(adapter_by_id),
         ),
+        # AI prose is clearly distinguished from verified security facts.
+        # It is escaped by React and cannot alter action, review, or policy.
+        ai_explanation=advice.explanation.strip() or None,
         risk_factors=_deterministic_risk_factors(
             analysis=analysis,
             findings=findings,
@@ -471,8 +477,16 @@ def _build_prompt(*, mode: str, question: str | None, context: dict[str, Any]) -
         "The analysis_status, review_status, risk_level, and drift_status values inside the evidence are "
         "authoritative framework facts. Do not restate, reinterpret, or override security status in your output. "
         "The framework, not the model, will generate the final status summary, recommended action, and rationale. "
-        "The framework also derives displayed risk factors and uncertainties; do not write them. "
-        "Return exactly one JSON object with keys: evidence_refs, template_ids, adapter_ids, confidence. "
+        "The framework also derives displayed risk factors and uncertainties; do not rewrite their values. "
+        "Return exactly one JSON object with keys: evidence_refs, template_ids, adapter_ids, confidence, explanation. "
+        "Explanation is advisory prose, NOT a new security decision. Write 2-4 natural-language sentences "
+        "(maximum 1000 characters) explaining the current tool-specific evidence codes, their practical "
+        "significance, and relevant limitations, rather than repeating a generic template. "
+        "Answer the operator question when present, using its language; otherwise use clear English. "
+        "Mention at least one concrete provided fact when available. Never assert a tool is approved, "
+        "actually malicious, safe to execute, or authorized by the model. Do not invent evidence or "
+        "claim effective permissions. Do not output markdown tables, JSON, or code fences inside explanation. "
+        "If the available evidence is insufficient, explicitly say what cannot be concluded. "
         "evidence_refs must be copied exactly from the provided evidence_refs list. "
         "template_ids and adapter_ids must be copied exactly from the provided candidate lists. "
         "For modes other than COMPARE_OPTIONS, template_ids and adapter_ids should be empty arrays. "
