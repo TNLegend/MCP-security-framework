@@ -1126,11 +1126,11 @@ function ServerDetailPanel({
       </p>
       <div className="endpoint-pair">
         <div>
-          <span>Upstream ? direct and unmediated</span>
+          <span>Upstream: direct and unmediated</span>
           <code>{displayValue(server.endpoint)}</code>
         </div>
         <div>
-          <span>Governed endpoint ? Gateway-mediated</span>
+          <span>Governed endpoint: Gateway-mediated</span>
           <code>{governedEndpoint || "Gateway endpoint unavailable"}</code>
           {governedEndpoint && (
             <button

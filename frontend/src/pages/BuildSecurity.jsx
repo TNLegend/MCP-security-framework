@@ -515,7 +515,7 @@ function BuildSecurity({
         <section className="detail-panel build-new-scan" id="build-new">
           <div className="operations-section-heading">
             <h3>New scan</h3>
-            <small>Administrator only ? Checks code, secrets and dependencies</small>
+            <small>Administrator only: checks code, secrets and dependencies</small>
           </div>
 
           <div className="build-mode-tabs" role="group" aria-label="Build target type">
