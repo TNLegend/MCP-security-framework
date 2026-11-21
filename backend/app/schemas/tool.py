@@ -30,6 +30,7 @@ class MCPToolRead(MCPToolCreate):
     approved_fingerprint: str | None = None
     approved_fingerprint_match: bool = False
     analysis_status: str = "PENDING_ANALYSIS"
+    status_reason: str | None = None
     risk_level: str = "unknown"
     semantic_flagged: bool = False
     deterministic_critical_finding: bool = False

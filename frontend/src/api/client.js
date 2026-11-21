@@ -504,9 +504,12 @@ export async function fetchToolAnalysisBundle(toolId) {
     baseline: () => request(`/tool-analysis/tools/${toolId}/baseline`),
     reviews: () => request(`/tool-analysis/tools/${toolId}/reviews`),
     diff: () => request(`/tool-analysis/tools/${toolId}/diff`),
+    // TA-06: backend-authoritative approval eligibility (never recomputed here).
+    eligibility: () => request(`/tool-analysis/tools/${toolId}/approval-eligibility`),
   });
 
   return {
+    eligibility: bundle.eligibility ?? null,
     status: bundle.status ?? null,
     analyses: bundle.analyses ?? [],
     findings: bundle.findings ?? [],

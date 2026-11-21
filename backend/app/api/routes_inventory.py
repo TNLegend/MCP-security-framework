@@ -760,6 +760,7 @@ def apply_tool_metadata(tool: MCPTool, tool_payload: dict, now: datetime) -> Non
     tool.execution = tool_payload.get("execution")
     tool.raw_tool_definition = tool_payload.get("raw_tool_definition")
     tool.status = "QUARANTINED"
+    tool.status_reason = "NEWLY_DISCOVERED_NOT_ANALYZED"
     tool.last_analyzed_at = now
 
     enrichment = security_enrichment_for_tool(tool.name)

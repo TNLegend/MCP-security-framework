@@ -38,6 +38,8 @@ class ToolAnalysis(Base):
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     analysis_context_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     analysis_status: Mapped[str] = mapped_column(String(50), nullable=False)
+    # TA-01: enumerated quarantine cause; NULL when not QUARANTINED or historical.
+    status_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     risk_score: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     risk_level: Mapped[str] = mapped_column(String(50), default="unknown", nullable=False)
     semantic_flagged: Mapped[str] = mapped_column(String(5), default="false", nullable=False)

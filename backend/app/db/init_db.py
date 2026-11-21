@@ -40,6 +40,7 @@ PHASE2_INVENTORY_COLUMNS = {
         "ADD COLUMN IF NOT EXISTS notes TEXT",
     ],
     "mcp_tools": [
+        "ADD COLUMN IF NOT EXISTS status_reason VARCHAR(64)",
         "ADD COLUMN IF NOT EXISTS title VARCHAR(255)",
         "ADD COLUMN IF NOT EXISTS icons JSON",
         "ADD COLUMN IF NOT EXISTS input_schema JSON",
@@ -118,6 +119,7 @@ PHASE2_INVENTORY_COLUMNS = {
     ],
     "tool_analyses": [
         "ADD COLUMN IF NOT EXISTS analysis_context_hash VARCHAR(64)",
+        "ADD COLUMN IF NOT EXISTS status_reason VARCHAR(64)",
     ],
     "tool_approved_baselines": [
         "ADD COLUMN IF NOT EXISTS analysis_context_hash VARCHAR(64)",

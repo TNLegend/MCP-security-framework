@@ -248,13 +248,33 @@ def _validate_review(reviewer: str, justification: str) -> None:
         raise ValueError("review justification is too short.")
 
 
-def _validate_approvable_analysis(
+# TA-06: the single authority for "can an administrator approve this tool now?".
+# Codes are stable; `message` keeps the historical ValueError text; the GUI
+# renders `message` and `next_action` and never recomputes the rule.
+APPROVAL_INELIGIBILITY: dict[str, tuple[str, str]] = {
+    "NO_CURRENT_ANALYSIS": ("fingerprint does not match the latest analysis.", "RUN_ANALYSIS"),
+    "OBSERVED_VERSION_MISSING": ("observed version is missing.", "RUN_DISCOVERY"),
+    "ANALYSIS_STATUS_NOT_APPROVABLE": ("analysis status cannot be approved.", "RESOLVE_ANALYSIS_STATUS"),
+    "ANALYSIS_INCOMPLETE": ("analysis is not complete.", "WAIT_OR_RERUN_ANALYSIS"),
+    "OBSERVED_VERSION_FINGERPRINT_MISMATCH": ("observed version fingerprint does not match.", "RUN_DISCOVERY"),
+    "ANALYZER_REVISION_OUTDATED": ("analysis was produced by an outdated analyzer revision.", "RUN_ANALYSIS"),
+    "ANALYSIS_CONTEXT_INVALID": ("analysis context hash is missing or invalid.", "RUN_ANALYSIS"),
+    "TOOL_MISSING": ("tool is missing.", "RUN_DISCOVERY"),
+    "TOOL_FINGERPRINT_CHANGED": ("fingerprint does not match the current tool version.", "RUN_ANALYSIS"),
+    "ANALYSIS_RESULTS_INCOMPLETE": ("analysis results are incomplete.", "RUN_ANALYSIS"),
+    "ANALYSIS_PIPELINE_NOT_CURRENT": ("analysis pipeline is not the current qualified pipeline.", "RUN_ANALYSIS"),
+    "REVIEW_STATUS_NOT_APPROVABLE": ("review status is not approvable.", "RESOLVE_REVIEW_STATUS"),
+}
+
+
+def _approvable_analysis_failures(
     db: Session,
     tool_id: int,
     fingerprint: str,
     analysis: ToolAnalysis,
     version: ToolObservedVersion,
-) -> None:
+) -> list[str]:
+    """Return failing eligibility codes in the historical evaluation order."""
     from app.models.mcp_tool import MCPTool
 
     recognized_review_states = {
@@ -262,34 +282,86 @@ def _validate_approvable_analysis(
         STATUS_ADMIN_ALLOWED,
         STATUS_REVIEW_REQUIRED,
     }
+    failures: list[str] = []
     if (
         analysis.analysis_status not in recognized_review_states
         or analysis.review_status not in recognized_review_states
     ):
-        raise ValueError("analysis status cannot be approved.")
+        failures.append("ANALYSIS_STATUS_NOT_APPROVABLE")
     if analysis.completed_at is None:
-        raise ValueError("analysis is not complete.")
+        failures.append("ANALYSIS_INCOMPLETE")
     if version.fingerprint != fingerprint:
-        raise ValueError("observed version fingerprint does not match.")
+        failures.append("OBSERVED_VERSION_FINGERPRINT_MISMATCH")
     if analysis.analyzer_revision != ANALYZER_REVISION:
-        raise ValueError("analysis was produced by an outdated analyzer revision.")
+        failures.append("ANALYZER_REVISION_OUTDATED")
     if not reusable_analysis_context_hash(analysis.analysis_context_hash):
-        raise ValueError("analysis context hash is missing or invalid.")
+        failures.append("ANALYSIS_CONTEXT_INVALID")
     tool = db.get(MCPTool, tool_id)
     if tool is None:
-        raise ValueError("tool is missing.")
-    if tool.current_fingerprint != fingerprint:
-        raise ValueError("fingerprint does not match the current tool version.")
+        failures.append("TOOL_MISSING")
+    elif tool.current_fingerprint != fingerprint:
+        failures.append("TOOL_FINGERPRINT_CHANGED")
     if (
         not analysis.semantic_scores
         or not analysis.drift_result
         or (not analysis.model_versions)
     ):
-        raise ValueError("analysis results are incomplete.")
-    require_current_pipeline(analysis)
+        failures.append("ANALYSIS_RESULTS_INCOMPLETE")
+    else:
+        try:
+            require_current_pipeline(analysis)
+        except ValueError:
+            failures.append("ANALYSIS_PIPELINE_NOT_CURRENT")
     if (
         analysis.analysis_status == STATUS_REVIEW_REQUIRED
         and analysis.review_status
         not in {STATUS_REVIEW_REQUIRED, STATUS_APPROVED, STATUS_ADMIN_ALLOWED}
     ):
-        raise ValueError("review status is not approvable.")
+        failures.append("REVIEW_STATUS_NOT_APPROVABLE")
+    return failures
+
+
+def _validate_approvable_analysis(
+    db: Session,
+    tool_id: int,
+    fingerprint: str,
+    analysis: ToolAnalysis,
+    version: ToolObservedVersion,
+) -> None:
+    failures = _approvable_analysis_failures(db, tool_id, fingerprint, analysis, version)
+    if failures and failures[0] == "ANALYSIS_PIPELINE_NOT_CURRENT":
+        # Same order as before: re-raise the pipeline guard's own error.
+        require_current_pipeline(analysis)
+    if failures:
+        raise ValueError(APPROVAL_INELIGIBILITY[failures[0]][0])
+
+
+def approval_eligibility(db: Session, tool_id: int) -> dict:
+    """Read-only TA-06 contract: {eligible, reasons, next_action, fingerprint}.
+
+    Uses exactly the checks enforced by approve(); approve() still re-checks
+    under its locks, so a stale eligibility answer can never authorise.
+    """
+    analysis = latest_analysis_for_tool(db, tool_id)
+    codes: list[str] = []
+    fingerprint = analysis.fingerprint if analysis is not None else None
+    if analysis is None:
+        codes = ["NO_CURRENT_ANALYSIS"]
+    else:
+        version = db.get(ToolObservedVersion, analysis.version_id)
+        if version is None:
+            codes = ["OBSERVED_VERSION_MISSING"]
+        else:
+            codes = _approvable_analysis_failures(
+                db, tool_id, analysis.fingerprint, analysis, version,
+            )
+    reasons = [
+        {"code": code, "message": APPROVAL_INELIGIBILITY[code][0]} for code in codes
+    ]
+    return {
+        "eligible": not codes,
+        "reasons": reasons,
+        "next_action": APPROVAL_INELIGIBILITY[codes[0]][1] if codes else "RECORD_REVIEW_DECISION",
+        "fingerprint": fingerprint,
+        "requires_justification_min_length": MIN_REVIEW_JUSTIFICATION_LENGTH,
+    }

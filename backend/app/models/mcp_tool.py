@@ -43,6 +43,10 @@ class MCPTool(Base):
         default="PENDING_ANALYSIS",
         nullable=False,
     )
+    # TA-01: enumerated cause of a QUARANTINED status (see
+    # app.services.tda_application.status_reasons). NULL for other statuses
+    # and for historical rows written before this column existed.
+    status_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     risk_level: Mapped[str] = mapped_column(String(50), default="unknown", nullable=False)
     semantic_flagged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     deterministic_critical_finding: Mapped[bool] = mapped_column(

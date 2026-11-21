@@ -12,6 +12,7 @@ from app.models.tool_analysis import (
     ToolObservedVersion,
 )
 from app.services.control_plane_auth import AuthenticatedControlPlaneUser, require_authenticated_user
+from app.services.tda_application.status_reasons import describe as describe_status_reason
 
 router = APIRouter(prefix="/tool-analysis", tags=["Tool Analysis"])
 
@@ -27,6 +28,10 @@ def tool_analysis_status(
         "tool_id": tool.id,
         "name": tool.name,
         "analysis_status": tool.analysis_status,
+        "status": tool.status,
+        # TA-01: authoritative, enumerated restriction cause and next action.
+        "status_reason": tool.status_reason,
+        "status_reason_detail": describe_status_reason(tool.status_reason),
         "current_fingerprint": tool.current_fingerprint,
         "approved_fingerprint": tool.approved_fingerprint,
         "approved_fingerprint_match": tool.approved_fingerprint_match,
@@ -126,12 +131,57 @@ def tool_baseline(
         "fingerprint": baseline.fingerprint,
         "analysis_context_hash": baseline.analysis_context_hash,
         "approval_source": baseline.approval_source,
+        # TA-04: explicit provenance; a framework baseline is NOT a human review.
+        "approval_provenance": _approval_provenance(baseline.approval_source),
         "reviewer": baseline.reviewer,
         "justification": baseline.justification,
         "analyzer_revision": baseline.analyzer_revision,
         "model_versions": baseline.model_versions,
         "approved_at": baseline.approved_at,
     }
+
+
+def _m3_shadow_payload(analysis: ToolAnalysis) -> dict:
+    from app.services.tda_application.m3_shadow_projection import unavailable
+    stored = (analysis.semantic_scores or {}).get("m3_shadow")
+    if isinstance(stored, dict):
+        if (stored.get("mode") == "SHADOW"
+                and stored.get("authority") == "AT_MOST_REVIEW_ADVISORY"
+                and stored.get("security_decision_changes") == "NONE"):
+            return stored
+        return unavailable("M3_REPORT_AUTHORITY_INVALID")
+    if analysis.analysis_status == "ANALYSIS_FAILED":
+        return unavailable("ANALYSIS_FAILED_BEFORE_M3")
+    return unavailable("M3_NOT_RECORDED_FOR_THIS_ANALYSIS")
+
+
+def _approval_provenance(source: str | None) -> dict:
+    from app.services.tda.configuration import APPROVAL_SOURCE_ADMIN, APPROVAL_SOURCE_FRAMEWORK
+    if source == APPROVAL_SOURCE_ADMIN:
+        return {"kind": "ADMINISTRATOR", "human_review": True,
+                "label": "Approved by an administrator after review."}
+    if source == APPROVAL_SOURCE_FRAMEWORK:
+        return {"kind": "FRAMEWORK_BASELINE", "human_review": False,
+                "label": "Approved automatically by the framework baseline; no human review was recorded."}
+    return {"kind": "UNKNOWN", "human_review": None,
+            "label": "Approval provenance is not recorded for this baseline."}
+
+
+@router.get("/tools/{tool_id}/approval-eligibility")
+def tool_approval_eligibility(
+    tool_id: int,
+    current: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    """TA-06: backend-authoritative eligibility; approve() re-checks under lock."""
+    from app.services.tda_application.review_service import approval_eligibility
+    _tool_or_404(tool_id, db)
+    result = approval_eligibility(db, tool_id)
+    role_allows = getattr(current.user, "role", None) == "ADMIN"
+    result["actor_can_approve"] = bool(role_allows and result["eligible"])
+    if not role_allows:
+        result["actor_restriction"] = "VIEWER_READ_ONLY"
+    return result
 
 
 @router.get("/tools/{tool_id}/reviews")
@@ -195,6 +245,8 @@ def _analysis_payload(analysis: ToolAnalysis) -> dict:
         "fingerprint": analysis.fingerprint,
         "analysis_context_hash": analysis.analysis_context_hash,
         "analysis_status": analysis.analysis_status,
+        "status_reason": analysis.status_reason,
+        "status_reason_detail": describe_status_reason(analysis.status_reason),
         "risk_score": analysis.risk_score,
         "risk_level": analysis.risk_level,
         "semantic_flagged": analysis.semantic_flagged == "true",
@@ -204,6 +256,9 @@ def _analysis_payload(analysis: ToolAnalysis) -> dict:
         "drift_status": analysis.drift_status,
         "review_status": analysis.review_status,
         "semantic_scores": analysis.semantic_scores,
+        # TA-02: advisory M3 SHADOW projection, or an explicit unavailability
+        # for failed analyses and rows recorded before it was persisted.
+        "m3_shadow": _m3_shadow_payload(analysis),
         "consistency_result": analysis.consistency_result,
         "drift_result": analysis.drift_result,
         "model_versions": analysis.model_versions,

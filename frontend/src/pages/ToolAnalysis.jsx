@@ -8,10 +8,7 @@ import { Pagination, usePagination } from "../components/Pagination";
 import ToolContractOnboarding from "../components/ToolContractOnboarding";
 import { useDialogFocus } from "../utils/useDialogFocus";
 import { driftChangeDescription, isCurrentAnalysis, nextAnalysisAction, riskLedgerMatchesRecord } from "../utils/analysisPresentation";
-import {
-  hasNonEmptyAnalysisEvidence,
-  validateToolJustification,
-} from "../utils/validation";
+import { validateToolJustification } from "../utils/validation";
 
 function ToolAnalysis({
   analyses = [],
@@ -86,7 +83,7 @@ function ToolAnalysis({
   const selectedServer = selectedTool ? serversById.get(selectedTool.server_id) : null;
   const approveDisabledReason = bundleLoading
     ? "Cannot allow: current evidence is still loading."
-    : approvalDisabledReason(selectedTool, reviewAnalysis);
+    : approvalDisabledReason(activeBundle, reviewAnalysis);
   const blockDisabledReason = bundleLoading
     ? "Cannot block: current evidence is still loading."
     : blockActionDisabledReason(selectedTool, reviewAnalysis);
@@ -364,6 +361,11 @@ function ToolAnalysis({
                 <div><span>Review</span><strong>{displayReviewStatus(selectedTool.review_status)}</strong></div>
                 <div><span>Execution authority</span><strong>Checked by runtime policy</strong></div>
               </div>
+              {activeBundle?.baseline?.approval_provenance && (
+                <p className="hint-text" aria-label="Baseline approval provenance">
+                  Approved baseline: {activeBundle.baseline.approval_provenance.label}
+                </p>
+              )}
               <details className="analysis-technical-identity">
                 <summary>Technical identifiers</summary>
                 <dl className="compact-dl">
@@ -574,9 +576,9 @@ function AnalysisOverview({ bundle, isAdmin, latestAnalysis, onAskAI, tool }) {
     : null;
   const changes = current && Array.isArray(latestAnalysis?.drift_result?.changes)
     ? latestAnalysis.drift_result.changes : null;
-  const injectionFinding = findings?.find((finding) =>
-    /prompt.?injection|instruction.?override|injected.?instruction/i.test(
-      [finding.code, finding.title, finding.category].filter(Boolean).join(" ")));
+  // TA-02: the persisted M3 SHADOW projection, never a label/regex guess.
+  const m3 = current ? latestAnalysis?.m3_shadow : null;
+  const restriction = bundle?.status?.status_reason_detail;
   return (
     <>
       <SectionError error={bundle?.errors?.status} title="Security results" />
@@ -591,8 +593,8 @@ function AnalysisOverview({ bundle, isAdmin, latestAnalysis, onAskAI, tool }) {
           <>
             <div className="operator-checks">
               <div>
-                <span>Prompt injection</span>
-                <strong>{injectionFinding ? "Finding label refers to injection ? verify" : "No independent injection verdict recorded"}</strong>
+                <span>Instruction-injection check (advisory)</span>
+                <strong>{m3SummaryLine(m3)}</strong>
               </div>
               <div>
                 <span>Tool changes</span>
@@ -607,23 +609,19 @@ function AnalysisOverview({ bundle, isAdmin, latestAnalysis, onAskAI, tool }) {
                     : findings.length + " finding(s) to review"}</strong>
               </div>
             </div>
-            {injectionFinding && (
-              <div className="operator-caution">
-                <p>A finding label or category mentions injection, but this
-                  summary is a text-based classification, not a separately
-                  verified prompt-injection detection or a confirmed attack.</p>
-                <details><summary>Inspect the recorded finding</summary>
-                  <p>Finding code: <code>{injectionFinding.code || "Not recorded"}</code></p>
-                  <p>Finding title: {injectionFinding.title || "Not recorded"}</p>
-                  <p>Finding category: {injectionFinding.category || "Not recorded"}</p>
-                  <p>Observation and rationale: {injectionFinding.description || "No rationale recorded"}</p>
-                  <p>Analysis: <code>{injectionFinding.analysis_id || latestAnalysis?.id || "Unknown"}</code></p>
-                </details>
-              </div>
-            )}
+            <M3ShadowDetails m3={m3} />
           </>
         )}
       </section>
+
+      {restriction && (
+        <section className="operator-caution" aria-label="Why this tool is restricted">
+          <h4>Why is this tool restricted?</h4>
+          <p>{restriction.label}</p>
+          <p><strong>What to do:</strong> {restriction.next_action}</p>
+          <p className="muted-text">Restriction code: <code>{restriction.code}</code></p>
+        </section>
+      )}
 
       <RiskEvidenceSummary evidence={ledger} current={current} findings={findings} />
 
@@ -670,6 +668,57 @@ function AnalysisOverview({ bundle, isAdmin, latestAnalysis, onAskAI, tool }) {
         <p>Some checks can be incomplete. This report does not authorize MCP execution.</p>
       </details>
     </>
+  );
+}
+
+const M3_UNAVAILABLE = {
+  M3_NOT_RECORDED_FOR_THIS_ANALYSIS: "Not recorded for this analysis (recorded before the check was persisted). Re-run the analysis to record it.",
+  ANALYSIS_FAILED_BEFORE_M3: "Unavailable: the analysis failed before this check ran.",
+  M3_REPORT_NOT_PRODUCED: "Unavailable: the check produced no report.",
+  M3_REPORT_NOT_RETAINED_BY_DISCOVERY_STAGE: "Unavailable: this staged analysis did not keep the check report.",
+  M3_REPORT_AUTHORITY_INVALID: "Unavailable: the report was rejected because it claimed decision authority.",
+};
+
+const M3_RESULT = {
+  OBSERVATION_PRESENT: "Possible instruction signals found; review them.",
+  NO_CANDIDATE_NOT_A_CLEAN_VERDICT: "No signal found. This is not a clean verdict.",
+  INCOMPLETE_INSPECTION_OBSERVATION_PRESENT: "Signals found, but the inspection was incomplete.",
+  INCOMPLETE_INSPECTION_NO_CANDIDATE_NOT_A_CLEAN_VERDICT: "No signal found in an incomplete inspection.",
+};
+
+export function m3SummaryLine(m3) {
+  if (!m3) return "Result unavailable";
+  if (!m3.available) return M3_UNAVAILABLE[m3.unavailable_reason] || "Unavailable";
+  return M3_RESULT[m3.result_status] || "Recorded; see details";
+}
+
+// TA-02: advisory evidence only. Never presented as allowing or blocking.
+function M3ShadowDetails({ m3 }) {
+  if (!m3?.available) return null;
+  return (
+    <details className="m3-shadow-details">
+      <summary>Instruction-injection check details (advisory, does not decide)</summary>
+      <p>Mode: shadow. This check cannot allow or block a tool; deterministic findings and your review decide.</p>
+      <dl className="compact-dl">
+        <InfoRow label="Inspection" value={humanize(m3.scope?.execution_status || "unknown")} />
+        <InfoRow label="Fields inspected" value={m3.scope?.inspected_fields ?? "Unknown"} />
+        <InfoRow label="Language coverage" value={humanize(m3.scope?.language_coverage || "unknown")} />
+        <InfoRow label="Signals" value={`${m3.signal_count ?? 0}${m3.signals_truncated ? " (list truncated)" : ""}`} />
+      </dl>
+      {m3.signals?.length > 0 && (
+        <ul>
+          {m3.signals.map((signal, index) => (
+            <li key={index}>
+              <code>{signal.rule_id || "unknown rule"}</code> in <code>{signal.field_pointer || "unknown field"}</code>
+              {" "}({humanize(signal.evidence_level || "unresolved")}{signal.source_bound ? ", located in source" : ", not located"})
+            </li>
+          ))}
+        </ul>
+      )}
+      {m3.limitations?.length > 0 && (
+        <p>Limits: {m3.limitations.map(humanize).join("; ")}.</p>
+      )}
+    </details>
   );
 }
 
@@ -723,13 +772,12 @@ function InfoRow({ label, value }) {
   return <div><dt>{label}</dt><dd>{value ?? "-"}</dd></div>;
 }
 
-function friendlyFindingTitle(finding) {
-  const label = [finding.code, finding.title, finding.category].filter(Boolean).join(" ");
-  if (/prompt.?injection|injected.?instruction|instruction.?override/i.test(label)) return "Possible prompt injection";
-  if (/exposed.?secret|credential.?leak|token.?leak/i.test(label)) return "Possible exposed secret";
-  if (/contract.?change|schema.?change|drift/i.test(label)) return "Tool definition changed";
-  if (finding.title && !/^[A-Z0-9_ -]+$/.test(finding.title)) return finding.title;
-  return "Security issue to review";
+// TA-02 / XC-03: show what the backend recorded. The GUI never reclassifies a
+// finding (e.g. as "prompt injection") from words in its code or title.
+export function friendlyFindingTitle(finding) {
+  if (finding?.title && !/^[A-Z0-9_ -]+$/.test(finding.title)) return finding.title;
+  if (finding?.code) return humanize(String(finding.code).toLowerCase());
+  return "Security finding to review";
 }
 function FindingsView({ error, findings }) {
   const findingPagination = usePagination(findings, String(findings.length));
@@ -869,8 +917,8 @@ function displayReviewStatus(value) {
   return {
     REVIEW_REQUIRED: "Needs review",
     PENDING: "Pending",
-    APPROVED: "Review approved",
-    ADMIN_ALLOWED: "Review approved",
+    APPROVED: "Approved automatically (framework baseline)",
+    ADMIN_ALLOWED: "Approved by an administrator",
     BLOCKED: "Blocked",
   }[key] || humanize(value || "Unknown");
 }
@@ -879,44 +927,33 @@ function formatDate(value) {
   return formatServerTime(value);
 }
 
-function approvalDisabledReason(tool, latestAnalysis) {
-  if (!tool?.current_fingerprint) {
-    return "Cannot allow: no current fingerprint.";
+const ELIGIBILITY_NEXT_ACTION = {
+  RUN_ANALYSIS: "Run the tool analysis again.",
+  RUN_DISCOVERY: "Refresh discovery for this server.",
+  WAIT_OR_RERUN_ANALYSIS: "Wait for the analysis to finish, or run it again.",
+  RESOLVE_ANALYSIS_STATUS: "Resolve the analysis status first (blocked, failed or restricted tools cannot be allowed).",
+  RESOLVE_REVIEW_STATUS: "Resolve the review status first.",
+  RECORD_REVIEW_DECISION: "Record a review decision with a justification.",
+};
+
+// TA-06: the eligibility decision comes from the backend contract only.
+// This function only renders it; it never recomputes the security rule.
+export function approvalDisabledReason(bundle, latestAnalysis) {
+  if (bundle?.errors?.eligibility) {
+    return "Cannot allow: eligibility could not be verified. Refresh before deciding.";
   }
-  if (!latestAnalysis) {
-    return "Cannot allow: no latest analysis.";
+  const eligibility = bundle?.eligibility;
+  if (!eligibility) {
+    return "Cannot allow: eligibility has not been loaded.";
   }
-  if (latestAnalysis.fingerprint !== tool.current_fingerprint) {
-    return "Cannot allow: latest analysis does not match current fingerprint.";
+  if (eligibility.fingerprint && latestAnalysis?.fingerprint
+      && eligibility.fingerprint !== latestAnalysis.fingerprint) {
+    return "Cannot allow: the evidence changed while loading. Refresh before deciding.";
   }
-  if (!latestAnalysis.completed_at) {
-    return "Cannot allow: analysis is incomplete.";
-  }
-  if (!latestAnalysis.analysis_context_hash) {
-    return "Cannot allow: analysis context hash is missing.";
-  }
-  if (!/^[a-f0-9]{64}$/i.test(latestAnalysis.analysis_context_hash)) {
-    return "Cannot allow: analysis context hash is invalid.";
-  }
-  if (
-    ["PENDING_ANALYSIS", "ANALYSIS_FAILED", "BLOCKED", "QUARANTINED", "STALE"].includes(
-      latestAnalysis.analysis_status,
-    )
-  ) {
-    return `Cannot allow: ${latestAnalysis.analysis_status.toLowerCase()}.`;
-  }
-  if (
-    !hasNonEmptyAnalysisEvidence(latestAnalysis.semantic_scores) ||
-    !hasNonEmptyAnalysisEvidence(latestAnalysis.drift_result) ||
-    !hasNonEmptyAnalysisEvidence(latestAnalysis.model_versions)
-  ) {
-    return "Cannot allow: analysis results are incomplete.";
-  }
-  if (
-    latestAnalysis.analysis_status === "REVIEW_REQUIRED" &&
-    !["REVIEW_REQUIRED", "APPROVED", "ADMIN_ALLOWED"].includes(latestAnalysis.review_status)
-  ) {
-    return "Cannot allow: review status is not eligible for admin approval.";
+  if (!eligibility.eligible) {
+    const first = eligibility.reasons?.[0];
+    const next = ELIGIBILITY_NEXT_ACTION[eligibility.next_action];
+    return `Cannot allow: ${first?.message || "not eligible."}${next ? ` ${next}` : ""}`;
   }
   return "";
 }
@@ -940,8 +977,8 @@ function Badge({ value }) {
     REVIEW_REQUIRED: "Needs review",
     PENDING_ANALYSIS: "Not analyzed",
     ANALYSIS_FAILED: "Check failed",
-    ADMIN_ALLOWED: "Review approved",
-    APPROVED: "Review approved",
+    ADMIN_ALLOWED: "Approved by an administrator",
+    APPROVED: "Approved automatically (framework baseline)",
     QUARANTINED: "Restricted",
   };
   const label = labels[key] || key.replaceAll("_", " ").toLowerCase().replace(/^./, (x) => x.toUpperCase());

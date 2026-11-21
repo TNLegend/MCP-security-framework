@@ -10,6 +10,11 @@ from app.services.tda.configuration import STATUS_ANALYSIS_FAILED
 from app.services.tda.configuration import STATUS_APPROVED
 from app.services.tda.configuration import STATUS_BLOCKED
 from app.services.tda.configuration import STATUS_QUARANTINED
+from app.services.tda_application.status_reasons import reason_for
+from app.services.tda_application.m3_shadow_projection import (
+    project_m3_report,
+    unavailable as m3_unavailable,
+)
 from app.services.tda.configuration import STATUS_REVIEW_REQUIRED
 from app.services.tda.configuration import STATUS_STALE
 from app.services.tda.models.e5 import LocalEmbeddingModel
@@ -175,22 +180,23 @@ class ToolAnalysisService:
         analysis_context_hash = compute_analysis_context_hash(profile_snapshot)
         baseline = baseline_for_tool(db, tool.id)
         active_model_versions = self._current_model_versions()
-        approved_match = (
-            baseline is not None
-            and baseline.fingerprint == fingerprint
-            and reusable_analysis_context_hash(baseline.analysis_context_hash)
-            and (baseline.analysis_context_hash == analysis_context_hash)
-            and (baseline.analyzer_revision == ANALYZER_REVISION)
-            and (active_model_versions is not None)
-            and (baseline.model_versions == active_model_versions)
-            and has_frozen_evidence(db.get(ToolAnalysis, baseline.analysis_id))
-            and approved_protocol_observation_exists(
+        # TA-01: evaluate the SAME baseline conditions as before, in order,
+        # and keep the first failing one as the enumerated restriction cause.
+        baseline_mismatch_reason = baseline_mismatch_reason_for(
+            baseline=baseline,
+            fingerprint=fingerprint,
+            analysis_context_hash=analysis_context_hash,
+            active_model_versions=active_model_versions,
+            approval_evidence_frozen=lambda: has_frozen_evidence(
+                db.get(ToolAnalysis, baseline.analysis_id)),
+            protocol_observation_approved=lambda: approved_protocol_observation_exists(
                 db,
                 tool_id=tool.id,
                 upstream_protocol_profile_id=upstream_protocol_profile_id,
                 fingerprint=fingerprint,
-            )
+            ),
         )
+        approved_match = baseline_mismatch_reason is None
         version = db.scalar(
             select(ToolObservedVersion).where(
                 ToolObservedVersion.tool_id == tool.id,
@@ -252,6 +258,7 @@ class ToolAnalysisService:
             approved_status if approved_match else STATUS_REVIEW_REQUIRED
         )
         tool.status = approved_status if approved_match else STATUS_QUARANTINED
+        tool.status_reason = reason_for(tool.status, baseline_mismatch_reason)
         tool.last_analyzed_at = now
         if approved_match and (not pending_human_hold):
             analysis = self._record_approved_observation(
@@ -432,6 +439,7 @@ class ToolAnalysisService:
         if profile_snapshot is None and result["analysis_status"] == STATUS_APPROVED:
             result["analysis_status"] = STATUS_QUARANTINED
             result["review_status"] = STATUS_REVIEW_REQUIRED
+            result["status_reason"] = "APPROVED_PROFILE_MISSING"
         from app.services.dispatch_admission import lock_emergency_dispatch_authority
 
         # Serialize only the post-inference authority read and persistence.
@@ -513,6 +521,7 @@ class ToolAnalysisService:
             fingerprint=fingerprint,
             analysis_context_hash=analysis_context_hash,
             analysis_status=result["analysis_status"],
+            status_reason=reason_for(result["analysis_status"], result.get("status_reason")),
             risk_score=result["risk_score"],
             risk_level=result["risk_level"],
             semantic_flagged=str(bool(result["semantic_flagged"])).lower(),
@@ -522,7 +531,24 @@ class ToolAnalysisService:
             consistency_status=result["consistency_status"],
             drift_status=result["drift_status"],
             review_status=result["review_status"],
-            semantic_scores=result["semantic_scores"],
+            # TA-02: persist the advisory M3 SHADOW projection next to the
+            # semantic evidence. It never alters any status computed above.
+            semantic_scores=(
+                {
+                    **result["semantic_scores"],
+                    "m3_shadow": (
+                        project_m3_report(result["m3_report"])
+                        if "m3_report" in result
+                        else m3_unavailable(
+                            "M3_REPORT_NOT_RETAINED_BY_DISCOVERY_STAGE"
+                            if precomputed_analysis is not None
+                            else "M3_REPORT_NOT_PRODUCED"
+                        )
+                    ),
+                }
+                if isinstance(result["semantic_scores"], dict)
+                else result["semantic_scores"]
+            ),
             consistency_result=_json_safe(result["consistency_result"]),
             drift_result=result["drift_result"],
             model_versions=result["model_versions"],
@@ -799,6 +825,41 @@ class ToolAnalysisService:
         return analysis
 
 
+def baseline_mismatch_reason_for(
+    *,
+    baseline: Any,
+    fingerprint: str,
+    analysis_context_hash: str | None,
+    active_model_versions: Any,
+    approval_evidence_frozen,
+    protocol_observation_approved,
+) -> str | None:
+    """TA-01: the approved-baseline conditions, evaluated in their historical
+    order. Returns the FIRST failing condition as an enumerated cause, or None
+    when the baseline still matches. The two database checks are callables so
+    they keep their original short-circuit behaviour."""
+    if baseline is None:
+        return "NO_APPROVED_BASELINE"
+    if baseline.fingerprint != fingerprint:
+        return "FINGERPRINT_CHANGED"
+    if not (
+        reusable_analysis_context_hash(baseline.analysis_context_hash)
+        and baseline.analysis_context_hash == analysis_context_hash
+    ):
+        return "APPROVED_CONTEXT_CHANGED"
+    if not (
+        baseline.analyzer_revision == ANALYZER_REVISION
+        and active_model_versions is not None
+        and baseline.model_versions == active_model_versions
+    ):
+        return "ANALYSIS_OBSOLETE"
+    if not approval_evidence_frozen():
+        return "APPROVAL_EVIDENCE_MISSING"
+    if not protocol_observation_approved():
+        return "PROTOCOL_OBSERVATION_NOT_APPROVED"
+    return None
+
+
 def apply_analysis_to_tool(
     tool: MCPTool,
     analysis: ToolAnalysis,
@@ -834,6 +895,7 @@ def apply_analysis_to_tool(
     tool.analyzer_revision = analysis.analyzer_revision
     tool.policy_status = analysis.analysis_status
     tool.status = analysis.analysis_status
+    tool.status_reason = reason_for(tool.status, getattr(analysis, "status_reason", None))
     semantic_facts = (analysis.semantic_scores or {}).get("facts")
     if isinstance(semantic_facts, dict):
         tool.is_sensitive = semantic_facts.get("is_sensitive") is True
@@ -848,6 +910,7 @@ def mark_tool_contract_pending_publication(tool: MCPTool) -> None:
     tool.review_status = STATUS_REVIEW_REQUIRED
     tool.policy_status = STATUS_QUARANTINED
     tool.status = STATUS_QUARANTINED
+    tool.status_reason = "CONTRACT_PENDING_PUBLICATION"
     tool.approved_fingerprint_match = False
 
 

@@ -174,6 +174,7 @@ def stage_new_catalog_analysis(*, payload, generation_id: str, expected_context_
         if result["analysis_status"] in {STATUS_APPROVED, STATUS_ADMIN_ALLOWED}:
             result["analysis_status"] = STATUS_QUARANTINED
             result["review_status"] = STATUS_REVIEW_REQUIRED
+            result["status_reason"] = "DISCOVERY_STAGED_REQUIRES_REVIEW"
         if result["review_status"] in {STATUS_APPROVED, STATUS_ADMIN_ALLOWED}:
             result["review_status"] = STATUS_REVIEW_REQUIRED
         records.append({
