@@ -541,6 +541,7 @@ def publish_revision(
     draft_id: str,
     actor: ControlPlaneUser,
     change_summary: str,
+    expected_preview_fingerprint: str | None = None,
 ) -> ControlPlaneConfigRevision:
     _lock_revision_catalogs(db,draft_id)
     state = lock_control_plane_state_for_update(db)
@@ -563,6 +564,11 @@ def publish_revision(
             raise ControlPlaneConfigError("draft_active_parent_changed")
     elif draft.parent_revision_id is not None:
         raise ControlPlaneConfigError("draft_active_parent_changed")
+    from app.services.control_plane_publication_preview import preview_fingerprint
+    reviewed_fingerprint = preview_fingerprint(draft, previous)
+    if (expected_preview_fingerprint is not None
+            and expected_preview_fingerprint != reviewed_fingerprint):
+        raise ControlPlaneConfigError("publication_preview_stale")
     validate_revision(db, revision_id=draft.id, actor=actor, change_summary=change_summary)
     now = datetime.utcnow()
     previous_content = (
@@ -616,8 +622,70 @@ def publish_revision(
         before_json=_revision_summary(previous) if previous else None,
         after_json=_revision_summary(draft),
         reason=change_summary,
+        metadata={
+            "publication_preview_acknowledged": expected_preview_fingerprint is not None,
+            "publication_preview_fingerprint": reviewed_fingerprint,
+        },
     )
     return draft
+
+
+def changed_contract_keys(
+    previous_content: ControlPlaneConfigContent | None,
+    next_content: ControlPlaneConfigContent,
+) -> set[tuple[str, str]]:
+    """CF-01 shared rule: (server_ref, tool_name) whose published contract
+    changes or disappears. Used by publish AND by the publication preview."""
+    if previous_content is None:
+        return set()
+    old_contracts = {
+        (contract.server_ref, contract.tool_name): contract.contract_hash
+        for contract in previous_content.tool_security_contracts or ()
+    }
+    new_contracts = {
+        (contract.server_ref, contract.tool_name): contract.contract_hash
+        for contract in next_content.tool_security_contracts or ()
+    }
+    return {
+        key for key, old_hash in old_contracts.items()
+        if new_contracts.get(key) != old_hash
+    }
+
+
+def tools_affected_by_contract_change(
+    db: Session, changed: set[tuple[str, str]],
+) -> list[tuple[MCPTool, MCPServer]]:
+    if not changed:
+        return []
+    affected = []
+    for tool, server in db.execute(
+        select(MCPTool, MCPServer).join(MCPServer, MCPTool.server_id == MCPServer.id)
+    ):
+        server_ref = server_ref_for_server(
+            {"transport": server.transport, "endpoint": server.endpoint}
+        )
+        if (server_ref, tool.name) in changed:
+            affected.append((tool, server))
+    return affected
+
+
+def changed_identity_binding_keys(
+    previous_content: ControlPlaneConfigContent | None,
+    next_content: ControlPlaneConfigContent,
+) -> list[tuple[str, str]]:
+    """CF-01 shared rule: (issuer, subject) whose agent binding changes or is
+    removed; their live sessions are revoked on publish."""
+    if previous_content is None:
+        return []
+    previous = {
+        (binding.issuer, binding.subject): binding.agent_id
+        for binding in previous_content.identity_bindings.bindings
+    }
+    current = {
+        (binding.issuer, binding.subject): binding.agent_id
+        for binding in next_content.identity_bindings.bindings
+    }
+    return [key for key, agent_id in previous.items() if current.get(key) != agent_id]
 
 
 def _quarantine_tools_with_changed_contracts(
@@ -627,20 +695,7 @@ def _quarantine_tools_with_changed_contracts(
     next_content: ControlPlaneConfigContent,
 ) -> None:
     """Invalidate an old tool approval when its published contract changes or disappears."""
-    if previous_content is None:
-        return
-    old_contracts = {
-        (contract.server_ref, contract.tool_name): contract.contract_hash
-        for contract in previous_content.tool_security_contracts or ()
-    }
-    new_contracts = {
-        (contract.server_ref, contract.tool_name): contract.contract_hash
-        for contract in next_content.tool_security_contracts or ()
-    }
-    changed = {
-        key for key, old_hash in old_contracts.items()
-        if new_contracts.get(key) != old_hash
-    }
+    changed = changed_contract_keys(previous_content, next_content)
     if not changed:
         return
 
@@ -648,14 +703,7 @@ def _quarantine_tools_with_changed_contracts(
     from app.services.tda_application.analysis_service import mark_tool_contract_pending_publication
 
     affected_server_ids: set[int] = set()
-    for tool, server in db.execute(
-        select(MCPTool, MCPServer).join(MCPServer, MCPTool.server_id == MCPServer.id)
-    ):
-        server_ref = server_ref_for_server(
-            {"transport": server.transport, "endpoint": server.endpoint}
-        )
-        if (server_ref, tool.name) not in changed:
-            continue
+    for tool, server in tools_affected_by_contract_change(db, changed):
         mark_tool_contract_pending_publication(tool)
         affected_server_ids.add(server.id)
     db.flush()
@@ -816,18 +864,7 @@ def _revoke_sessions_for_changed_identity_bindings(
     next_content: ControlPlaneConfigContent,
     now: datetime,
 ) -> None:
-    if previous_content is None:
-        return
-    previous = {
-        (binding.issuer, binding.subject): binding.agent_id
-        for binding in previous_content.identity_bindings.bindings
-    }
-    current = {
-        (binding.issuer, binding.subject): binding.agent_id
-        for binding in next_content.identity_bindings.bindings
-    }
-    affected = [key for key, agent_id in previous.items() if current.get(key) != agent_id]
-    for issuer, subject in affected:
+    for issuer, subject in changed_identity_binding_keys(previous_content, next_content):
         db.execute(
             update(TrustedAgentSession)
             .where(

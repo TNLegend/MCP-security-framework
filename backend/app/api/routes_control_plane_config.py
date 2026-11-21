@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.models.control_plane import ControlPlaneConfigRevision
 from app.schemas.control_plane import (
+    ConfigPublishRequest,
     ConfigRevisionActionRequest,
     ConfigRevisionPatchRequest,
     ConfigRevisionPublic,
@@ -149,10 +150,27 @@ def validate_config_revision(
         raise HTTPException(status_code=422, detail=str(exc))
 
 
+@router.get("/revisions/{draft_id}/publication-preview")
+def config_publication_preview(
+    draft_id: str,
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    """CF-01: read-only diff + impact computed with the publish rules."""
+    from app.services.control_plane_publication_preview import preview_publication
+    try:
+        return preview_publication(db, draft_id)
+    except ControlPlaneConfigError as exc:
+        raise HTTPException(
+            status_code=404 if exc.args[0] == "revision_not_found" else 400,
+            detail=exc.args[0],
+        )
+
+
 @router.post("/revisions/{draft_id}/publish", response_model=ConfigRevisionPublic)
 def publish_config_revision(
     draft_id: str,
-    payload: ConfigRevisionActionRequest,
+    payload: ConfigPublishRequest,
     current: AuthenticatedControlPlaneUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -162,12 +180,14 @@ def publish_config_revision(
             draft_id=draft_id,
             actor=current.user,
             change_summary=payload.change_summary,
+            expected_preview_fingerprint=payload.expected_preview_fingerprint,
         )
         db.commit()
         return ConfigRevisionPublic.model_validate(revision)
     except ControlPlaneConfigError as exc:
         error_code = exc.args[0]
-        conflict_codes = {"stale_draft_publication_conflict", "draft_active_parent_changed"}
+        conflict_codes = {"stale_draft_publication_conflict", "draft_active_parent_changed",
+                          "publication_preview_stale"}
         raise HTTPException(
             status_code=409 if error_code in conflict_codes else 400,
             detail=error_code,

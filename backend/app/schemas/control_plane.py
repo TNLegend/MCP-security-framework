@@ -239,6 +239,15 @@ class ConfigRevisionActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ConfigPublishRequest(BaseModel):
+    change_summary: str = Field(min_length=3, max_length=2000)
+    # CF-01: fingerprint of the preview the administrator reviewed. When given,
+    # publication is refused (409) if the draft or active revision changed.
+    expected_preview_fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ConfigRevisionPublic(BaseModel):
     id: str
     revision_number: int

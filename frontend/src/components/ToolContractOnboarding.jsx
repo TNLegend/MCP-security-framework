@@ -18,6 +18,7 @@ import {
   schemaLeafPaths,
 } from "./contractUtils";
 import AdapterGuidancePanel from "./AdapterGuidancePanel";
+import PublicationPreview, { publishBlockReason } from "./PublicationPreview";
 import { assistantErrorMessage } from "../utils/controlledAI";
 
 function ToolContractOnboarding(props) {
@@ -28,6 +29,7 @@ function ToolContractOnboarding(props) {
 
 function ToolContractWorkspace({ isAdmin, onComplete, tool }) {
   const [catalog, setCatalog] = useState(null);
+  const [publicationPreview, setPublicationPreview] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
   const [adapterGuidance, setAdapterGuidance] = useState(null);
   const [templateId, setTemplateId] = useState("");
@@ -298,7 +300,7 @@ function ToolContractWorkspace({ isAdmin, onComplete, tool }) {
   }
 
   async function publishAndReanalyze() {
-    if (!contractDraft) return;
+    if (!contractDraft || publishBlockReason(publicationPreview)) return;
     setBusy(true);
     setError("");
     setMessage("");
@@ -306,7 +308,8 @@ function ToolContractWorkspace({ isAdmin, onComplete, tool }) {
     // Never represent a successful publication as failed when a later step fails.
     let published = false;
     try {
-      await publishConfigRevision(contractDraft.revision_id, changeSummary.trim());
+      await publishConfigRevision(contractDraft.revision_id, changeSummary.trim(),
+        publicationPreview.preview_fingerprint);
       published = true;
       setContractDraft(null);
       setDraftRevisionId(null);
@@ -638,9 +641,10 @@ function ToolContractWorkspace({ isAdmin, onComplete, tool }) {
                       authorize an altered tool or the next Runtime call.</p>
                   </details>
                 </div>
+                <PublicationPreview draftId={contractDraft.revision_id} onChange={setPublicationPreview} />
                 <div className="button-row">
                   <button disabled={busy} onClick={() => setContractDraft(null)} type="button">Edit</button>
-                  <button className="secondary-action" disabled={busy || changeSummary.trim().length < 3 || contractDraft.observation_approvals < 1} onClick={publishAndReanalyze} title={contractDraft.observation_approvals < 1 ? "Approve the observed protocol profiles before publication." : undefined} type="button">
+                  <button className="secondary-action" disabled={busy || changeSummary.trim().length < 3 || contractDraft.observation_approvals < 1 || Boolean(publishBlockReason(publicationPreview))} onClick={publishAndReanalyze} title={contractDraft.observation_approvals < 1 ? "Approve the observed protocol profiles before publication." : (publishBlockReason(publicationPreview) || undefined)} type="button">
                     {busy ? "Publishing..." : "Publish & reanalyse"}
                   </button>
                 </div>

@@ -780,11 +780,22 @@ export async function validateConfigRevision(draftId, changeSummary) {
   });
 }
 
-export async function publishConfigRevision(draftId, changeSummary) {
-  return request(`/control-plane/config/revisions/${draftId}/publish`, {
+// CF-01: publish only the preview the administrator reviewed.
+export async function publishConfigRevision(draftId, changeSummary, expectedPreviewFingerprint) {
+  if (!expectedPreviewFingerprint) {
+    throw new Error("Review the publication preview before publishing.");
+  }
+  return request(`/control-plane/config/revisions/${encodeURIComponent(draftId)}/publish`, {
     method: "POST",
-    body: JSON.stringify({ change_summary: changeSummary }),
+    body: JSON.stringify({
+      change_summary: changeSummary,
+      expected_preview_fingerprint: expectedPreviewFingerprint,
+    }),
   });
+}
+
+export async function fetchPublicationPreview(draftId) {
+  return request(`/control-plane/config/revisions/${encodeURIComponent(draftId)}/publication-preview`);
 }
 
 export async function rollbackConfigRevision(revisionId, changeSummary) {

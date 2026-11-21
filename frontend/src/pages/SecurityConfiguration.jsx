@@ -1,5 +1,6 @@
 import { formatServerTime } from "../utils/serverTime.js";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useDialogFocus } from "../utils/useDialogFocus";
 import {
   createDraftRevision,
   createLatestConfigRevision,
@@ -16,6 +17,7 @@ import {
   validateChangeSummary,
 } from "../utils/validation";
 import ConfigurationEditor from "../components/ConfigurationEditor";
+import PublicationPreview, { publishBlockReason } from "../components/PublicationPreview";
 import SecurityPackManager from "../components/SecurityPackManager";
 import { Pagination, usePagination } from "../components/Pagination";
 
@@ -37,7 +39,23 @@ function SecurityConfiguration({
   const [validationReceipt, setValidationReceipt] = useState(null);
   const [busy, setBusy] = useState(false);
   const [loadedRevision, setLoadedRevision] = useState(null);
+  // CF-01: publication requires a reviewed, backend-computed preview.
+  const [publishReview, setPublishReview] = useState(null);
+  const [publicationPreview, setPublicationPreview] = useState(null);
   const actionLock = useRef(false);
+  const publishDialogRef = useRef(null);
+  useDialogFocus(Boolean(publishReview), publishDialogRef);
+  useEffect(() => {
+    if (!publishReview) return undefined;
+    function handleEscape(event) {
+      if (event.key === "Escape" && !actionLock.current) {
+        event.preventDefault();
+        setPublishReview(null);
+      }
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [publishReview]);
   const revisionPagination = usePagination(revisions, String(revisions.length));
   // An explicitly selected revision must never silently fall back to the
   // active one while refresh is fetching a newly created draft. Otherwise
@@ -105,10 +123,13 @@ function SecurityConfiguration({
     if (Object.keys(nextErrors).length > 0) {
       return;
     }
-    if (action === "publish" && !window.confirm(
-      "Publish configuration revision #" + selectedRevision.revision_number
-      + "? The signed active policy will change. Verify the rules, validation result and change summary first."
-    )) {
+    if (action === "publish" && publishReview?.revisionId !== selectedRevision.id) {
+      // First step: open the preview. Publishing happens from the dialog.
+      setPublicationPreview(null);
+      setPublishReview({ revisionId: selectedRevision.id, revisionNumber: selectedRevision.revision_number });
+      return;
+    }
+    if (action === "publish" && publishBlockReason(publicationPreview)) {
       return;
     }
     setError("");
@@ -133,7 +154,10 @@ function SecurityConfiguration({
         }
         setValidationReceipt({ revisionId: selectedRevision.id, hash: receipt.content_hash });
       } else if (action === "publish") {
-        updatedRevision = await publishConfigRevision(selectedRevision.id, summary);
+        updatedRevision = await publishConfigRevision(
+          selectedRevision.id, summary, publicationPreview.preview_fingerprint,
+        );
+        setPublishReview(null);
       } else if (action === "rollback") {
         if (!window.confirm("Rollback creates a new signed revision from this content.")) {
           return;
@@ -218,6 +242,26 @@ function SecurityConfiguration({
         </div>
       )}
       {error && <div className="error-banner" role="alert">{error}</div>}
+      {publishReview && isAdmin && (
+        <div className="modal-backdrop" role="presentation">
+          <section aria-modal="true" aria-labelledby="publish-review-title" className="modal-panel"
+            ref={publishDialogRef} role="dialog" tabIndex={-1}>
+            <h3 id="publish-review-title">Review publication of revision #{publishReview.revisionNumber}</h3>
+            <PublicationPreview draftId={publishReview.revisionId} onChange={setPublicationPreview} />
+            <p>Change summary: {summary}</p>
+            <div className="button-row">
+              <button className="danger-action"
+                disabled={busy || Boolean(publishBlockReason(publicationPreview))}
+                title={publishBlockReason(publicationPreview) || undefined}
+                onClick={() => runAction("publish")} type="button">
+                {busy ? "Publishing..." : "Publish and sign"}
+              </button>
+              <button className="secondary-action" disabled={busy}
+                onClick={() => setPublishReview(null)} type="button">Cancel</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       <div className="summary-grid">
         <Summary label="Active revision" value={activeRevision?.revision_number ?? "-"} />
