@@ -24,6 +24,30 @@ const SCAN_BATCH_SIZE = 500;
 const MAX_SCAN_OFFSET = 10000;
 const DEFAULT_REASON = "Run Build Security before publishing or deploying this MCP source.";
 
+// This is a draft-only assessment preview, not a claim about the active
+// published policy. OPA independently verifies signature, binding and age.
+export function buildDraftGatePreview(mode, status, scannersComplete) {
+  if (mode === "DISABLED") {
+    return "Build gate disabled for this draft. Other runtime security checks still apply.";
+  }
+  if (!["REQUIRE_PASS", "ALLOW_WARN"].includes(mode)) {
+    return "Unknown gate mode; its runtime effect cannot be determined.";
+  }
+  if (!scannersComplete) {
+    return "This assessment would block the enabled Build gate because required scanners are incomplete.";
+  }
+  if (status === "ERROR" || status === "BLOCK") {
+    return "This assessment would block the enabled Build gate.";
+  }
+  if (mode === "REQUIRE_PASS" && status === "WARN") {
+    return "WARN would block under REQUIRE_PASS. Only PASS satisfies this gate.";
+  }
+  if (status === "PASS" || (mode === "ALLOW_WARN" && status === "WARN")) {
+    return "Assessment status meets this draft Build gate, but valid signed evidence, freshness and other Runtime checks are still required.";
+  }
+  return "Assessment status is not recognized; do not infer runtime permission.";
+}
+
 function BuildSecurity({
   isAdmin = false,
   onRefresh = null,
@@ -972,6 +996,15 @@ function BuildSecurity({
                   <option value="DISABLED">DISABLED — record evidence without enforcing it</option>
                 </select>
               </label>
+              <p className="hint-text" role="note" aria-label="Build draft runtime effect preview">
+                <strong>Draft Build gate impact:</strong>{" "}
+                {buildDraftGatePreview(
+                  governanceMode,
+                  selectedScan.assessment?.status,
+                  selectedScan.assessment?.required_scanners_complete,
+                )}
+                {" "}This is a preview for the selected DRAFT, not confirmation of the active signed runtime policy.
+              </p>
 
               <label>
                 Evidence max age (hours)
@@ -1171,6 +1204,10 @@ function BuildScanDetail({ detail, isAdmin, loading, source }) {
         {assessment.status === "PASS" && <p>A PASS describes the checks
           actually completed and recorded findings, not proof that the
           repository or deployment is free of security risks.</p>}
+        <p role="note">This scan's assessment alone does not establish its
+          active runtime effect. The published signed configuration selects
+          a Build gate mode and requires current, bound evidence and all
+          independent runtime checks.</p>
         {(assessment.reason_codes || []).length > 0 && <details>
           <summary>Recorded assessment reasons ({assessment.reason_codes.length})</summary>
           <ul>{assessment.reason_codes.map((code, index) => <li key={index}>

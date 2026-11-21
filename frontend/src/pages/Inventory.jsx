@@ -1202,6 +1202,26 @@ function ServerDetailPanel({
   );
 }
 
+// Inventory evidence alone never grants Runtime execution. This is a
+// deliberately conservative explanation, not an approval calculation.
+export function toolCallabilityContext(tool) {
+  const status = tool?.analysis_status;
+  if (status === "BLOCKED") return "Blocked by recorded tool security analysis; inspect the blocking finding.";
+  if (status === "QUARANTINED") return "Restricted by recorded analysis; review the reason and current fingerprint.";
+  if (status === "REVIEW_REQUIRED" || status === "PENDING_ANALYSIS" ||
+      status === "ANALYSIS_FAILED") {
+    return "Tool security review is not complete; no authorization can be inferred.";
+  }
+  if (["APPROVED", "ADMIN_ALLOWED"].includes(status) &&
+      tool?.approved_fingerprint_match === true) {
+    return "Security analysis prerequisite met. This does not authorize an MCP call: signed contracts, agent identity, OPA policy and dispatch checks still apply.";
+  }
+  if (["APPROVED", "ADMIN_ALLOWED"].includes(status)) {
+    return "Previous approval exists but the current fingerprint match is not proven; re-verify before use.";
+  }
+  return "Runtime callability is unknown until current analysis and independent authorization checks are verified.";
+}
+
 function ToolDetailPanel({ tool, analysis, analysisError, analysisLoading, onOpenAnalysis }) {
   const latestAnalysis = analysis?.analyses?.[0] || null;
   const sectionErrors = analysis?.errors || {};
@@ -1217,6 +1237,17 @@ function ToolDetailPanel({ tool, analysis, analysisError, analysisLoading, onOpe
           Open security review
         </button>
       </div>
+      <section className="detail-panel" aria-label="Tool callability and analysis status">
+        <h4>Can this tool be called now?</h4>
+        <p>{toolCallabilityContext(tool)}</p>
+        <p><strong>Recorded analysis:</strong> {displayValue(tool.analysis_status)}.
+          <strong> Fingerprint matches approval:</strong>{" "}
+          {tool.approved_fingerprint_match === true ? "Yes"
+            : tool.approved_fingerprint_match === false ? "No" : "Unknown"}.
+        </p>
+        <p>Only the backend's current signed policy and runtime admission can
+          decide an actual call. Inventory status is not a substitute.</p>
+      </section>
       <div className="metadata-grid">
         <MetadataSection
           collapsible
@@ -1234,7 +1265,8 @@ function ToolDetailPanel({ tool, analysis, analysisError, analysisLoading, onOpe
           ]}
         />
         <MetadataSection
-          title="Framework security metadata"
+          collapsible
+          title="Technical framework security metadata"
           items={[
             ["risk_score", tool.risk_score],
             ["sensitivity", tool.sensitivity, "badge"],

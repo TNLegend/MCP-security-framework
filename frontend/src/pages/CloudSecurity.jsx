@@ -212,6 +212,22 @@ function iamAssessmentExplanation(value) {
   return explanations[value] || "This comparison needs additional verification.";
 }
 
+const IAM_WARNING_EXPLANATIONS = Object.freeze({
+  IAM_BROAD_ACTION_ALLOW: "The observed Allow covers additional IAM actions.",
+  IAM_BROAD_RESOURCE_ALLOW: "The observed Allow covers additional AWS resources.",
+  IAM_NEGATED_ALLOW_POTENTIALLY_BROAD: "A NotAction or NotResource Allow may be very broad; its effective scope was not evaluated.",
+  IAM_NEGATED_STATEMENT_NOT_EVALUATED: "A negated IAM statement was not evaluated.",
+  IAM_CONDITIONAL_ALLOW_NOT_EVALUATED: "An Allow with a condition was not evaluated.",
+  IAM_CONDITIONAL_DENY_NOT_EVALUATED: "A conditional Deny was not evaluated; the effective result may be more restrictive.",
+  IAM_CONDITIONAL_STATEMENT_NOT_EVALUATED: "An IAM condition could not be evaluated.",
+  IAM_UNRECOGNIZED_IDENTITY_STATEMENT: "A policy statement could not be interpreted safely.",
+});
+
+export function iamWarningExplanation(code) {
+  return IAM_WARNING_EXPLANATIONS[code] ||
+    "An IAM policy check remains unresolved; effective AWS access is not established.";
+}
+
 function IAMPolicyEvidence({ item }) {
   const evidence = item.evidence_summary;
   const facts = evidence?.summary;
@@ -256,8 +272,14 @@ function IAMPolicyEvidence({ item }) {
       ))}</ul>}
       {matched?.clause_examples_truncated && <p role="note">Only the first
         matching clause examples are shown; the evidence is not exhaustive.</p>}
-      {Array.isArray(facts.warning_codes) && facts.warning_codes.length > 0 &&
-        <p><strong>Unresolved policy checks:</strong> {facts.warning_codes.join(", ")}.</p>}
+      {Array.isArray(facts.warning_codes) && facts.warning_codes.length > 0 && (
+        <div>
+          <strong>Unresolved IAM policy checks (not effective-permission verdicts):</strong>
+          <ul>{facts.warning_codes.map((code, index) => (
+            <li key={index}>{iamWarningExplanation(code)} <code>{code}</code></li>
+          ))}</ul>
+        </div>
+      )}
       <p><strong>Effective AWS access:</strong> Not established by this identity-policy
         comparison. SCPs, permissions boundaries, session policies, resource
         policies and runtime identity use may further restrict access.</p>
@@ -354,6 +376,25 @@ function CloudResourceLabel({ resource }) {
       {identity.arn ? <> <code>{identity.arn}</code></> : identity.status && <> [{identity.status}]</>}
     </>
   );
+}
+
+export function iacFindingSourceEvidence(finding, evidence) {
+  if (!finding || !Array.isArray(evidence)) return [];
+  return evidence.filter((row) =>
+    row && row.resource_id != null &&
+    row.resource_id === finding.resource_id &&
+    row.rule_id === finding.rule_id &&
+    row.safe_summary?.scanner &&
+    typeof row.safe_summary.file === "string"
+  ).map((row) => ({
+    id: row.id,
+    scanner: row.safe_summary.scanner,
+    file: row.safe_summary.file,
+    line: Number.isInteger(row.safe_summary.line) && row.safe_summary.line > 0
+      ? row.safe_summary.line : null,
+    version: row.safe_summary.version,
+    sourceFingerprint: row.safe_summary.source_fingerprint,
+  }));
 }
 
 function CloudFindingResource({ finding, resources }) {
@@ -1812,16 +1853,19 @@ export default function CloudSecurity({ isAdmin = false }) {
               </p>}
               {iamPageError && <p role="alert">{iamPageError}</p>}
               <div className="table-scroll"><table>
-                <thead><tr><th>Direction</th><th>MCP tool</th><th>AWS action</th>
-                  <th>Cloud resource</th><th>Assessment</th>
+                <thead><tr><th>Direction</th><th>MCP tool</th><th>Action and source</th>
+                  <th>Resource and source</th><th>Assessment</th>
                   <th>Identity IAM permission</th><th>Effective AWS access</th>
                   <th>IAM role</th><th>Reason and evidence</th></tr></thead>
                 <tbody>{iamRows.map((item) => <tr key={item.id}>
                   <td>{item.tool_name ? "MCP need to IAM" : "IAM to MCP needs"}</td>
                   <td>{item.tool_name || "Role grant"}</td>
-                  <td>{item.expected_actions.join(", ") ||
-                    item.observed_actions.join(", ") || "Unresolved"}</td>
-                  <td><code>{item.expected_resource_arn || "Not verified"}</code></td>
+                  <td><small>{item.tool_name ? "Approved MCP action" : "Observed IAM action"}</small>
+                    <code>{item.tool_name
+                      ? item.expected_actions.join(", ") || "Not verified"
+                      : item.observed_actions.join(", ") || "Not verified"}</code></td>
+                  <td><small>{item.tool_name ? "Approved MCP resource" : "Observed IAM policy resource"}</small>
+                    <code>{item.expected_resource_arn || "Not verified"}</code></td>
                   <td>{iamAssessmentLabel(item.status)}</td>
                   <td>{(item.identity_permission_status || "Not recorded")
                     .replaceAll("_", " ").toLowerCase()}</td>
@@ -1854,6 +1898,24 @@ export default function CloudSecurity({ isAdmin = false }) {
             <article key={f.id} id={"cloud-finding-" + f.id} className="cloud-finding">
               <strong>{f.severity}: {f.title}</strong>
               <CloudFindingResource finding={f} resources={details.resources} />
+              {details.scan.kind === "IAC_CONFIG" && (() => {
+                const sources = iacFindingSourceEvidence(f, details.evidence);
+                return sources.length > 0
+                  ? <div aria-label="Terraform finding provenance">
+                      <strong>Recorded scanner source evidence</strong>
+                      <ul>{sources.map((source, index) => (
+                        <li key={source.id || index}>
+                          {source.scanner}{source.version ? " " + source.version : ""}:
+                          {" "}<code>{source.file}</code>
+                          {source.line !== null ? " at line " + source.line
+                            : " (scanner did not provide a verified line)"}
+                          {source.sourceFingerprint && <span>. Source SHA-256: <code>{source.sourceFingerprint}</code></span>}
+                        </li>
+                      ))}</ul>
+                    </div>
+                  : <p role="note">Source location is not in the currently loaded evidence.
+                      This does not prove the finding has no source; check the paginated evidence records.</p>;
+              })()}
               <p>{f.description}</p>
               {f.remediation && <p>Suggested action: {f.remediation}</p>}
             </article>

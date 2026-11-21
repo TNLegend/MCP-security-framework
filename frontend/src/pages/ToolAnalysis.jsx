@@ -779,7 +779,18 @@ export function friendlyFindingTitle(finding) {
   if (finding?.code) return humanize(String(finding.code).toLowerCase());
   return "Security finding to review";
 }
-function FindingsView({ error, findings }) {
+const FINDING_IMPACT = {
+  BLOCK: "Blocks the tool during deterministic security analysis",
+  REVIEW: "Requires a human security review; not an independent block",
+  INFO: "Informational observation; no independent blocking decision",
+};
+
+export function findingImpactLabel(finding) {
+  return FINDING_IMPACT[finding?.evidence?.decision] ||
+    "Decision impact not recorded; severity alone does not prove a block.";
+}
+
+export function FindingsView({ error, findings }) {
   const findingPagination = usePagination(findings, String(findings.length));
   if (error) return <SectionError error={error} title="Findings" />;
   if (findings.length === 0) return <div className="empty-state">No findings for the latest analysis.</div>;
@@ -791,6 +802,10 @@ function FindingsView({ error, findings }) {
             <div><strong>{friendlyFindingTitle(finding)}</strong></div>
             <Badge value={finding.severity} />
           </div>
+          <p className="hint-text" role="note">
+            <strong>Decision impact:</strong>{" "}
+            {findingImpactLabel(finding)}
+          </p>
           <p>{finding.summary || finding.message || finding.evidence?.summary || "No summary provided."}</p>
           {finding.recommendation && <div className="finding-recommendation"><strong>Recommendation</strong><span>{finding.recommendation}</span></div>}
           <details className="operator-technical-details">

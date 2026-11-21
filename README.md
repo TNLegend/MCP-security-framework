@@ -2208,18 +2208,38 @@ source bootstrap, prerequisite checks, offline npm install and frontend build.
 Offline synthetic Terraform scans returned 3 findings each from real Checkov
 and Trivy binaries. Gitleaks CLI worked and eight generic-key repository
 alerts were reviewed as non-secret hashes/code identifiers or empty sample
-variables. Prowler's local CLI was checked without AWS access. A Semgrep
-custom-rule scan remained **INCOMPLETE (exit 2)** and is not certified.
+variables. Prowler's local CLI was checked without AWS access.
+A subsequent Lot 10 investigation confirmed Semgrep's original exit-2 probe
+failed due to its temporary path length on Windows; with a bounded short path,
+the local rule was detected and product-configured scanner ran without that
+engine error. This does not qualify a real AWS Prowler audit.
 
-The **unfiltered historical QA suite is not green**: four retired
-static-discovery import failures prevent collection; once these are explicitly
-excluded, 392 tests passed and 25 failed before the stop threshold (13
-commit-pinned legacy UI assertions, 12 missing private research assets).
-The Sol audit matrix still has 29 partial findings; the Claude matrix has
-39 unverified and 3 partial findings because the complete original report
-was unavailable. Additional live AWS, external OAuth, model-provider, screen
-reader, and full clean Python/model install checks are not certified by
-this Lot 10 run.
+The **unfiltered historical QA suite is not green**: four modules importing
+retired static discovery code still prevent collection. After explicitly
+excluding these four modules and five commit-pinned historical GUI suites,
+and using isolated copies of available private research inputs,
+the broader contemporary QA suite passed **913 tests with 5 skips, 0 failures**.
+The historical exclusions remain documented rather than silently dropped.
+
+The complete 42-finding Claude audit was recovered and reviewed alongside
+the 47-finding Sol report. Both remain partially open; the live AWS, external
+OAuth and AI providers, screen reader, and full clean Python/model install
+are not certified by this Lot 10 run.
+
+An additional Lot 10 corrective campaign added disjoint SQL outcome counters
+to Tool activity and System health (uncertain, response withheld, execution
+recorded, confirmed not sent, and legacy/unclassified). These are computed
+over the same persisted outcome population as the total and never turn a
+legacy or absent dispatch receipt into confirmed non-execution. The UI also
+now distinguishes finding BLOCK/REVIEW/INFO, approved MCP needs versus
+observed IAM statements, safely describes conditional/negated IAM warnings,
+shows normalized Terraform source evidence on linked findings, and offers
+a conservative draft-only Build gate preview and Inventory callability
+explanation. Each has targeted backend or Vite tests in the QA branch.
+
+**This is not a claim that all audit findings are closed.** Check the
+consolidated QA matrix for individual evidence, remaining limitations, and
+the exact local release gates.
 
 **Decision: locally validated code candidate with external release blockers.**
 The deployment and `main` promotion gates remain closed until the outstanding

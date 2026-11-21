@@ -139,6 +139,10 @@ class RuntimeCallSummary(BaseModel):
     executed: int
     skipped: int
     errors: int
+    # Additional disjoint outcome buckets. Legacy facets above intentionally
+    # overlap: a result can be ALLOW, executed and an error simultaneously.
+    # Missing on older servers, hence default for client compatibility.
+    outcome_states: dict[str, int] = Field(default_factory=dict)
 
 
 class RuntimeCallPage(BaseModel):

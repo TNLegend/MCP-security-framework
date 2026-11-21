@@ -15,6 +15,7 @@ from app.schemas.runtime import RuntimeCallCreate, RuntimeCallPage, RuntimeCallR
 from app.services.control_plane_auth import AuthenticatedControlPlaneUser, require_authenticated_user
 from app.services.policy_runtime import evaluate_runtime_policy
 from app.services.runtime_operations import maybe_auto_cleanup_runtime_logs
+from app.services.runtime_outcome_taxonomy import RUNTIME_OUTCOME_BUCKETS, runtime_outcome_bucket_expression
 from app.services.signed_service_request import (
     PERMISSION_RUNTIME_LOGS_WRITE,
     VerifiedServiceRequest,
@@ -83,6 +84,7 @@ def list_runtime_logs(
     items = list(rows[:limit])
     next_cursor = _encode_runtime_log_cursor(items[-1].id) if has_more and items else None
 
+    bucket = runtime_outcome_bucket_expression()
     summary_row = db.execute(
         select(
             func.count(RuntimeCall.id),
@@ -101,6 +103,10 @@ def list_runtime_logs(
             func.count(RuntimeCall.id).filter(
                 RuntimeCall.execution_status.in_(RUNTIME_ERROR_STATUSES)
             ),
+            *(
+                func.count(RuntimeCall.id).filter(bucket == name)
+                for name in RUNTIME_OUTCOME_BUCKETS
+            ),
         ).where(
             *filters,
             or_(
@@ -109,6 +115,13 @@ def list_runtime_logs(
             ),
         )
     ).one()
+    # The same SQL statement counts both total and the mutually exclusive
+    # outcome categories, so concurrent inserts cannot skew their sums.
+    disjoint_counts = {
+        name: int(summary_row[6 + index] or 0)
+        for index, name in enumerate(RUNTIME_OUTCOME_BUCKETS)
+    }
+
     return RuntimeCallPage(
         items=items,
         next_cursor=next_cursor,
@@ -120,6 +133,7 @@ def list_runtime_logs(
             executed=summary_row[3],
             skipped=summary_row[4],
             errors=summary_row[5],
+            outcome_states=disjoint_counts,
         ),
     )
 

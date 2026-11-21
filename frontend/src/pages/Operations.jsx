@@ -172,6 +172,20 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
           <Metric label="Executed" value={windowStats?.executed} />
           <Metric label="Result blocked" value={windowStats?.result_blocked} tone="stat-warn" />
         </div>
+        {windowStats?.outcome_states && Object.keys(windowStats.outcome_states).length > 0 && (
+          <div className="stats-grid" aria-label="Disjoint recorded outcome categories">
+            <Metric label="Sent, outcome uncertain" value={windowStats.outcome_states.sent_uncertain ?? 0} tone="stat-warn" />
+            <Metric label="Response withheld" value={windowStats.outcome_states.response_withheld ?? 0} />
+            <Metric label="Execution recorded" value={windowStats.outcome_states.execution_recorded ?? 0} />
+            <Metric label="Confirmed not sent" value={windowStats.outcome_states.confirmed_not_sent ?? 0} />
+            <Metric label="Legacy / unclassified" value={windowStats.outcome_states.legacy_or_unclassified ?? 0} />
+          </div>
+        )}
+        <p className="hint-text" role="note">
+          The five outcome categories above are mutually exclusive and add up to Calls.
+          ALLOW, BLOCK, executed, result-blocked and error remain independent diagnostic facets and can overlap.
+          Legacy rows without durable dispatch evidence do not prove non-execution.
+        </p>
 
         <div className="table-wrap operations-latency-table">
           <table>

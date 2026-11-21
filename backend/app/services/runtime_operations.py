@@ -25,6 +25,7 @@ from app.schemas.operations import (
     RuntimeStorageStats,
 )
 from app.services.local_runtime_manager import LocalRuntimeManager
+from app.services.runtime_outcome_taxonomy import RUNTIME_OUTCOME_BUCKETS, runtime_outcome_bucket_expression
 
 
 class RuntimeCleanupPreviewConflict(ValueError):
@@ -56,7 +57,8 @@ def operations_summary(db: Session) -> OperationsSummary:
         RuntimeCall.execution_status.is_(None),
         RuntimeCall.execution_status != "authorized_pending_execution",
     )
-    total, allowed, blocked, errors, executed, result_blocked = db.execute(
+    outcome_bucket = runtime_outcome_bucket_expression()
+    aggregate = db.execute(
         select(
             func.count(RuntimeCall.id),
             func.count(RuntimeCall.id).filter(RuntimeCall.decision == "ALLOW"),
@@ -68,8 +70,17 @@ def operations_summary(db: Session) -> OperationsSummary:
             func.count(RuntimeCall.id).filter(
                 RuntimeCall.execution_status == "result_blocked"
             ),
+            *(
+                func.count(RuntimeCall.id).filter(outcome_bucket == name)
+                for name in RUNTIME_OUTCOME_BUCKETS
+            ),
         ).where(RuntimeCall.created_at >= window_start, is_outcome)
     ).one()
+    total, allowed, blocked, errors, executed, result_blocked = aggregate[:6]
+    disjoint_outcomes = {
+        name: int(aggregate[6 + index] or 0)
+        for index, name in enumerate(RUNTIME_OUTCOME_BUCKETS)
+    }
     total = int(total or 0)
     allowed = int(allowed or 0)
     blocked = int(blocked or 0)
@@ -147,6 +158,7 @@ def operations_summary(db: Session) -> OperationsSummary:
             errors=errors,
             executed=executed,
             result_blocked=result_blocked,
+            outcome_states=disjoint_outcomes,
             calls_per_minute=round(total / max(window_minutes, 1), 3),
             error_rate=round(errors / total, 6) if total else 0.0,
             total_latency=_latency(row.total_duration_ms for row in rows),

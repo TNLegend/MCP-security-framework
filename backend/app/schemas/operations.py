@@ -23,6 +23,9 @@ class OperationsWindow(BaseModel):
     errors: int
     executed: int
     result_blocked: int
+    # Five disjoint outcome categories in this time window.
+    # ALLOW/BLOCK/errors/executed remain independent, overlapping facets.
+    outcome_states: dict[str, int] = Field(default_factory=dict)
     calls_per_minute: float
     error_rate: float
     total_latency: LatencyStats

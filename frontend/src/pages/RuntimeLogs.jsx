@@ -184,14 +184,34 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
       </form>
 
       <div className="summary-grid runtime-summary-grid">
-        <SummaryCard label="Outcome events" value={page.summary.total} />
-        <SummaryCard label="ALLOW decisions" value={page.summary.allowed} />
-        <SummaryCard label="BLOCK decisions" value={page.summary.blocked} />
-        <SummaryCard label="Execution recorded" value={page.summary.executed} />
-        <SummaryCard label="Skipped or blocked without confirmed execution" value={page.summary.skipped} />
-        <SummaryCard label="Errors" value={page.summary.errors} />
+        <SummaryCard label="Recorded outcomes (not intents)" value={page.summary.total} />
+        {page.summary.outcome_states && Object.keys(page.summary.outcome_states).length > 0 ? (
+          <>
+            <SummaryCard label="Sent, outcome uncertain" value={page.summary.outcome_states.sent_uncertain ?? 0} />
+            <SummaryCard label="Response withheld after execution" value={page.summary.outcome_states.response_withheld ?? 0} />
+            <SummaryCard label="Execution recorded" value={page.summary.outcome_states.execution_recorded ?? 0} />
+            <SummaryCard label="Confirmed not sent" value={page.summary.outcome_states.confirmed_not_sent ?? 0} />
+            <SummaryCard label="Legacy or unclassified" value={page.summary.outcome_states.legacy_or_unclassified ?? 0} />
+          </>
+        ) : (
+          <p className="hint-text">Disjoint outcome counts are not available from this backend version. No dispatch state is inferred.</p>
+        )}
       </div>
-      <p className="hint-text">Counters describe recorded events and may overlap.</p>
+      <p className="hint-text" role="note">
+        These five outcome categories do not overlap and add up to recorded outcomes. Authorization intents are separate rows;
+        legacy records without dispatch evidence are never counted as confirmed non-execution.
+      </p>
+      <details>
+        <summary>Decision and diagnostic counts (overlapping categories)</summary>
+        <div className="summary-grid runtime-summary-grid">
+          <SummaryCard label="OPA or Proxy ALLOW" value={page.summary.allowed} />
+          <SummaryCard label="OPA or Proxy BLOCK" value={page.summary.blocked} />
+          <SummaryCard label="Execution flag recorded" value={page.summary.executed} />
+          <SummaryCard label="Skipped or blocked without confirmed execution" value={page.summary.skipped} />
+          <SummaryCard label="Error status recorded" value={page.summary.errors} />
+        </div>
+        <p className="hint-text">These are independent facets, not a partition: for example, an executed tool error can also have an ALLOW decision.</p>
+      </details>
 
       <div className="runtime-layout investigation-layout">
         <div className="runtime-section">
