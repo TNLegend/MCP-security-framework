@@ -119,6 +119,13 @@ def _database_available(*, now: datetime | None = None) -> bool:
     age = current - updated_at
     if age < timedelta(minutes=-5):
         return False
+    # Build Security must enforce the same freshness boundary as the
+    # startup provisioner. Do not certify a scan using a database that
+    # Trivy itself has marked due for refresh, even when max-age is longer.
+    if "NextUpdate" in parsed:
+        next_update = _metadata_datetime(parsed["NextUpdate"])
+        if next_update is None or current >= next_update:
+            return False
     return age <= timedelta(hours=settings.build_scan_trivy_db_max_age_hours)
 
 
