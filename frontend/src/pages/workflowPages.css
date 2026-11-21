@@ -85,9 +85,9 @@
 }
 
 @container mcp-workflow (min-width: 1120px) {
-  .tool-review-page .analysis-layout {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.18fr);
-  }
+  /* Keep the tool list full-width on wide desktops as well.
+     Selected-tool evidence stays below the list, so names and status
+     columns aren't squeezed into a narrow side-by-side panel. */
 
   .inventory-page .inventory-layout {
     grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);

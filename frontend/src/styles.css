@@ -310,6 +310,8 @@ button:disabled {
 }
 
 .table-shell {
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scrollbar-color: #aebdce transparent;
@@ -376,6 +378,12 @@ tr:last-child td {
 
 .summary-card strong {
   font-size: 1.8rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.summary-grid > .summary-card {
+  min-width: 0;
 }
 
 .inventory-layout {
@@ -465,26 +473,43 @@ tr:last-child td {
   padding: 10px 12px;
 }
 
+/* Five readable columns. Small viewports scroll the TABLE, never the page.
+   Long tool identifiers need more width than Server/Status badges. */
 .analysis-tool-table table {
-  min-width: 560px;
+  min-width: 900px;
   table-layout: fixed;
 }
 
 .analysis-tool-table th:nth-child(1) {
-  width: 34%;
+  width: 20%;
 }
 
 .analysis-tool-table th:nth-child(2) {
-  width: 14%;
+  width: 28%;
 }
 
-.analysis-tool-table th:nth-child(3),
+.analysis-tool-table th:nth-child(3) {
+  width: 20%;
+}
+
 .analysis-tool-table th:nth-child(4) {
-  width: 22%;
+  width: 23%;
 }
 
 .analysis-tool-table th:nth-child(5) {
-  width: 8%;
+  width: 9%;
+}
+
+.analysis-tool-table td {
+  overflow-wrap: anywhere;
+}
+
+.analysis-tool-table .table-selection {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 .inventory-table tr[role="button"],
@@ -827,8 +852,12 @@ code {
   padding: 3px 9px;
   font-size: 0.8rem;
   font-weight: 700;
-  overflow-wrap: normal;
-  white-space: nowrap;
+  min-width: 0;
+  justify-content: center;
+  text-align: center;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .badge-allow {
@@ -2016,20 +2045,17 @@ code {
     overscroll-behavior-x: contain;
   }
 
+  /* Preserve the same readable column widths on phones.
+     The scrollable table region stays inside the page. */
   .analysis-tool-table table {
-    min-width: 650px;
-  }
-
-  .analysis-tool-table th,
-  .analysis-tool-table td {
-    width: auto;
+    min-width: 900px;
   }
 
   .analysis-tool-table .badge {
-    max-width: 100%;
-    overflow: hidden;
-    font-size: 0.68rem;
-    text-overflow: ellipsis;
+    font-size: 0.8rem;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
   }
 
   .runtime-filter-bar,

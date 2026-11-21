@@ -203,9 +203,7 @@ function SecurityConfiguration({
 
       <div className="summary-grid">
         <Summary label="Active revision" value={activeRevision?.revision_number ?? "-"} />
-        <details className="operator-technical-details"><summary>Schema version</summary>
-          <Summary label="Schema version" value={activeRevision?.schema_version ?? "-"} />
-        </details>
+        <Summary label="Schema version" value={activeRevision?.schema_version ?? "-"} />
         <Summary label="Policy settings" value={Object.keys(activeRevision?.content?.policy_settings?.rules || {}).length} />
         <Summary label="Active revision status" value={activeRevision?.status || "Not published"} />
       </div>
