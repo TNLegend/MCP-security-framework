@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   manualMappingCoverage, isMappingBoundToCurrentContext, canRequestManualAudit,
 } from "./cloudIamMapping";
@@ -60,6 +60,24 @@ function cloudError(err) {
     IAC_LINK_NOT_ALLOWED: "Symbolic links are not permitted inside the ZIP.",
     IAC_INVALID_ARCHIVE: "The selected file is not a valid ZIP archive.",
     IAC_NO_TERRAFORM_FILES: "The ZIP contains no Terraform configuration files.",
+    DEPLOY_OPA_UNAVAILABLE_OR_TIMEOUT:
+      "The review service is unavailable. No security conclusion was recorded. Try again later.",
+    DEPLOY_OPA_UNDEFINED_RESULT:
+      "The cloud review policy is missing from the review service. Contact an administrator.",
+    DEPLOY_OPA_INVALID_DECISION:
+      "The review service returned an invalid result. Nothing was approved or recorded.",
+    DEPLOY_OPA_HTTP_ERROR:
+      "The review service returned an error. No security conclusion was recorded.",
+    DEPLOY_DECISION_CHAIN_INVALID:
+      "The decision history failed an integrity check. Ask an administrator to investigate.",
+    DEPLOY_EXCEPTION_CHAIN_INVALID:
+      "The exception history failed an integrity check. Ask an administrator to investigate.",
+    DEPLOY_EXCEPTION_NOT_PENDING:
+      "This exception request has already been reviewed. Refresh the audit details.",
+    DEPLOY_EXCEPTION_NOT_APPROVED:
+      "This exception is not currently approved. Refresh the audit details.",
+    DEPLOY_EVIDENCE_CHANGED_DURING_EVALUATION:
+      "The audit evidence changed during the review. Open the latest audit and try again.",
   };
   const key = Object.keys(messages).find((code) => raw.includes(code));
   return key ? messages[key] : raw;
@@ -110,13 +128,6 @@ function iamAssessmentExplanation(value) {
       "There are more IAM differences than this scan can safely display.",
     IAM_MCP_EFFECT_NOT_MAPPED:
       "No IAM action was approved for this signed MCP effect. It remains unknown, not safe.",
-    DEPLOY_OPA_UNAVAILABLE_OR_TIMEOUT:
-      "The Deploy Security governance policy could not be evaluated by OPA. No compliance decision was made.",
-    DEPLOY_OPA_UNDEFINED_RESULT:
-      "OPA has not loaded the Deploy Security policy. Ask the administrator to load the separate deploy_security.rego file.",
-    DEPLOY_OPA_INVALID_DECISION:
-      "The Deploy Security governance result was invalid. No decision was accepted.",
-
 
   };
   return explanations[value] || "This comparison needs additional verification.";
@@ -126,6 +137,9 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [environments, setEnvironments] = useState([]);
   const [scans, setScans] = useState([]);
   const [details, setDetails] = useState(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const scanDetailGeneration = useRef(0);
   const [edit, setEdit] = useState(null);
   const [selected, setSelected] = useState("");
   const [name, setName] = useState("My AWS environment");
@@ -162,10 +176,13 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [governanceError, setGovernanceError] = useState("");
   const [governanceLoading, setGovernanceLoading] = useState(false);
   const [governanceHistory, setGovernanceHistory] = useState([]);
+  const [governanceHistoryError, setGovernanceHistoryError] = useState("");
   const [deployExceptions, setDeployExceptions] = useState([]);
+  const [deployExceptionsError, setDeployExceptionsError] = useState("");
   const [exceptionReason, setExceptionReason] = useState("");
   const [exceptionFinding, setExceptionFinding] = useState("");
   const [reviewReason, setReviewReason] = useState("");
+  const [reviewingExceptionId, setReviewingExceptionId] = useState("");
   const [expiryDays, setExpiryDays] = useState(7);
 
   async function refresh() {
@@ -410,77 +427,162 @@ export default function CloudSecurity({ isAdmin = false }) {
     if (result) { setIacFile(null); setDetails(null); }
   }
 
+  function clearScanDetails() {
+    // Invalidate outstanding network requests when changing the AWS environment.
+    scanDetailGeneration.current += 1;
+    setDetails(null);
+    setDetailsLoading(false);
+    setDetailError("");
+    setIamRows([]);
+    setDeployGovernance(null);
+    setGovernanceError("");
+    setGovernanceLoading(false);
+    setGovernanceHistory([]);
+    setGovernanceHistoryError("");
+    setDeployExceptions([]);
+    setDeployExceptionsError("");
+    setExceptionFinding("");
+    setReviewingExceptionId("");
+    setReviewReason("");
+  }
+
   async function showScan(scanId) {
-    setError("");
+    const generation = ++scanDetailGeneration.current;
+    setDetails(null);
+    setDetailsLoading(true);
+    setDetailError("");
+    setGovernanceLoading(false);
     setDeployGovernance(null);
     setGovernanceError("");
     setGovernanceHistory([]);
+    setGovernanceHistoryError("");
     setDeployExceptions([]);
+    setDeployExceptionsError("");
+    setIamRows([]);
+    setReviewingExceptionId("");
+    setReviewReason("");
     setExceptionFinding("");
     try {
       const item = await fetchCloudScanDetail(scanId);
+      if (generation !== scanDetailGeneration.current) return;
       setDetails(item);
-      setIamRows(item.scan.kind === "IAM_MCP" ? await fetchIAMMCPResults(scanId) : []);
-      if (["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(item.scan.kind)) {
-        const [history, exceptions] = await Promise.allSettled([
-          fetchDeployGovernanceHistory(scanId), fetchDeployExceptions(scanId),
-        ]);
-        setGovernanceHistory(history.status === "fulfilled" ? history.value : []);
-        setDeployExceptions(exceptions.status === "fulfilled" ? exceptions.value : []);
+      const loads = [];
+      if (item.scan.kind === "IAM_MCP") {
+        loads.push(fetchIAMMCPResults(scanId).then(settledRows =>
+          ({ kind: "iam", value: settledRows })));
       }
-    } catch (err) { setError(cloudError(err)); }
+      if (["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(item.scan.kind)) {
+        loads.push(fetchDeployGovernanceHistory(scanId).then(value =>
+          ({ kind: "history", value })));
+        loads.push(fetchDeployExceptions(scanId).then(value =>
+          ({ kind: "exceptions", value })));
+      }
+      // A broken history request must never be silently displayed as "no history".
+      const results = await Promise.allSettled(loads);
+      if (generation !== scanDetailGeneration.current) return;
+      results.forEach((result, index) => {
+        if (result.status === "fulfilled") {
+          if (result.value.kind === "iam") setIamRows(result.value.value);
+          if (result.value.kind === "history") setGovernanceHistory(result.value.value);
+          if (result.value.kind === "exceptions") setDeployExceptions(result.value.value);
+        } else {
+          const error = cloudError(result.reason);
+          if (item.scan.kind === "IAM_MCP" && index === 0) {
+            setDetailError("IAM comparison details could not be loaded: " + error);
+          } else if (index === (item.scan.kind === "IAM_MCP" ? 1 : 0)) {
+            setGovernanceHistoryError(error);
+          } else {
+            setDeployExceptionsError(error);
+          }
+        }
+      });
+    } catch (err) {
+      if (generation === scanDetailGeneration.current) {
+        setDetailError("The selected audit could not be opened: " + cloudError(err));
+      }
+    } finally {
+      if (generation === scanDetailGeneration.current) setDetailsLoading(false);
+    }
   }
 
   async function evaluateDeployGovernance() {
     if (!details?.scan?.id ||
         !["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(details.scan.kind)) return;
+    const scanId = details.scan.id;
+    const generation = scanDetailGeneration.current;
     setGovernanceError("");
     setDeployGovernance(null);
     setGovernanceLoading(true);
     try {
       const result = await (isAdmin
-        ? recordDeployGovernance(details.scan.id)
-        : fetchDeployGovernance(details.scan.id));
+        ? recordDeployGovernance(scanId)
+        : fetchDeployGovernance(scanId));
+      if (generation !== scanDetailGeneration.current) return;
       setDeployGovernance(result);
       if (isAdmin) {
-        setGovernanceHistory(await fetchDeployGovernanceHistory(details.scan.id));
+        const history = await fetchDeployGovernanceHistory(scanId);
+        if (generation !== scanDetailGeneration.current) return;
+        setGovernanceHistory(history);
+        setGovernanceHistoryError("");
       }
     } catch (err) {
-      setGovernanceError(cloudError(err));
+      if (generation === scanDetailGeneration.current) {
+        setGovernanceError(cloudError(err));
+      }
     } finally {
-      setGovernanceLoading(false);
+      if (generation === scanDetailGeneration.current) setGovernanceLoading(false);
     }
   }
 
   async function requestExceptionReview() {
     if (!isAdmin || !details?.scan?.id ||
-        !exceptionFinding || exceptionReason.trim().length < 20) return;
+        !exceptionFinding || exceptionReason.trim().length < 20 || governanceLoading) return;
+    const scanId = details.scan.id;
+    const generation = scanDetailGeneration.current;
     setGovernanceLoading(true);
     setGovernanceError("");
     try {
-      await requestDeployException(details.scan.id, {
+      await requestDeployException(scanId, {
         finding_id: exceptionFinding, reason: exceptionReason.trim(),
       });
-      setDeployExceptions(await fetchDeployExceptions(details.scan.id));
+      const exceptions = await fetchDeployExceptions(scanId);
+      if (generation !== scanDetailGeneration.current) return;
+      setDeployExceptions(exceptions);
+      setDeployExceptionsError("");
       setExceptionFinding("");
       setExceptionReason("");
-    } catch (err) { setGovernanceError(cloudError(err)); }
-    finally { setGovernanceLoading(false); }
+    } catch (err) {
+      if (generation === scanDetailGeneration.current) setGovernanceError(cloudError(err));
+    } finally {
+      if (generation === scanDetailGeneration.current) setGovernanceLoading(false);
+    }
   }
 
   async function actOnException(exceptionId, operation) {
-    if (!isAdmin || !details?.scan?.id || reviewReason.trim().length < 20) return;
+    if (!isAdmin || !details?.scan?.id || governanceLoading ||
+        reviewingExceptionId !== exceptionId || reviewReason.trim().length < 20 ||
+        (operation === "APPROVE" && (!Number.isInteger(Number(expiryDays)) ||
+          Number(expiryDays) < 1 || Number(expiryDays) > 90))) return;
+    const scanId = details.scan.id;
+    const generation = scanDetailGeneration.current;
     setGovernanceLoading(true);
     setGovernanceError("");
     try {
-      await decideDeployException(details.scan.id, exceptionId, {
+      await decideDeployException(scanId, exceptionId, {
         operation, reason: reviewReason.trim(),
         expires_days: operation === "APPROVE" ? Number(expiryDays) : null,
       });
-      setDeployExceptions(await fetchDeployExceptions(details.scan.id));
+      const exceptions = await fetchDeployExceptions(scanId);
+      if (generation !== scanDetailGeneration.current) return;
+      setDeployExceptions(exceptions);
+      setDeployExceptionsError("");
       setReviewReason("");
-    } catch (err) { setGovernanceError(cloudError(err)); }
-    finally { setGovernanceLoading(false); }
+      setReviewingExceptionId("");
+    } catch (err) {
+      if (generation === scanDetailGeneration.current) setGovernanceError(cloudError(err));
+    } finally {
+      if (generation === scanDetailGeneration.current) setGovernanceLoading(false);
+    }
   }
 
   const current = environments.find((e) => e.id === selected);
@@ -501,6 +603,15 @@ export default function CloudSecurity({ isAdmin = false }) {
           {loading ? "Loading..." : "Refresh"}
         </button>
       </header>
+
+      <nav className="cloud-section-nav" aria-label="Cloud security tasks">
+        <a href="#cloud-environments">AWS connections</a>
+        <a href="#cloud-advanced">Advanced AWS checks</a>
+        <a href="#cloud-iam">MCP permissions</a>
+        <a href="#cloud-iac">Terraform files</a>
+        <a href="#cloud-scans">Recent audits</a>
+        <a href="#cloud-detail">Audit review</a>
+      </nav>
 
       {error && <p className="error-banner" role="alert">{error}</p>}
       {message && <p className="success-banner" role="status">{message}</p>}
@@ -545,12 +656,12 @@ export default function CloudSecurity({ isAdmin = false }) {
         </details>
       )}
 
-      <section className="detail-panel">
-        <h3>Environments</h3>
+      <section id="cloud-environments" className="detail-panel cloud-task-panel">
+        <h3>AWS connections</h3>
         <label>Select AWS environment
           <select disabled={loading || !environments.length} value={selected} onChange={(e) => {
-            setSelected(e.target.value); setDetails(null); setEdit(null);
-            setPermissionPreview(null); setDeployGovernance(null); setGovernanceError("");
+            setSelected(e.target.value); clearScanDetails(); setEdit(null);
+            setPermissionPreview(null);
           }}>
             {!environments.length && <option value="">No environments configured</option>}
             {environments.map((env) => (
@@ -625,7 +736,7 @@ export default function CloudSecurity({ isAdmin = false }) {
         )}
       </section>
 
-      <section className="detail-panel">
+      <section id="cloud-advanced" className="detail-panel cloud-task-panel">
         <h3>Advanced AWS audit with Prowler</h3>
         <p>Read-only security checks for EC2, S3, IAM, CloudTrail and CloudWatch.
           Prowler uses temporary AWS STS credentials from the selected audit role.
@@ -720,8 +831,8 @@ export default function CloudSecurity({ isAdmin = false }) {
         )}
       </section>
 
-      <section className="detail-panel">
-        <h3>Compare MCP tool permissions with AWS</h3>
+      <section id="cloud-iam" className="detail-panel cloud-task-panel">
+        <h3>Review MCP cloud permissions</h3>
         <p>Choose a registered MCP server, link its verified AWS workload, then
           describe which cloud permissions each published MCP contract needs.
           Save a draft, review it and explicitly approve it before scanning.
@@ -1027,8 +1138,8 @@ export default function CloudSecurity({ isAdmin = false }) {
         )}
       </section>
 
-      <section className="detail-panel">
-        <h3>Scan infrastructure configuration</h3>
+      <section id="cloud-iac" className="detail-panel cloud-task-panel">
+        <h3>Check Terraform configuration</h3>
         <p>Upload a Terraform ZIP to identify configuration risks before deployment.
           No AWS connection is required and Terraform code is never executed.</p>
         <p>Limits: 2 MB ZIP, 60 files, .tf and .tf.json only, no module declarations.
@@ -1070,8 +1181,8 @@ export default function CloudSecurity({ isAdmin = false }) {
         )}
       </section>
 
-      <section className="detail-panel">
-        <h3>Recent audits</h3>
+      <section id="cloud-scans" className="detail-panel cloud-task-panel">
+        <h3>Recent AWS audits</h3>
         {currentScans.length === 0 ? <p>No audits yet. Connect an audit identity and start a scan.</p> : (
           <div className="table-scroll">
             <table>
@@ -1091,9 +1202,19 @@ export default function CloudSecurity({ isAdmin = false }) {
         )}
       </section>
 
+      {detailsLoading && <p role="status" className="cloud-loading">
+        Loading the selected audit and its evidence...
+      </p>}
+      {detailError && <p role="alert" className="error-banner">{detailError}</p>}
       {details && (
-        <section className="detail-panel">
-          <h3>Audit details — {details.scan.status}</h3>
+        <section id="cloud-detail" className="detail-panel cloud-task-panel">
+          <div className="cloud-detail-heading">
+            <h3>Audit details — {details.scan.status}</h3>
+            <button type="button" className="secondary-action"
+              disabled={detailsLoading} onClick={() => showScan(details.scan.id)}>
+              Refresh details
+            </button>
+          </div>
           <p>{details.scan.kind === "IAM_MCP"
             ? "This scan compares signed MCP contracts with AWS identity-policy observations. Potential gaps are not proof of effective AWS access; unverified checks remain UNKNOWN."
             : details.scan.kind === "IAC_CONFIG"
@@ -1102,9 +1223,10 @@ export default function CloudSecurity({ isAdmin = false }) {
           {details.scan.error_code && <p>Failure code: {details.scan.error_code}</p>}
           {["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(details.scan.kind) && (
             <div>
-              <h4>OPA Deploy Security governance (advisory only)</h4>
-              <p>These decisions review verified audit evidence. They never
-                alter AWS rights, block MCP calls, or certify complete cloud security.</p>
+              <h4>Security assessment and administrator review</h4>
+              <p>The review policy evaluates available audit evidence and
+                recommends a follow-up. It does not change AWS permissions,
+                block MCP tools, or certify that the whole environment is secure.</p>
               <button type="button" className="secondary-action"
                 disabled={governanceLoading ||
                   !["PARTIAL", "COMPLETED"].includes(details.scan.status)}
@@ -1119,17 +1241,25 @@ export default function CloudSecurity({ isAdmin = false }) {
                 <p>Follow-up: {deployGovernance.obligations.join(", ")}.
                   No automatic Runtime blocking or proof of effective AWS access.</p>
               </div>}
-              <h4>Decision history ({governanceHistory.length})</h4>
+              <h4>Previous security assessments ({governanceHistory.length})</h4>
+              {governanceHistoryError && <p role="alert" className="error-banner">
+                Assessment history could not be verified: {governanceHistoryError}
+              </p>}
               {governanceHistory.length ? governanceHistory.map((item) => (
                 <p key={item.id}>{new Date(item.created_at).toLocaleString()}:
                   <strong> {item.classification.replaceAll("_", " ")}</strong>
                   {" | "}{item.policy_revision}
                   {" | "}Evidence <code>{item.input_sha256.slice(0, 12)}...</code>
                 </p>
-              )) : <p>No persisted decisions.</p>}
-              <h4>Documented exceptions ({deployExceptions.length})</h4>
+              )) : !governanceHistoryError && <p>No recorded assessments yet.</p>}
+              <h4>Exception requests ({deployExceptions.length})</h4>
+              {deployExceptionsError && <p role="alert" className="error-banner">
+                Exception history could not be verified: {deployExceptionsError}
+              </p>}
               <p>Exceptions remain visible alongside the original findings
                 and never override Runtime authorization.</p>
+              {!deployExceptions.length && !deployExceptionsError &&
+                <p>No exception requests for this audit.</p>}
               {deployExceptions.map((exception) => (
                 <article key={exception.exception_id}>
                   <strong>Finding {exception.finding_id.slice(0,12)}:
@@ -1143,7 +1273,15 @@ export default function CloudSecurity({ isAdmin = false }) {
                     </p>)}
                   </details>
                   {isAdmin && ["REQUESTED", "APPROVED", "EXPIRED"].includes(exception.state) && (
-                    <div>
+                    <div className="cloud-exception-review">
+                      {reviewingExceptionId !== exception.exception_id ? (
+                        <button type="button" className="tiny-action" disabled={governanceLoading}
+                          onClick={() => {
+                            setReviewingExceptionId(exception.exception_id);
+                            setReviewReason("");
+                            setExpiryDays(7);
+                          }}>Review this request</button>
+                      ) : <>
                       <label>Review justification
                         <textarea maxLength={1000} value={reviewReason}
                           onChange={(e) => setReviewReason(e.target.value)} />
@@ -1154,7 +1292,9 @@ export default function CloudSecurity({ isAdmin = false }) {
                             onChange={(e) => setExpiryDays(e.target.value)} />
                         </label>
                         <button type="button" disabled={governanceLoading ||
-                          reviewReason.trim().length < 20}
+                          reviewReason.trim().length < 20 ||
+                          !Number.isInteger(Number(expiryDays)) ||
+                          Number(expiryDays) < 1 || Number(expiryDays) > 90}
                           onClick={() => actOnException(exception.exception_id, "APPROVE")}>
                           Approve temporary exception
                         </button>
@@ -1170,6 +1310,12 @@ export default function CloudSecurity({ isAdmin = false }) {
                           onClick={() => actOnException(exception.exception_id, "REVOKE")}>
                           Revoke exception
                         </button>}
+                      <button type="button" className="tiny-action"
+                        disabled={governanceLoading} onClick={() => {
+                          setReviewingExceptionId("");
+                          setReviewReason("");
+                        }}>Cancel review</button>
+                      </>}
                     </div>
                   )}
                 </article>

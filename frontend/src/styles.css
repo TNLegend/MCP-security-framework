@@ -3611,3 +3611,86 @@ code {
     font-size: .85rem;
   }
 }
+
+/* Deploy Security: task navigation and narrow-screen exception reviews. */
+.cloud-section-nav {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 18px;
+}
+.cloud-section-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 7px 11px;
+  border: 1px solid #cbd3df;
+  border-radius: 999px;
+  background: #fff;
+  color: #174c93;
+  font-size: .86rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+.cloud-section-nav a:hover,
+.cloud-section-nav a:focus-visible {
+  border-color: #2563eb;
+  background: #edf4ff;
+  text-decoration: underline;
+}
+.cloud-task-panel { scroll-margin-top: 18px; overflow-wrap: anywhere; }
+.cloud-detail-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.cloud-detail-heading h3 { margin: 0; }
+.cloud-loading {
+  border: 1px solid #d0dcec;
+  border-radius: 8px;
+  padding: 14px 16px;
+  background: #f4f8ff;
+  color: #244567;
+  font-weight: 700;
+}
+.cloud-exception-review {
+  min-width: 0;
+  display: grid;
+  justify-items: start;
+  gap: 9px;
+  margin: 10px 0 14px;
+  padding: 12px;
+  border: 1px solid #d7deea;
+  border-radius: 9px;
+  background: #f8fafc;
+}
+.cloud-exception-review label {
+  display: grid;
+  width: 100%;
+  max-width: 620px;
+  gap: 5px;
+  font-weight: 700;
+}
+.cloud-exception-review textarea,
+.cloud-exception-review input[type="number"] {
+  width: 100%;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #bbc9db;
+  border-radius: 8px;
+  background: #fff;
+}
+.cloud-exception-review textarea { min-height: 92px; resize: vertical; }
+.cloud-task-panel pre, .cloud-task-panel code { overflow-wrap: anywhere; }
+.cloud-task-panel .table-scroll { width: 100%; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+@media (max-width: 600px) {
+  .cloud-section-nav { gap: 6px; }
+  .cloud-section-nav a { flex: 1 1 145px; justify-content: center; text-align: center; }
+  .cloud-detail-heading { align-items: stretch; }
+  .cloud-detail-heading .secondary-action { width: 100%; }
+  .cloud-exception-review > button { width: 100%; }
+}

@@ -83,8 +83,8 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
       <h4>Description check</h4>
       <p className="hint-text">Reviews what the tool claims it can do. Suggestions are not verified behavior.</p>
       {mainM4 && (
-        <details className="operator-technical-details"><summary>Previous description analysis</summary><section className="m4-main-analysis-evidence" aria-label="Current persisted main M4 evidence">
-          <h5>M4 in the main analyzer — recorded evidence</h5>
+        <details className="operator-technical-details"><summary>Previous description analysis</summary><section className="m4-main-analysis-evidence" aria-label="Recorded description evidence">
+          <h5>Recorded description evidence</h5>
           <p className="hint-text">
             This evidence is bound to the current tool fingerprint.
             The model did not independently verify advertised behavior.
@@ -96,7 +96,7 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
             <div><dt>Uncertain events</dt><dd>{mainM4?.m7?.events_with_uncertainty ?? "Unknown"}</dd></div>
             <div><dt>Risk verdict</dt><dd>{mainM4?.m7?.risk_decision ?? "NOT_EVALUATED"}</dd></div>
           </dl>
-          <p className="hint-text">Local M4 model/source SHA-256:
+          <p className="hint-text">Description model evidence reference (SHA-256):
             <code>{mainM4?.m4_model_identity_sha256 || "NOT_VERIFIED"}</code>
           </p>
         </section></details>
@@ -121,54 +121,54 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
             <summary>Complete technical report</summary>
           <p className="hint-text m4-source-identity">
             Source fingerprint: <code>{result?.source_fingerprint}</code>
-            {" · "}M4 status: <strong>SHADOW / NON_AUTHORITATIVE</strong>
+            {" · "}Report status: <strong>Advisory only / not an authorization decision</strong>
             {" · "}Source path: {report?.source_path}
           </p>
           <div className="analysis-overview-list">
             <p className="hint-text">
-              M1 source verification: <strong>{result?.envelope_validation_status}</strong>
+              Recorded source verification: <strong>{result?.envelope_validation_status}</strong>
             </p>
             {sourceProof ? (
               <p className="hint-text" role="note">
                 {evidence.length} exact text evidence span(s) validated against the recorded
-                original M1 JSON snapshot. This does not attest raw network bytes.
+                original tool observation. This does not attest raw network bytes.
                 {" · "}Snapshot: <code>{sourceProof.snapshot_id}</code>
               </p>
             ) : (
               <p className="hint-text" role="note">
-                This report lacks a matching recorded M1 protocol observation.
+                This report lacks a matching recorded protocol observation.
                 Source attestation remains unverified: {result?.provenance_limitation || "unknown"}.
               </p>
             )}
             <p className="hint-text m4-source-identity">
-              Local M4 source/model SHA-256: <code>{result?.m4_model_identity_sha256 || "NOT_VERIFIED"}</code>
+              Description model/source fingerprint (SHA-256): <code>{result?.m4_model_identity_sha256 || "NOT_VERIFIED"}</code>
               {" · "}A local SHA-256 fingerprint is not a permission, authentication, or ADMIN approval.
             </p>
             <p className="hint-text">
-              Models: GLiNER PASS10 + DeBERTa V2 · English-only · no automatic security decisions.
+              Description models · English-only · no automatic security decisions.
             </p>
           </div>
           {downstream && (
-            <section className="m4-downstream-views" aria-label="M4 module consumers">
-              <h5>M4 semantic output shared with downstream modules</h5>
+            <section className="m4-downstream-views" aria-label="Other security check references">
+              <h5>How this report supports other security checks</h5>
               <p className="hint-text">
-                Advisory evidence only. M3/M6/M7 may inspect these candidates,
+                Advisory evidence only. Other security checks may inspect these candidates,
                 but no prompt-injection verdict, contract decision, drift decision,
                 risk score, approval or runtime authorization is created here.
               </p>
               <dl className="inline-metadata">
                 <div>
-                  <dt>M3 — instructions</dt>
+                  <dt>Possible instructions</dt>
                   <dd>{m3?.model_directives?.length ?? "Unknown"} directive candidate(s)
                     {" · "}{m3?.prompt_injection_verdict ?? "NOT_EVALUATED"}</dd>
                 </div>
                 <div>
-                  <dt>M6 — operations</dt>
+                  <dt>Potential operations</dt>
                   <dd>{m6?.candidate_operation_count ?? "Unknown"} operation candidate(s)
                     {" · "}{m6?.contract_consistency_decision ?? "NOT_EVALUATED"}</dd>
                 </div>
                 <div>
-                  <dt>M7 — uncertainty</dt>
+                  <dt>Uncertainty</dt>
                   <dd>{m7?.events_with_uncertainty ?? "Unknown"} uncertain event(s)
                     {" · "}{m7?.risk_decision ?? "NOT_EVALUATED"}</dd>
                 </div>
@@ -230,7 +230,7 @@ export default function M4SemanticsPanel({ tool, latestAnalysis }) {
           </div>
           {omissions.length > 0 && (
             <details>
-              <summary>M4 coverage limitations ({omissions.length})</summary>
+              <summary>Description coverage limitations ({omissions.length})</summary>
               <ul>
                 {omissions.map((omission, i) => (
                   <li key={String(i)}>{omission.reason} ({omission.path})</li>
