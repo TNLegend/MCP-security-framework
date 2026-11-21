@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import hashlib
+import hmac
+import json
 from statistics import fmean
 from typing import Iterable
 
@@ -22,6 +25,10 @@ from app.schemas.operations import (
     RuntimeStorageStats,
 )
 from app.services.local_runtime_manager import LocalRuntimeManager
+
+
+class RuntimeCleanupPreviewConflict(ValueError):
+    pass
 
 
 RUNTIME_ERROR_STATUSES = {
@@ -170,6 +177,7 @@ def cleanup_runtime_logs(
     db: Session,
     *,
     dry_run: bool,
+    expected_preview_fingerprint: str | None = None,
 ) -> RuntimeCleanupResult:
     now = datetime.utcnow()
     cutoff = now - timedelta(days=settings.runtime_log_retention_days)
@@ -281,10 +289,26 @@ def cleanup_runtime_logs(
             if len(selected) >= target_deletions:
                 break
     selected = selected[:batch]
+    # Deterministic, compact receipt of exact selected IDs, recorded count
+    # and retention policy. The preview does not reserve rows.
+    preview_fingerprint = hashlib.sha256(json.dumps({
+        "ids": sorted(selected),
+        "total_before": total_before,
+        "eligible_expired": eligible_expired,
+        "eligible_over_limit": eligible_over_limit,
+        "retention_days": settings.runtime_log_retention_days,
+        "max_rows": settings.runtime_log_max_rows,
+        "batch": batch,
+    }, sort_keys=True, separators=(",", ":")).encode("utf8")).hexdigest()
+    if (not dry_run and expected_preview_fingerprint is not None
+            and not hmac.compare_digest(preview_fingerprint, expected_preview_fingerprint)):
+        raise RuntimeCleanupPreviewConflict("runtime_cleanup_preview_changed")
     deleted = 0
     if not dry_run and selected:
         result = db.execute(delete(RuntimeCall).where(RuntimeCall.id.in_(selected)))
         deleted = int(result.rowcount or 0)
+        if expected_preview_fingerprint is not None and deleted != len(selected):
+            raise RuntimeCleanupPreviewConflict("runtime_cleanup_concurrent_mutation")
         db.flush()
 
     total_after = total_before - deleted
@@ -297,6 +321,7 @@ def cleanup_runtime_logs(
         planned=len(selected),
         deleted=deleted,
         total_after=total_after,
+        preview_fingerprint=preview_fingerprint,
     )
 
 
@@ -392,3 +417,36 @@ def _safe_pool_metric(pool, name: str) -> int | None:
         return int(method())
     except Exception:
         return None
+
+def unresolved_runtime_operations(db: Session, *, limit: int = 50) -> dict:
+    """Read-only bounded list consistent with the intent grace period.
+
+    Intent-only records may have reached the upstream tool; never infer a
+    failed call or an automatically safe retry.
+    """
+    limit=max(1,min(int(limit),50))
+    cutoff=datetime.utcnow()-timedelta(seconds=settings.runtime_intent_grace_seconds)
+    completion=aliased(RuntimeCall)
+    query=(select(RuntimeCall)
+           .where(RuntimeCall.event_phase=="intent",
+                  RuntimeCall.operation_id.is_not(None),
+                  RuntimeCall.created_at<cutoff,
+                  ~exists(select(completion.id).where(
+                      completion.operation_id==RuntimeCall.operation_id,
+                      completion.event_phase=="outcome",
+                  )))
+           .order_by(RuntimeCall.created_at.desc(),RuntimeCall.id.desc())
+           .limit(limit+1))
+    rows=db.scalars(query).all()
+    return {
+        "items":[{
+            "operation_id":row.operation_id,
+            "tool_name":row.tool_name,
+            "agent_id":row.agent_id,
+            "created_at":row.created_at.isoformat(),
+            "state":"OUTCOME_NOT_RECORDED",
+            "replay_safe":False,
+        } for row in rows[:limit]],
+        "returned":min(len(rows),limit),
+        "truncated":len(rows)>limit,
+    }

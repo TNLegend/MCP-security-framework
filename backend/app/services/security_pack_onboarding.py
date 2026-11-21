@@ -813,12 +813,16 @@ def create_tool_contract_draft(
             actor=actor,
             change_summary=payload.change_summary,
         )
-    contract_approval_count = sum(
-        1
-        for value in approvals
+    current_profile_approvals = [
+        value for value in approvals
         if value.server_ref == contract.server_ref
         and value.contract_hash == contract.contract_hash
-    )
+        and value.tool_fingerprint == tool.current_fingerprint
+        and value.upstream_protocol_profile_id in profile_ids
+    ]
+    # Historical approvals of a different fingerprint must never inflate
+    # the current tool's profile approval count.
+    contract_approval_count = len(current_profile_approvals)
     record_control_plane_audit(
         db,
         actor=actor,
@@ -842,6 +846,14 @@ def create_tool_contract_draft(
         "contract": contract.model_dump(mode="json"),
         "adapter_resolutions": tuple(value.model_dump(mode="json") for value in resolutions),
         "observation_approvals": contract_approval_count,
+        "profile_approvals": tuple({
+            "profile_id": approval.upstream_protocol_profile_id,
+            "tool_fingerprint": approval.tool_fingerprint,
+            "contract_hash": approval.contract_hash,
+            "evidence_bundle_hash": approval.evidence_bundle_hash,
+            "approved_at": approval.approved_at,
+            "revision_id": approval.revision_id,
+        } for approval in current_profile_approvals),
         "analysis_statuses": tuple(analysis_statuses),
     }
 

@@ -15,6 +15,14 @@ const nextActions = Object.fromEntries(
 );
 
 
+const runtimeDecisionMeaning = Object.freeze({
+  ALLOW: "The policy permitted this operation; this is not proof that it was sent or completed.",
+  BLOCK: "The effective control refused or withheld the operation. Check the phase and dispatch state.",
+  WARN: "The policy allowed the request with an advisory warning. Later guards can still block it.",
+  LOG_ONLY: "The policy allows observation and logging; later guards still apply.",
+  ASK_APPROVAL: "The policy requested approval. The Proxy does not execute an interactive approval workflow; this call is not dispatched.",
+  LIMIT: "The policy requested constrained output. The Proxy cannot safely enforce that obligation here; this call is not dispatched.",
+});
 export default function SecurityExplanation({ record }) {
   // The final decision may be a Proxy guard AFTER an OPA ALLOW. Keep both
   // independently displayed; never claim OPA rejected the initial request.
@@ -40,7 +48,7 @@ export default function SecurityExplanation({ record }) {
     impact = "The call may have reached the MCP server. Its effects are not established. Do not retry automatically; reconcile first.";
   } else if (dispatch === "SENT_CONFIRMED" || record?.executed === true) {
     impact = record?.execution_status === "result_blocked"
-      ? "The tool was called, but its response was withheld. Remote effects may still have occurred."
+      ? "The tool was called, but its response was withheld. Remote effects may already have occurred. Do not retry automatically."
       : "The tool was called. Check the execution result separately from the policy decision.";
   } else if (dispatch === "NOT_SENT" || record?.executed === false) {
     impact = "No tool execution is recorded for this event. Inspect linked intent and outcome events for the full operation.";
@@ -50,8 +58,15 @@ export default function SecurityExplanation({ record }) {
   return (
     <section className="detail-panel" aria-label="Security decision explanation">
       <h4>Why was this decision made?</h4>
-      <p><strong>What happened:</strong> Effective decision {record?.decision || "not recorded"}.
-        {record?.decision === "ALLOW" ? " Authorization does not prove execution." : ""}</p>
+      <p><strong>What happened:</strong> Effective decision {record?.decision || "not recorded"}.</p>
+      <p><strong>Decision meaning:</strong> {
+        runtimeDecisionMeaning[record?.decision] || "No executable decision semantics were recorded."
+      }</p>
+      {record?.opa_decision && record.opa_decision !== record.decision && (
+        <p><strong>OPA decision meaning:</strong> {
+          runtimeDecisionMeaning[record.opa_decision] || "Review the policy obligations."
+        }</p>
+      )}
       {originalOpa && <p><strong>Original OPA decision:</strong> {originalOpa}
         {record?.opa_rule_id ? " (" + record.opa_rule_id + ")" : ""}.
         {laterGuard

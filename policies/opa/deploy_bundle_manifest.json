@@ -3,7 +3,7 @@
   "format": "deploy-opa-local-bundle-v1",
   "policy_revision": "opa-deploy-security-advisory-v1",
   "policy_sha256": {
-    "deploy_security.rego": "0ee5038acf961a619c62ce3130a470bc127d9c442deb2ab5d14e8905ba488990",
+    "deploy_security.rego": "17891ab28b1e1ab62776762b10f24da32afb3a9cf56603c45886e850c5265ed7",
     "runtime_policy.rego": "ce2989525744b18b698fe63520230f741ce397e0ad7428dc1701f34921fa3e42"
   },
   "runtime_decision_path": "data.mcp.security.runtime.decision"

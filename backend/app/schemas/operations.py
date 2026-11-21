@@ -91,6 +91,10 @@ class RuntimeOperationReconciliation(BaseModel):
 class RuntimeCleanupRequest(BaseModel):
     dry_run: bool = True
     reason: str = Field(default="Routine runtime log retention maintenance.", min_length=10, max_length=500)
+    # Mandatory for an ADMIN Apply. Auto cleanup never uses this external API.
+    expected_preview_fingerprint: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$",
+    )
 
     model_config = ConfigDict(extra="forbid")
 
@@ -104,3 +108,4 @@ class RuntimeCleanupResult(BaseModel):
     planned: int
     deleted: int
     total_after: int
+    preview_fingerprint: str | None = None

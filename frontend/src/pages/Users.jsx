@@ -385,6 +385,10 @@ function Users({ users = [], loading = false, onRefresh }) {
                             Enable
                           </button>
                         )}
+                        {lastAdminReason && <p role="note" className="hint-text">
+                          {lastAdminReason} Changing its role or disabling this account
+                          would leave no enabled administrator.
+                        </p>}
                         <button
                           disabled={Boolean(busyAction)}
                           onClick={() => run("reset", user)}

@@ -154,14 +154,20 @@ function ControlledAIResult({ result }) {
   const safeResult = result.non_authoritative === true
     && result.requires_human_review === true
     && result.can_mutate_runtime === false;
+  // Fail closed on untrusted AI metadata. Showing the generated content
+  // after a warning would still expose unapproved advice or draft actions.
+  if (!safeResult) {
+    return <div className="controlled-ai-result" role="alert">
+      <h4>AI explanation withheld</h4>
+      <p>The response failed the required advisory-only safeguards
+        (human review required, non-authoritative, no Runtime mutation).
+        No generated content or suggested action is displayed. Retry
+        only after the AI provider and response validation are checked.</p>
+    </div>;
+  }
   return (
     <div className="controlled-ai-result">
-      <h4>AI explanation</h4>
-      {!safeResult && (
-        <p className="error-banner" role="alert">
-          This response does not meet the expected safety restrictions. Do not use it for a security decision.
-        </p>
-      )}
+      <h4>AI explanation ? advisory only</h4>
       <section className="controlled-ai-section">
         <h5>What it means</h5>
         <p>{result.summary}</p>

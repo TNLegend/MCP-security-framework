@@ -577,7 +577,7 @@ function AnalysisOverview({ bundle, isAdmin, latestAnalysis, onAskAI, tool }) {
             <div className="operator-checks">
               <div>
                 <span>Prompt injection</span>
-                <strong>{injectionFinding ? "Possible attempt found" : "No independent result available"}</strong>
+                <strong>{injectionFinding ? "Finding label refers to injection ? verify" : "No independent injection verdict recorded"}</strong>
               </div>
               <div>
                 <span>Tool changes</span>
@@ -593,8 +593,18 @@ function AnalysisOverview({ bundle, isAdmin, latestAnalysis, onAskAI, tool }) {
               </div>
             </div>
             {injectionFinding && (
-              <p className="operator-caution">A possible prompt injection indicator was recorded.
-                It requires verification; this is not a confirmed attack.</p>
+              <div className="operator-caution">
+                <p>A finding label or category mentions injection, but this
+                  summary is a text-based classification, not a separately
+                  verified prompt-injection detection or a confirmed attack.</p>
+                <details><summary>Inspect the recorded finding</summary>
+                  <p>Finding code: <code>{injectionFinding.code || "Not recorded"}</code></p>
+                  <p>Finding title: {injectionFinding.title || "Not recorded"}</p>
+                  <p>Finding category: {injectionFinding.category || "Not recorded"}</p>
+                  <p>Observation and rationale: {injectionFinding.description || "No rationale recorded"}</p>
+                  <p>Analysis: <code>{injectionFinding.analysis_id || latestAnalysis?.id || "Unknown"}</code></p>
+                </details>
+              </div>
             )}
           </>
         )}
@@ -758,10 +768,26 @@ function HistoryTable({ error, rows, title }) {
       <h4>{title}</h4>
       <SectionError error={error} title={title} />
       {!error && (rows.length === 0 ? <div className="empty-state">No {title.toLowerCase()} recorded.</div> : (
-        <div className="table-shell history-table"><table><thead><tr><th>Recorded</th><th>Status</th><th>Fingerprint</th></tr></thead><tbody>
+        <div className="table-shell history-table"><table><thead><tr><th>Recorded</th><th>Status</th><th>Fingerprint</th><th>Evidence / reviewer</th></tr></thead><tbody>
           {historyPagination.pageItems.map((row, index) => {
             const status = row.analysis_status || row.review_status || row.status || row.action || "-";
-            return <tr key={row.id || index}><td title={formatDate(row.completed_at || row.created_at || row.observed_at || row.first_seen_at)}>{formatDate(row.completed_at || row.created_at || row.observed_at || row.first_seen_at)}</td><td><span className="history-status" title={status}>{humanize(status)}</span></td><td><span className="history-fingerprint" title={row.fingerprint || "-"}>{shorten(row.fingerprint)}</span></td></tr>;
+            return <tr key={row.id || index}>
+              <td title={formatDate(row.completed_at || row.created_at || row.observed_at || row.first_seen_at)}>{formatDate(row.completed_at || row.created_at || row.observed_at || row.first_seen_at)}</td>
+              <td><span className="history-status" title={status}>{humanize(status)}</span></td>
+              <td><span className="history-fingerprint" title={row.fingerprint || "-"}>{shorten(row.fingerprint)}</span></td>
+              <td>{title === "Reviews" ? (
+                <details><summary>Why was this review recorded?</summary>
+                  <p><strong>Reviewer:</strong> {row.reviewer || "Not recorded"}</p>
+                  <p><strong>Justification:</strong> {row.justification || "No justification preserved"}</p>
+                  <p><strong>Version:</strong> {row.version_id ?? "Unknown"}; Analysis: {row.analysis_id ?? "Unknown"}</p>
+                  <p><strong>Reviewed fingerprint:</strong> <code>{row.fingerprint || "Not recorded"}</code></p>
+                  <p>This historical review is tied to the recorded observation;
+                    it does not automatically authorize a different tool version
+                    or a Runtime call.</p>
+                </details>
+              ) : <span>Open the technical evidence for this analysis or observation.
+                This table does not claim independent source verification.</span>}</td>
+            </tr>;
           })}
         </tbody></table></div>
       ))}

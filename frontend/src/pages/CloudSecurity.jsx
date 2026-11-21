@@ -6,11 +6,11 @@ import {
 } from "./cloudIamMapping";
 import {
   createCloudEnvironment, fetchCloudEnvironments, fetchCloudScans,
-  fetchCloudScanDetail, startCloudScan, testCloudEnvironment,
+  fetchCloudScanDetail, fetchCloudScanCollectionPage, startCloudScan, testCloudEnvironment,
   updateCloudEnvironment,
   fetchIaCScannerAvailability, uploadTerraformZip,
   fetchProwlerAvailability, startProwlerCloudScan,
-  fetchProwlerPermissionPreview, startIAMMCPComparison, fetchIAMMCPResults,
+  fetchProwlerPermissionPreview, startIAMMCPComparison, fetchIAMMCPResultsPage,
   fetchDeployGovernance, evaluateDeployGovernance as recordDeployGovernance,
   fetchDeployGovernanceHistory, fetchDeployExceptions, requestDeployException,
   decideDeployException,
@@ -207,6 +207,114 @@ function iamAssessmentExplanation(value) {
   return explanations[value] || "This comparison needs additional verification.";
 }
 
+function IAMPolicyEvidence({ item }) {
+  const evidence = item.evidence_summary;
+  const facts = evidence?.summary;
+  if (!facts || typeof facts !== "object") {
+    return <p className="hint-text">
+      This comparison has no correlated policy evidence. It may be a legacy
+      scan; the reason code alone cannot establish the exact IAM statement.
+      Run a fresh read-only comparison after verifying the mapping.
+    </p>;
+  }
+  const matched = facts.identity_policy_match_evidence;
+  const clauses = matched?.matching_unconditional_clauses || [];
+  const reverse = facts.direction === "IAM_POLICY_TO_APPROVED_MCP_NEEDS";
+  return (
+    <div className="iam-comparison-evidence">
+      <p><strong>Assessment:</strong> {iamAssessmentExplanation(item.notes)}</p>
+      <p><strong>Source of comparison:</strong> {reverse
+        ? "IAM identity-policy Allow compared against the approved MCP mapping"
+        : "Signed MCP capability compared against observed IAM identity-policy statements"}.</p>
+      <p><strong>Approved MCP need:</strong> {reverse
+        ? "No approved matching MCP need was demonstrated for this observation."
+        : <><code>{item.expected_actions.join(", ") || facts.action || "Unresolved"}</code>
+            {" on "}<code>{item.expected_resource_arn || facts.resource || "Unresolved"}</code></>}</p>
+      {reverse && <p><strong>IAM statement:</strong> policy statement index
+        {Number.isInteger(facts.policy_statement_index) && facts.policy_statement_index >= 0
+          ? " " + (facts.policy_statement_index + 1) : " not recorded"};
+        {" ? "}<code>{facts.action || "Action unverified"}</code>
+        {" on "}<code>{facts.resource || "Resource unverified"}</code>.
+        {facts.role_usage_operator_declared === "SHARED"
+          ? " This role is declared shared; other consumers may need the permission."
+          : " Exclusive role usage is not independently proven."}</p>}
+      {!reverse && <p>Unconditional IAM identity-policy clauses matching the
+        requested action and resource: {matched?.matching_clause_count ?? "Not counted"}.</p>}
+      {!reverse && clauses.length > 0 && <ul>{clauses.map((clause, index) => (
+        <li key={index}>
+          Statement {clause.statement_number}: <strong>{clause.policy_effect}</strong>
+          {" "}<code>{clause.action_pattern}</code> on <code>{clause.resource_pattern}</code>.
+          {clause.action_broader && " The IAM action pattern covers more than the requested action."}
+          {clause.resource_broader && " The IAM resource pattern covers more than the requested resource."}
+          {!clause.action_broader && !clause.resource_broader && " This is an exact action/resource match."}
+        </li>
+      ))}</ul>}
+      {matched?.clause_examples_truncated && <p role="note">Only the first
+        matching clause examples are shown; the evidence is not exhaustive.</p>}
+      {Array.isArray(facts.warning_codes) && facts.warning_codes.length > 0 &&
+        <p><strong>Unresolved policy checks:</strong> {facts.warning_codes.join(", ")}.</p>}
+      <p><strong>Effective AWS access:</strong> Not established by this identity-policy
+        comparison. SCPs, permissions boundaries, session policies, resource
+        policies and runtime identity use may further restrict access.</p>
+      <p><strong>Next action:</strong> Check the specific policy statement and
+        signed mapping. For a shared role, review other consumers before
+        changing AWS permissions. Do not equate a matching Allow with effective access.</p>
+      <details><summary>Evidence reference</summary>
+        <p>Evidence ID: <code>{evidence.id}</code></p>
+        <p>Observation SHA-256: <code>{evidence.sha256}</code></p>
+        <p>Policy digest: <code>{item.policy_digest || "Not recorded"}</code></p>
+        <p>Recorded at: {formatServerTime(evidence.checked_at)}</p>
+      </details>
+    </div>
+  );
+}
+
+const deployFailedChecks = Object.freeze({
+  signed_revision_verified: "The published signed revision could not be verified.",
+  admin_mapping_approved_verified: "Administrator approval of the mapping was not verified.",
+  mapping_digest_matches_scan: "The mapping digest does not match the audited snapshot.",
+  account_and_endpoint_bound: "The AWS account or MCP endpoint binding was not verified.",
+  workload_iam_identity_resolved: "The cloud workload's IAM role was not resolved.",
+  identity_policy_read_complete: "Identity policies were not read completely.",
+  comparison_integrity_verified: "The integrity of the IAM comparison was not verified.",
+  scan_completed: "The scanner did not complete a verifiable scan.",
+  scanner_execution_verified: "The expected scanner execution evidence is absent or invalid.",
+  findings_integrity_verified: "Finding integrity verification failed.",
+  source_fingerprint_verified: "The source fingerprint could not be verified.",
+  coverage_account_verified: "Account or scope coverage was not verified.",
+  freshness_verified: "The scan is stale or its freshness cannot be established.",
+  SCAN_KIND_OR_STATUS_UNSUPPORTED: "This scan type or status is not eligible for governance.",
+  SUMMARY_INVALID: "The scanner or IAM summary is incomplete or malformed.",
+  EVIDENCE_SCHEMA_UNRECOGNIZED: "The evidence schema is not recognized.",
+  UNRESOLVED_IAM_OBSERVATIONS: "The scan includes unresolved IAM observations.",
+  UNRESOLVED_CLOUD_CHECKS: "Some cloud or scanner checks were not assessed.",
+});
+function DeployEvidenceExplanation({ decision }) {
+  const failures = decision?.failed_checks;
+  return (
+    <div className="detail-panel" aria-label="Deploy decision evidence">
+      <strong>Why this assessment?</strong>
+      {Array.isArray(failures) && failures.length > 0 ? (
+        <ul>{failures.map((code) => <li key={code}>
+          {deployFailedChecks[code] || "An unrecognized evidence requirement failed."}
+          {" ("}<code>{code}</code>{")"}
+        </li>)}</ul>
+      ) : decision?.classification === "OBSERVATION_ONLY" ? (
+        <p>The reviewed checks have no recorded findings in their assessed
+          scope. This does not certify complete AWS coverage or effective access.</p>
+      ) : decision?.classification === "REVIEW_REQUIRED" ? (
+        <p>One or more observed differences require an administrator review.
+          Inspect the linked findings and IAM policy comparisons below.</p>
+      ) : (
+        <p>No per-check evidence was preserved for this evaluation. Its
+          classification alone cannot establish the missing requirement.</p>
+      )}
+      <p>Governance is advisory: it does not block MCP calls and is not proof
+        that an IAM permission can be exercised by the workload.</p>
+    </div>
+  );
+}
+
 export default function CloudSecurity({ isAdmin = false }) {
   const [activeTask, setActiveTask] = useState("cloud-environments");
   const [historyKind, setHistoryKind] = useState("ALL");
@@ -254,6 +362,11 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [mappingContextKey, setMappingContextKey] = useState("");
   const [mappingListError, setMappingListError] = useState("");
   const [iamRows, setIamRows] = useState([]);
+  const [iamPage, setIamPage] = useState(null);
+  const [iamPageLoading, setIamPageLoading] = useState(false);
+  const [iamPageError, setIamPageError] = useState("");
+  const [collectionBusy, setCollectionBusy] = useState(null);
+  const [collectionError, setCollectionError] = useState("");
   const [deployGovernance, setDeployGovernance] = useState(null);
   const [governanceError, setGovernanceError] = useState("");
   const [governanceLoading, setGovernanceLoading] = useState(false);
@@ -564,6 +677,11 @@ export default function CloudSecurity({ isAdmin = false }) {
     setDetailsLoading(false);
     setDetailError("");
     setIamRows([]);
+    setIamPage(null);
+    setIamPageLoading(false);
+    setIamPageError("");
+    setCollectionBusy(null);
+    setCollectionError("");
     setDeployGovernance(null);
     setGovernanceError("");
     setGovernanceLoading(false);
@@ -574,6 +692,81 @@ export default function CloudSecurity({ isAdmin = false }) {
     setExceptionFinding("");
     setReviewingExceptionId("");
     setReviewReason("");
+  }
+
+  async function loadNextCloudCollection(collection) {
+    if (!details?.scan?.id || collectionBusy ||
+        !["resources", "findings", "evidence", "events"].includes(collection) ||
+        !details.collection_coverage?.[collection]?.truncated) return;
+    const scanId = details.scan.id;
+    const generation = scanDetailGeneration.current;
+    const offset = details[collection]?.length ?? 0;
+    setCollectionBusy(collection);
+    setCollectionError("");
+    try {
+      const page = await fetchCloudScanCollectionPage(
+        scanId, collection, { offset, limit: 100 },
+      );
+      if (generation !== scanDetailGeneration.current) return;
+      if (page.collection !== collection || page.offset !== offset ||
+          page.returned !== page.items.length) {
+        throw new Error("Scan evidence page did not match the requested collection.");
+      }
+      setDetails((current) => {
+        if (!current || current.scan.id !== scanId ||
+            current[collection].length !== offset) return current;
+        const seen = new Set(current[collection].map((item) => item.id));
+        const extra = page.items.filter((item) => !seen.has(item.id));
+        const combined = [...current[collection], ...extra];
+        return {
+          ...current,
+          [collection]: combined,
+          collection_coverage: {
+            ...current.collection_coverage,
+            [collection]: {
+              returned: combined.length,
+              display_limit: page.total,
+              truncated: page.has_more,
+            },
+          },
+        };
+      });
+    } catch {
+      if (generation === scanDetailGeneration.current) {
+        setCollectionError("Additional scan records could not be verified. Previously loaded evidence remains visible; retry the read-only page request.");
+      }
+    } finally {
+      if (generation === scanDetailGeneration.current) setCollectionBusy(null);
+    }
+  }
+
+  async function loadMoreIAMComparisons() {
+    if (iamPageLoading || !iamPage?.has_more || !details ||
+        details.scan.kind !== "IAM_MCP") return;
+    const scanId = details.scan.id;
+    const generation = scanDetailGeneration.current;
+    const offset = iamRows.length;
+    setIamPageLoading(true);
+    setIamPageError("");
+    try {
+      const next = await fetchIAMMCPResultsPage(scanId, { offset, limit: 100 });
+      if (generation !== scanDetailGeneration.current) return;
+      if (next.offset !== offset || next.returned !== next.items.length) {
+        throw new Error("IAM comparison page did not match the requested cursor.");
+      }
+      setIamRows((current) => {
+        if (current.length !== offset) return current;
+        const known = new Set(current.map((item) => item.id));
+        return [...current, ...next.items.filter((item) => !known.has(item.id))];
+      });
+      setIamPage(next);
+    } catch {
+      if (generation === scanDetailGeneration.current) {
+        setIamPageError("The next IAM comparison page could not be verified. Already loaded results are preserved; retry without rerunning the audit.");
+      }
+    } finally {
+      if (generation === scanDetailGeneration.current) setIamPageLoading(false);
+    }
   }
 
   async function showScan(scanId, focusReview = true) {
@@ -591,6 +784,11 @@ export default function CloudSecurity({ isAdmin = false }) {
     setDeployExceptions([]);
     setDeployExceptionsError("");
     setIamRows([]);
+    setIamPage(null);
+    setIamPageLoading(false);
+    setIamPageError("");
+    setCollectionBusy(null);
+    setCollectionError("");
     setReviewingExceptionId("");
     setReviewReason("");
     setExceptionFinding("");
@@ -601,8 +799,8 @@ export default function CloudSecurity({ isAdmin = false }) {
       setDetails(item);
       const loads = [];
       if (item.scan.kind === "IAM_MCP") {
-        loads.push(fetchIAMMCPResults(scanId).then(settledRows =>
-          ({ kind: "iam", value: settledRows })));
+        loads.push(fetchIAMMCPResultsPage(scanId).then(page =>
+          ({ kind: "iam", value: page })));
       }
       if (["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(item.scan.kind)) {
         loads.push(fetchDeployGovernanceHistory(scanId).then(value =>
@@ -615,7 +813,10 @@ export default function CloudSecurity({ isAdmin = false }) {
       if (generation !== scanDetailGeneration.current) return;
       results.forEach((result, index) => {
         if (result.status === "fulfilled") {
-          if (result.value.kind === "iam") setIamRows(result.value.value);
+          if (result.value.kind === "iam") {
+            setIamRows(result.value.value.items);
+            setIamPage(result.value.value);
+          }
           if (result.value.kind === "history") setGovernanceHistory(result.value.value);
           if (result.value.kind === "exceptions") setDeployExceptions(result.value.value);
         } else {
@@ -766,7 +967,10 @@ export default function CloudSecurity({ isAdmin = false }) {
       <section id="cloud-environments" className="detail-panel cloud-task-panel"
         hidden={activeTask !== "cloud-environments"}>
         <h3>AWS connections</h3>
-        <p>Verify an audit identity before running a baseline AWS audit.</p>
+        <p>Verify an audit identity before running a baseline AWS audit.
+          A successful AWS identity check confirms the selected account and
+          credentials at that moment; it does not prove that all selected
+          services, resources, or regions can be scanned successfully.</p>
       {isAdmin && (
         <details className="inventory-add-server">
           <summary>Add AWS environment</summary>
@@ -1344,12 +1548,37 @@ export default function CloudSecurity({ isAdmin = false }) {
               Refresh details
             </button>
           </div>
+          <p><strong>Observed scan coverage:</strong> {details.scan.resource_count}
+            resources recorded, {details.scan.finding_count} findings, and
+            {details.scan.unknown_checks} checks unresolved.
+            {details.scan.unknown_checks > 0 && " These UNKNOWN checks must be investigated; they are not passed checks."}
+            This is the collected evidence scope, not proof of full cloud coverage.</p>
           <p>{details.scan.kind === "IAM_MCP"
             ? "This scan compares signed MCP contracts with AWS identity-policy observations. Potential gaps are not proof of effective AWS access; unverified checks remain UNKNOWN."
             : details.scan.kind === "IAC_CONFIG"
               ? "Unfinished or unavailable scanners are UNKNOWN, never PASS. No uploaded source is retained."
               : "Rule checks with insufficient AWS permissions are marked unknown or partial, never passed."}</p>
-          {details.scan.error_code && <p>Failure code: {details.scan.error_code}</p>}
+          {details.scan.error_code && <p role="alert">
+            Audit failure: {cloudError({ message: details.scan.error_code })}
+            {" ("}<code>{details.scan.error_code}</code>{")"}.
+            Check scanner access, connection and the recorded events before retrying.
+          </p>}
+          {Object.entries(details.collection_coverage || {}).some(([, c]) => c.truncated) && (
+            <p role="alert">This detail response is incomplete: at least one
+              collection exceeded its display limit. Do not interpret the
+              visible rows as a complete scan. Use a filtered investigation
+              or a fresh export for exhaustive evidence.</p>
+          )}
+          {Object.entries(details.collection_coverage || {}).length > 0 && (
+            <details><summary>Evidence coverage and API display limits</summary>
+              <ul>{Object.entries(details.collection_coverage).map(([name, c]) => (
+                <li key={name}>{name}: {c.returned} displayed (reference count {c.display_limit})
+                  {c.truncated ? " ? more records exist and are not displayed" : " ? all records returned by this query"}.</li>
+              ))}</ul>
+              <p>These counts describe the API response, not the coverage of
+                AWS resources or the completeness of scanner execution.</p>
+            </details>
+          )}
           {["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(details.scan.kind) && (
             <div className="cloud-review-section">
               <h4>Security assessment and administrator review</h4>
@@ -1367,6 +1596,7 @@ export default function CloudSecurity({ isAdmin = false }) {
               {deployGovernance && <div role="status" className="cloud-assessment">
                 <strong>{deployGovernance.classification.replaceAll("_", " ")}</strong>
                 <p>{deployGovernance.explanation}</p>
+                <DeployEvidenceExplanation decision={deployGovernance} />
                 <p>Follow-up: {deployGovernance.obligations.join(", ")}.
                   No automatic Runtime blocking or proof of effective AWS access.</p>
               </div>}
@@ -1375,11 +1605,20 @@ export default function CloudSecurity({ isAdmin = false }) {
                 Assessment history could not be verified: {governanceHistoryError}
               </p>}
               {governanceHistory.length ? governanceHistory.map((item) => (
-                <p key={item.id}>{formatServerTime(item.created_at)}:
-                  <strong> {item.classification.replaceAll("_", " ")}</strong>
-                  {" | "}{item.policy_revision}
-                  {" | "}Evidence <code>{item.input_sha256.slice(0, 12)}...</code>
-                </p>
+                <article key={item.id} className="cloud-finding">
+                  <p>{formatServerTime(item.created_at)}:
+                    <strong> {item.classification.replaceAll("_", " ")}</strong>
+                    {" | "}{item.policy_revision}</p>
+                  <details>
+                    <summary>Decision reasons, signed evidence and integrity chain</summary>
+                    {item.result?.explanation && <p>{item.result.explanation}</p>}
+                    <DeployEvidenceExplanation decision={item.result || item} />
+                    <p>Input SHA-256: <code>{item.input_sha256}</code></p>
+                    <p>Output SHA-256: <code>{item.output_sha256}</code></p>
+                    <p>Chain entry SHA-256: <code>{item.entry_sha256}</code></p>
+                    <p>Policy bundle SHA-256: <code>{item.local_policy_sha256 || "Not recorded"}</code></p>
+                  </details>
+                </article>
               )) : !governanceHistoryError && !detailsLoading && <p>No recorded assessments yet.</p>}
               <h4>Exception requests ({deployExceptions.length})</h4>
               {deployExceptionsError && <p role="alert" className="error-banner">
@@ -1393,6 +1632,17 @@ export default function CloudSecurity({ isAdmin = false }) {
                 <article key={exception.exception_id} className="cloud-finding">
                   <strong>Finding {exception.finding_id.slice(0,12)}:
                     {" "}{exception.state}</strong>
+                  {(() => {
+                    const linked = details.findings.find((finding) => finding.id === exception.finding_id);
+                    return linked
+                      ? <p>Linked finding: <a href={"#cloud-finding-" + linked.id}>
+                          {linked.rule_id}: {linked.title}</a>.
+                          The exception does not erase this original finding
+                          or change Runtime authorization.</p>
+                      : <p role="note">The linked finding is not in the
+                          currently returned detail set. It may be beyond an
+                          API display limit; do not assume it has been removed.</p>;
+                  })()}
                   {exception.expires_at && <p>Expires:
                     {formatServerTime(exception.expires_at)}</p>}
                   <details>
@@ -1474,7 +1724,12 @@ export default function CloudSecurity({ isAdmin = false }) {
           )}
           {details.scan.kind === "IAM_MCP" && (
             <div>
-              <h4>Bidirectional MCP and IAM permissions review ({iamRows.length})</h4>
+              <h4>Bidirectional MCP and IAM permissions review</h4>
+              <p role="status">
+                {iamPage ? "Showing " + iamRows.length + " of " + iamPage.total + " recorded comparisons."
+                  : "Comparison count is unavailable; this is not proof that the audit has no findings."}
+                {" "}These are stored comparisons, not verified coverage of every AWS policy.
+              </p>
               <p>Each IAM audit is a point-in-time snapshot. Re-run after changing
                 AWS role policies. A right outside this MCP mapping is not proof
                 that a shared role is overprivileged or that AWS access is effective.</p>
@@ -1485,16 +1740,24 @@ export default function CloudSecurity({ isAdmin = false }) {
                 resource and session policies may restrict it. No cloud
                 role or published MCP contract is changed.</p>
               {iamRows.some((item) => item.notes === "IAM_ROLE_OR_POLICY_READ_UNAVAILABLE") && (
-                <p>AWS IAM read permissions are insufficient for this scan.
-                  Review iam:GetInstanceProfile, iam:GetRole, iam:ListRolePolicies,
+                <p role="note">The audit identity could not read all required IAM
+                  policies. Review iam:GetRole, iam:ListRolePolicies,
                   iam:GetRolePolicy, iam:ListAttachedRolePolicies, iam:GetPolicy
-                  and iam:GetPolicyVersion on the audit role.</p>
+                  and iam:GetPolicyVersion. iam:GetInstanceProfile is additionally
+                  required only for EC2 instance-profile discovery, not all
+                  ECS, EKS or Lambda workloads. Confirm the actual error
+                  and workload type before granting any additional read access.</p>
               )}
+              {iamPage?.has_more && <p role="note">
+                Additional comparison rows have been recorded but are not shown yet.
+                Load subsequent pages before interpreting the complete stored set.
+              </p>}
+              {iamPageError && <p role="alert">{iamPageError}</p>}
               <div className="table-scroll"><table>
                 <thead><tr><th>Direction</th><th>MCP tool</th><th>AWS action</th>
                   <th>Cloud resource</th><th>Assessment</th>
                   <th>Identity IAM permission</th><th>Effective AWS access</th>
-                  <th>IAM role</th><th>Reason</th></tr></thead>
+                  <th>IAM role</th><th>Reason and evidence</th></tr></thead>
                 <tbody>{iamRows.map((item) => <tr key={item.id}>
                   <td>{item.tool_name ? "MCP need to IAM" : "IAM to MCP needs"}</td>
                   <td>{item.tool_name || "Role grant"}</td>
@@ -1510,23 +1773,54 @@ export default function CloudSecurity({ isAdmin = false }) {
                   <td>{iamAssessmentExplanation(item.notes)}
                     {item.signed_revision && <span> Signed contract revision: {item.signed_revision}.</span>}
                     {item.policy_digest && <span> Policy evidence: <code>{item.policy_digest.slice(0, 16)}...</code></span>}
+                    <details><summary>Why this classification? View compared policy clauses</summary>
+                      <IAMPolicyEvidence item={item} />
+                    </details>
                   </td>
                 </tr>)}</tbody>
               </table></div>
+              {iamPage?.has_more && <button type="button" className="secondary-action"
+                disabled={iamPageLoading} onClick={loadMoreIAMComparisons}>
+                {iamPageLoading ? "Loading more comparisons..." : "Load next 100 comparisons"}
+              </button>}
+              {iamPage && !iamPage.has_more && <p role="status">
+                All {iamPage.total} comparisons recorded at the last page request have been loaded.
+                This does not establish effective AWS access or exhaustive IAM scanning.
+                {!["COMPLETED", "PARTIAL", "FAILED", "TIMED_OUT", "INTERRUPTED", "CANCELLED"].includes(details.scan.status) &&
+                  " The scan is not terminal; new results may alter pagination. Refresh when it finishes."}
+              </p>}
             </div>
           )}
           <h4>Findings ({details.findings.length})</h4>
           {details.findings.length ? details.findings.map((f) => (
-            <article key={f.id} className="cloud-finding">
+            <article key={f.id} id={"cloud-finding-" + f.id} className="cloud-finding">
               <strong>{f.severity}: {f.title}</strong>
               <p>{f.description}</p>
               {f.remediation && <p>Suggested action: {f.remediation}</p>}
             </article>
           )) : <p>No confirmed findings in the collected results.</p>}
+          {details.collection_coverage?.["findings"]?.truncated && (
+            <button type="button" className="secondary-action"
+              disabled={Boolean(collectionBusy)} onClick={() => loadNextCloudCollection("findings")}>
+              {collectionBusy === "findings" ? "Loading..." : "Load more findings records"}
+            </button>
+          )}
           <h4>Resources ({details.resources.length})</h4>
           {details.resources.map((r) => <p key={r.id}>{r.resource_type} — {r.display_name} ({r.region})</p>)}
+          {details.collection_coverage?.["resources"]?.truncated && (
+            <button type="button" className="secondary-action"
+              disabled={Boolean(collectionBusy)} onClick={() => loadNextCloudCollection("resources")}>
+              {collectionBusy === "resources" ? "Loading..." : "Load more resources records"}
+            </button>
+          )}
           <h4>Audit history</h4>
           {details.events.map((e) => <p key={e.id}>{e.message_code} — {formatServerTime(e.created_at)}</p>)}
+          {details.collection_coverage?.["events"]?.truncated && (
+            <button type="button" className="secondary-action"
+              disabled={Boolean(collectionBusy)} onClick={() => loadNextCloudCollection("events")}>
+              {collectionBusy === "events" ? "Loading..." : "Load more events records"}
+            </button>
+          )}
           <details>
             <summary>Evidence records ({details.evidence.length})</summary>
             <p>SHA-256 integrity digests of normalized observations, not AWS-signed attestations.
@@ -1541,11 +1835,31 @@ export default function CloudSecurity({ isAdmin = false }) {
                     ? "SCANNER EXECUTED" : e.outcome}</strong></p>
                 <p>SHA-256: <code>{e.evidence_sha256}</code></p>
                 {e.safe_summary?.scanner && <p>Scanner: {e.safe_summary.scanner}</p>}
-                {e.safe_summary?.file && <p>File: {e.safe_summary.file}
-                  {Number.isInteger(e.safe_summary.line) ? ", line " + e.safe_summary.line : ""}</p>}
+                {e.safe_summary?.file ? (
+                  <p>Normalized source file: <code>{e.safe_summary.file}</code>;
+                    {Number.isInteger(e.safe_summary.line)
+                      ? " line " + e.safe_summary.line + "."
+                      : " the scanner did not provide a verified source line."}
+                  </p>
+                ) : ["IAC_CONFIG", "AWS_ADVANCED"].includes(details.scan.kind) ? (
+                  <p role="note">No source file or line was recorded for this
+                    evidence. Its scan digest does not establish the exact
+                    source location of a finding.</p>
+                ) : null}
+                {details.scan.source_fingerprint && <p>Scan source SHA-256:
+                  <code>{details.scan.source_fingerprint}</code>. This
+                  identifies the recorded source package; it is not proof
+                  of source completeness or remote AWS permissions.</p>}
               </article>
             ))}
+            {details.collection_coverage?.evidence?.truncated && (
+              <button type="button" className="secondary-action"
+                disabled={Boolean(collectionBusy)} onClick={() => loadNextCloudCollection("evidence")}>
+                {collectionBusy === "evidence" ? "Loading..." : "Load more evidence records"}
+              </button>
+            )}
           </details>
+          {collectionError && <p role="alert">{collectionError}</p>}
         </div>}
       </section>
     </section>

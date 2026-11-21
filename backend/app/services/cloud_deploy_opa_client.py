@@ -27,6 +27,17 @@ class DeployAdvisoryDecision(BaseModel):
         min_length=1, max_length=4
     )
     explanation: str = Field(min_length=1, max_length=500)
+    failed_checks: list[Literal[
+        "signed_revision_verified", "admin_mapping_approved_verified",
+        "mapping_digest_matches_scan", "account_and_endpoint_bound",
+        "workload_iam_identity_resolved", "identity_policy_read_complete",
+        "comparison_integrity_verified", "scan_completed",
+        "scanner_execution_verified", "findings_integrity_verified",
+        "source_fingerprint_verified", "coverage_account_verified",
+        "freshness_verified", "SCAN_KIND_OR_STATUS_UNSUPPORTED",
+        "SUMMARY_INVALID", "EVIDENCE_SCHEMA_UNRECOGNIZED",
+        "UNRESOLVED_IAM_OBSERVATIONS", "UNRESOLVED_CLOUD_CHECKS",
+    ]] = Field(default_factory=list, max_length=18)
     policy_revision: Literal["opa-deploy-security-advisory-v1"]
     runtime_enforcement: Literal[False]
     effective_aws_authorization_proven: Literal[False]

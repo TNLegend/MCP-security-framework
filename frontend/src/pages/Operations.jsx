@@ -1,7 +1,10 @@
 import { formatServerTime } from "../utils/serverTime.js";
 import { useRef, useState } from "react";
 
-import { cleanupRuntimeLogs, safeErrorMessage } from "../api/client";
+import {
+  cleanupRuntimeLogs, fetchUnresolvedRuntimeOperations,
+  fetchRuntimeOperationReconciliation, safeErrorMessage,
+} from "../api/client";
 import "./management.css";
 
 
@@ -12,10 +15,43 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
   const [message, setMessage] = useState("");
   const cleanupLock = useRef(false);
   const [error, setError] = useState("");
+  const [unresolvedCases, setUnresolvedCases] = useState(null);
+  const [investigationError, setInvestigationError] = useState("");
+  const [investigationBusy, setInvestigationBusy] = useState(false);
+  const [caseReconciliation, setCaseReconciliation] = useState(null);
+
+  async function inspectUnresolvedCases() {
+    setInvestigationBusy(true);
+    setInvestigationError("");
+    try {
+      setUnresolvedCases(await fetchUnresolvedRuntimeOperations());
+    } catch (err) {
+      setInvestigationError("Unresolved operations could not be loaded: " + safeErrorMessage(err));
+    } finally {
+      setInvestigationBusy(false);
+    }
+  }
+
+  async function reconcileCase(operationId) {
+    setInvestigationBusy(true);
+    setInvestigationError("");
+    try {
+      const detail = await fetchRuntimeOperationReconciliation(operationId);
+      setCaseReconciliation({ operationId, detail });
+    } catch {
+      setInvestigationError("This operation could not be reconciled. Its effects are still unknown; do not retry automatically.");
+    } finally {
+      setInvestigationBusy(false);
+    }
+  }
 
   async function runCleanup(dryRun) {
     if (!isAdmin || loading || cleanupLock.current || reason.trim().length < 10) return;
-    if (!dryRun && (!preview || preview.planned <= 0)) return;
+    if (!dryRun && (!preview || preview.planned <= 0 ||
+                    !preview.preview_fingerprint)) {
+      setError("A current, verified preview is required before applying retention.");
+      return;
+    }
     if (!dryRun && !window.confirm("Apply log retention cleanup? " + preview.planned + " eligible rows were identified in the preview.")) return;
     cleanupLock.current = true;
     setPreview(null);
@@ -26,6 +62,7 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
       const result = await cleanupRuntimeLogs({
         dry_run: dryRun,
         reason: reason.trim(),
+        expected_preview_fingerprint: dryRun ? null : preview.preview_fingerprint,
       });
       if (dryRun) {
         setPreview(result);
@@ -36,7 +73,8 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
         );
       } else {
         setPreview(null);
-        setMessage("Retention applied: " + result.deleted + " row(s) removed.");
+        setMessage("Retention applied to the exact previewed set: " +
+          result.deleted + " row(s) removed. See the recorded maintenance receipt.");
         await onRefresh?.();
       }
     } catch (err) {
@@ -85,6 +123,36 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="detail-panel" aria-label="Installation and recovery diagnostics">
+        <h3>Installation and recovery checks</h3>
+        <p>These are operator diagnostics, not automatic repair actions.
+          A green health endpoint alone does not establish that a signed
+          configuration is active or that all scanners are installed.</p>
+        <details>
+          <summary>How to investigate an unavailable service</summary>
+          <ul>
+            <li><strong>Backend:</strong> verify the Windows launch script,
+              environment checks and startup logs, then inspect the API
+              readiness endpoint. Do not bypass failed integrity checks.</li>
+            <li><strong>PostgreSQL:</strong> check the configured local
+              connection and schema-migration receipt; do not point a test
+              instance at a production database.</li>
+            <li><strong>Policy engine:</strong> verify the pinned OPA binary,
+              policy bundle SHA-256 and decision endpoint; restart only after
+              confirming the published policy revision.</li>
+            <li><strong>Gateway / Proxy:</strong> check the listener, signed
+              tool catalog and the exact agent/server binding. A direct
+              upstream endpoint bypasses Gateway controls.</li>
+            <li><strong>Scanners:</strong> inspect each scanner's installed
+              status in Code scans and Cloud security. Missing scanners
+              mean incomplete coverage, not clean results.</li>
+          </ul>
+          <p>After correcting a prerequisite, rerun the startup
+            self-check and verify an isolated MCP call before enabling
+            normal workloads. No command in this panel mutates the system.</p>
+        </details>
       </section>
 
       <section className="detail-panel" id="recent-activity">
@@ -165,6 +233,39 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
             Unresolved operations have a durable intent but no completion event.
             The upstream effect is unknown; never automatically retry them.
           </p>
+          <button className="secondary-action" type="button"
+            disabled={investigationBusy} onClick={inspectUnresolvedCases}>
+            {investigationBusy ? "Loading investigation..." : "Investigate unresolved operations"}
+          </button>
+          {investigationError && <p role="alert">{investigationError}</p>}
+          {unresolvedCases && <div className="operator-investigation-list">
+            <p role="status">{unresolvedCases.returned} unresolved operation(s)
+              shown{unresolvedCases.truncated ? "; more exist beyond this 50-row limit" : ""}.
+              These are not confirmed failures or safe retry candidates.</p>
+            {unresolvedCases.items.length === 0 && <p>No unresolved operations past the configured grace period.</p>}
+            <ul>{unresolvedCases.items.map((item) => (
+              <li key={item.operation_id}>
+                <strong>{item.tool_name}</strong>
+                {" ? "}{formatDate(item.created_at)}
+                {" ? "}<code>{item.operation_id}</code>
+                <button type="button" className="tiny-action"
+                  disabled={investigationBusy}
+                  onClick={() => reconcileCase(item.operation_id)}>
+                  Read reconciliation
+                </button>
+              </li>
+            ))}</ul>
+            {caseReconciliation && <div className="detail-panel" role="status">
+              <p><strong>Operation:</strong> <code>{caseReconciliation.operationId}</code></p>
+              <p><strong>Recorded state:</strong> {caseReconciliation.detail.state}</p>
+              <p>Intent recorded: {String(caseReconciliation.detail.intent_recorded)};
+                Admission recorded: {String(caseReconciliation.detail.admission_recorded)};
+                Outcome recorded: {String(caseReconciliation.detail.outcome_recorded)}.</p>
+              <p>Remote effect possible: {String(caseReconciliation.detail.effect_possible)}.
+                Manual review: {String(caseReconciliation.detail.manual_reconciliation_required)}.</p>
+              <p>Do not automatically replay a call whose upstream effect is unknown.</p>
+            </div>}
+          </div>}
         </section>
 
         <section className="detail-panel">
@@ -186,7 +287,11 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
         <h3>Runtime log retention maintenance</h3>
         <p>
           Cleanup is ADMIN-only and bounded by the configured batch size. Preview does not mutate
-          data. Apply is enabled only after a preview with eligible rows.
+          data and is a point-in-time estimate, not a transaction reservation.
+          Apply now requires the exact preview fingerprint, checked against
+          current row eligibility and retention settings. If anything has
+          changed, Apply refuses without deleting rows; rerun Preview.
+          This also prevents accidental repeated application of a stale preview.
         </p>
         {!isAdmin ? (
           <div className="empty-state">VIEWER can inspect operations but cannot run maintenance.</div>

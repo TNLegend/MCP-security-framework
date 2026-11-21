@@ -9,6 +9,7 @@ import {
   discoverHttpMcpServer,
   discoverRegisteredMcpServer,
   fetchOAuthCallbackUri,
+  fetchLatestDiscoveryGeneration,
   fetchBuildSourceBindings,
   fetchToolAnalysisBundle,
   registerOAuthMcpServer,
@@ -53,6 +54,10 @@ function Inventory({
   const [discovering, setDiscovering] = useState(false);
   const [discoverResult, setDiscoverResult] = useState("");
   const [discoverError, setDiscoverError] = useState("");
+  const [lastDiscoveryEndpoint, setLastDiscoveryEndpoint] = useState("");
+  const [latestGeneration, setLatestGeneration] = useState(null);
+  const [generationError, setGenerationError] = useState("");
+  const [checkingGeneration, setCheckingGeneration] = useState(false);
   const [discoverFieldErrors, setDiscoverFieldErrors] = useState({});
   const [includeArchived, setIncludeArchived] = useState(false);
   const [archiveDialog, setArchiveDialog] = useState(null);
@@ -478,6 +483,31 @@ function Inventory({
       )}
       {discoverResult && <div className="success-banner" role="status">{discoverResult}</div>}
       {discoverError && <div className="error-banner" role="alert">{discoverError}</div>}
+      {isAdmin && lastDiscoveryEndpoint && (discoverError || latestGeneration) && (
+        <section className="detail-panel" aria-label="Discovery generation reconciliation">
+          <h4>Verify last discovery attempt</h4>
+          <p>A timed-out MCP discovery may still have published its catalog.
+            This check reads the durable generation for the same endpoint;
+            it never replays tools/list or imports tools.</p>
+          <button type="button" className="secondary-action" disabled={checkingGeneration || discovering}
+            onClick={() => inspectDiscoveryGeneration()}>
+            {checkingGeneration ? "Checking durable state..." : "Check last discovery generation"}
+          </button>
+          {generationError && <p role="alert">{generationError}</p>}
+          {latestGeneration && <div role="status">
+            <p>Generation #{latestGeneration.generation}:
+              <strong> {latestGeneration.status}</strong>.</p>
+            <p>Generation ID: <code>{latestGeneration.generation_id}</code></p>
+            {latestGeneration.error_code && <p>Recorded failure code: <code>{latestGeneration.error_code}</code></p>}
+            <p>{latestGeneration.status === "PUBLISHED"
+              ? "The generation committed; refresh inventory to see the resulting catalog. Do not automatically rerun discovery."
+              : latestGeneration.status === "RUNNING"
+                ? "Discovery is not terminal. Wait for a durable result or inspect service health before a new reservation."
+                : "This generation did not publish a current catalog. Inspect the failure and permissions before starting a new discovery."}
+              A new generation supersedes prior reservations; an older published result cannot overwrite it.</p>
+          </div>}
+        </section>
+      )}
 
       <div className="summary-grid inventory-summary-grid">
         <SummaryCard label="Servers" value={visibleServers.length} />
@@ -702,6 +732,22 @@ function Inventory({
     </section>
   );
 
+  async function inspectDiscoveryGeneration(serverEndpoint = lastDiscoveryEndpoint) {
+    if (!serverEndpoint || checkingGeneration) return;
+    setCheckingGeneration(true);
+    setGenerationError("");
+    setLatestGeneration(null);
+    try {
+      setLatestGeneration(await fetchLatestDiscoveryGeneration(serverEndpoint));
+    } catch (err) {
+      setGenerationError(err?.status === 404
+        ? "No durable discovery generation was found for this endpoint. No successful import can be inferred."
+        : "Discovery status is unavailable. Do not assume tools were imported or start a duplicate operation until the database and Gateway health are checked.");
+    } finally {
+      setCheckingGeneration(false);
+    }
+  }
+
   async function handleDiscover(event) {
     event.preventDefault();
     if (discovering) {
@@ -744,6 +790,8 @@ function Inventory({
     setDiscovering(true);
     setDiscoverError("");
     setDiscoverResult("");
+    setLastDiscoveryEndpoint(args[0]);
+    setLatestGeneration(null);
     try {
       const result = await discoverHttpMcpServer(...args);
       setDiscoverResult(
@@ -795,6 +843,8 @@ function Inventory({
     setDiscovering(true);
     setDiscoverError("");
     setDiscoverResult("");
+    setLastDiscoveryEndpoint(server.endpoint);
+    setLatestGeneration(null);
     try {
       const result = await discoverRegisteredMcpServer(server.id);
       setDiscoverResult(
@@ -1020,6 +1070,17 @@ function ServerDetailPanel({
   trustChanging,
 }) {
   const governedEndpoint = buildGovernedEndpoint(gatewayStatus, server.id);
+  const [copyMessage, setCopyMessage] = useState("");
+  async function copyGovernedEndpoint() {
+    setCopyMessage("");
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("clipboard_not_available");
+      await navigator.clipboard.writeText(governedEndpoint);
+      setCopyMessage("Governed endpoint copied.");
+    } catch {
+      setCopyMessage("Copy failed. Select the governed endpoint address and copy it manually.");
+    }
+  }
   const isOAuth = server.auth_mode === "OAUTH";
   const canDiscover = canManageServer && server.status !== "archived" && (!isOAuth || server.oauth_status === "CONNECTED");
   return (
@@ -1055,18 +1116,26 @@ function ServerDetailPanel({
           {canArchive && <button className="danger-action" onClick={onArchive} type="button">Archive</button>}
         </div>
       </div>
+      <p className="hint-text" role="note">
+        <strong>Upstream endpoint</strong> is the original MCP server address.
+        Direct calls to it are not routed through this framework's Gateway
+        or Runtime security enforcement.
+        <strong> Governed endpoint</strong> is the proxy address to configure
+        in MCP agents when runtime mediation is required. It works only while
+        the Gateway is running and the agent, server and tool are approved.
+      </p>
       <div className="endpoint-pair">
         <div>
-          <span>Upstream</span>
+          <span>Upstream ? direct and unmediated</span>
           <code>{displayValue(server.endpoint)}</code>
         </div>
         <div>
-          <span>Governed Endpoint</span>
+          <span>Governed endpoint ? Gateway-mediated</span>
           <code>{governedEndpoint || "Gateway endpoint unavailable"}</code>
           {governedEndpoint && (
             <button
               className="tiny-action"
-              onClick={() => navigator.clipboard?.writeText(governedEndpoint)}
+              onClick={copyGovernedEndpoint}
               type="button"
             >
               Copy
@@ -1074,6 +1143,7 @@ function ServerDetailPanel({
           )}
         </div>
       </div>
+      {copyMessage && <p role="status">{copyMessage}</p>}
       <div className="metadata-grid">
         <MetadataSection
           collapsible

@@ -604,8 +604,33 @@ function ToolContractOnboarding({ isAdmin, onComplete, tool }) {
                 <div>
                   <span>Ready for review</span>
                   <strong>Draft {contractDraft.revision_number}</strong>
-                  <span>{contractDraft.observation_approvals} profile approval(s)</span>
-                  <small>{contractDraft.contract_hash}</small>
+                  <span>{contractDraft.observation_approvals} current-fingerprint profile approval(s)</span>
+                  <small>Contract SHA-256: {contractDraft.contract_hash}</small>
+                  <details className="contract-profile-evidence">
+                    <summary>Review the individual protocol-profile approvals</summary>
+                    {Array.isArray(contractDraft.profile_approvals) ? (
+                      contractDraft.profile_approvals.length ? (
+                        <ul>{contractDraft.profile_approvals.map((approval, index) => (
+                          <li key={approval.profile_id + "-" + index}>
+                            <strong>Protocol profile: {approval.profile_id}</strong>
+                            <p>Observed tool fingerprint: <code>{approval.tool_fingerprint}</code></p>
+                            <p>Approved contract: <code>{approval.contract_hash}</code></p>
+                            <p>Evidence bundle SHA-256: <code>{approval.evidence_bundle_hash}</code></p>
+                            <p>Revision: <code>{approval.revision_id}</code>;
+                              approved {approval.approved_at || "at an unrecorded time"}.</p>
+                          </li>
+                        ))}</ul>
+                      ) : <p>No current matching profile approvals are recorded.
+                          Publish remains unavailable until current observations
+                          are approved.</p>
+                    ) : <p>Individual approval evidence is absent in this
+                        draft response. The aggregate number alone does not
+                        establish approval of each protocol profile; refresh
+                        the draft before publication.</p>}
+                    <p>Approval is fingerprint- and profile-specific.
+                      A past or different protocol-profile approval does not
+                      authorize an altered tool or the next Runtime call.</p>
+                  </details>
                 </div>
                 <div className="button-row">
                   <button disabled={busy} onClick={() => setContractDraft(null)} type="button">Edit</button>

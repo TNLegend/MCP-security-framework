@@ -305,6 +305,10 @@ export async function fetchOperationsSummary() {
   return request("/control-plane/operations/summary");
 }
 
+export async function fetchUnresolvedRuntimeOperations() {
+  return request("/control-plane/operations/runtime-operations/unresolved");
+}
+
 export async function fetchRuntimeOperationReconciliation(operationId) {
   if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(String(operationId || ""))) {
     throw new ApiError("No valid operation ID was recorded for reconciliation.", {
@@ -424,6 +428,13 @@ export async function loginControlPlane(username, password) {
 
 export async function fetchControlPlaneMe() {
   return request("/control-plane/auth/me");
+}
+
+export async function changeOwnPassword(currentPassword, newPassword) {
+  return request("/control-plane/auth/change-password", {
+    method: "POST",
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
 }
 
 export async function logoutControlPlane() {
@@ -638,6 +649,11 @@ export function buildDiscoveryRequestBody(
   };
 }
 
+export async function fetchLatestDiscoveryGeneration(endpoint) {
+  return request("/inventory/admin/discovery-generations/latest?endpoint=" +
+    encodeURIComponent(endpoint));
+}
+
 export async function discoverHttpMcpServer(
   endpoint,
   protocolVersion = "2025-11-25",
@@ -765,13 +781,17 @@ export async function fetchAuditEvents() {
   return request("/control-plane/audit/events");
 }
 
-export async function fetchAuditEventPage({ limit = 20, offset = 0, search = "" } = {}) {
+export async function fetchAuditEventPage({ limit = 20, offset = 0, search = "", snapshotAt = null, snapshotId = null } = {}) {
   const params = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
   });
   if (search.trim()) {
     params.set("search", search.trim());
+  }
+  if (snapshotAt && snapshotId) {
+    params.set("snapshot_at", snapshotAt);
+    params.set("snapshot_id", snapshotId);
   }
   return request(`/control-plane/audit/events/page?${params.toString()}`);
 }
@@ -969,5 +989,34 @@ export async function fetchDeployGovernance(scanId) {
 
 export async function fetchIAMMCPResults(scanId) {
   return request("/control-plane/cloud-security/scans/" + encodeURIComponent(scanId) + "/iam-comparisons",
+    { timeoutMs: 45000 });
+}
+
+export async function fetchCloudScanCollectionPage(
+  scanId, collection, { offset = 0, limit = 100 } = {},
+) {
+  if (!["resources", "findings", "evidence", "events"].includes(collection) ||
+      !Number.isSafeInteger(offset) || offset < 0 ||
+      !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+    throw new ApiError("Invalid scan evidence pagination parameters.", {
+      code: "invalid_cloud_collection_page",
+    });
+  }
+  return request("/control-plane/cloud-security/scans/" +
+    encodeURIComponent(scanId) + "/collections/" + collection + "?" +
+    new URLSearchParams({ offset: String(offset), limit: String(limit) }),
+    { timeoutMs: 45000 });
+}
+
+export async function fetchIAMMCPResultsPage(scanId, { offset = 0, limit = 100 } = {}) {
+  if (!Number.isSafeInteger(offset) || offset < 0 ||
+      !Number.isSafeInteger(limit) || limit < 1 || limit > 250) {
+    throw new ApiError("Invalid IAM comparison pagination parameters.", {
+      code: "invalid_iam_comparison_pagination",
+    });
+  }
+  return request("/control-plane/cloud-security/scans/" +
+    encodeURIComponent(scanId) + "/iam-comparisons/page?" +
+    new URLSearchParams({ offset: String(offset), limit: String(limit) }),
     { timeoutMs: 45000 });
 }

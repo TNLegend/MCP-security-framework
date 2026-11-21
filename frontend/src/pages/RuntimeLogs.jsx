@@ -155,7 +155,7 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
         <FilterSelect
           label="Decision"
           name="decision"
-          options={["ALLOW", "BLOCK"]}
+          options={["ALLOW", "BLOCK", "WARN", "LOG_ONLY", "ASK_APPROVAL", "LIMIT"]}
           setFilters={setDraftFilters}
           value={draftFilters.decision}
         />

@@ -77,6 +77,17 @@ class CreateToolContractDraftRequest(BaseModel):
         return value
 
 
+class ProfileApprovalEvidencePublic(BaseModel):
+    profile_id: str = Field(min_length=1, max_length=128)
+    tool_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contract_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_bundle_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    approved_at: str
+    revision_id: str = Field(min_length=1, max_length=96)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ToolContractDraftPublic(BaseModel):
     revision_id: str
     revision_number: int
@@ -84,6 +95,7 @@ class ToolContractDraftPublic(BaseModel):
     contract: dict
     adapter_resolutions: tuple[dict, ...]
     observation_approvals: int
+    profile_approvals: tuple[ProfileApprovalEvidencePublic, ...] = ()
     analysis_statuses: tuple[str, ...]
 
 

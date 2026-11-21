@@ -18,6 +18,8 @@ function Dashboard({
   servers,
   tools,
   runtimeLogs,
+  runtimeSummary,
+  dashboardRefreshedAt,
   loading,
   readStates = {},
   onNavigate,
@@ -36,10 +38,10 @@ function Dashboard({
   const activeDenies = emergencyDenies.filter((deny) => isServerTimeFuture(deny.expires_at));
   // A pre-execution audit intent and its completion are two events, but
   // one logical tool call. Keep intents in logs; exclude them from KPIs.
-  const recentAllows = runtimeLogs.filter(
-    (log) => log.decision === "ALLOW" && log.execution_status !== "authorized_pending_execution",
-  ).length;
-  const recentBlocks = runtimeLogs.filter((log) => log.decision === "BLOCK").length;
+  // Runtime summary is aggregated server-side over all retained outcome
+  // events, not over the first 20 table rows loaded for convenience.
+  const recordedAllows = runtimeSummary?.allowed;
+  const recordedBlocks = runtimeSummary?.blocked;
 
   function count(source, value) {
     return readStates[source] === "ready" ? value : "—";
@@ -53,7 +55,9 @@ function Dashboard({
     <section className="page-section">
       <div className="section-heading">
         <h2>Security overview</h2>
-        <p aria-live="polite">{loading ? "Refreshing security information…" : "Review tool risks, service health and recent decisions."}</p>
+        <p aria-live="polite">{loading ? "Refreshing security information…" : "Review tool risks and recorded decisions."}
+          {dashboardRefreshedAt ? " Last attempted refresh: " + formatDate(dashboardRefreshedAt) + "." : " No refresh timestamp recorded."}
+        </p>
       </div>
 
       {isAdmin && (
@@ -128,11 +132,11 @@ function Dashboard({
         <StatCard label="Reviews approved" value={count("tools", approvedTools.length)} tone="stat-good" />
         <StatCard label="Tools requiring review" value={count("tools", reviewTools.length)} tone="stat-warn" />
         <StatCard label="Blocked tools" value={count("tools", blockedTools.length)} tone="stat-danger" />
-        <StatCard label="Recent allowed decisions" value={count("runtimeLogs", recentAllows)} tone="stat-good" />
-        <StatCard label="Recent blocked decisions" value={count("runtimeLogs", recentBlocks)} tone="stat-danger" />
+        <StatCard label="Allowed outcome events (all retained)" value={count("runtimeLogs", recordedAllows ?? "—")} tone="stat-good" />
+        <StatCard label="Blocked outcome events (all retained)" value={count("runtimeLogs", recordedBlocks ?? "—")} tone="stat-danger" />
         <StatCard label="Active emergency blocks" value={count("emergencyDenies", activeDenies.length)} tone="stat-warn" />
       </div>
-
+      <p className="hint-text">These Runtime counts come from the backend over all retained outcome events; they are not limited to the latest 20 rows. Intent-only events and deleted history are excluded. They are not a live security posture score.</p>
       </details>
 
       <div className="dashboard-layout">
@@ -169,7 +173,7 @@ function Dashboard({
         </section>
 
         <section className="detail-panel">
-          <h3>Recent activity</h3>
+          <h3>Recent activity (up to six of the latest 200 loaded audit events)</h3>
           {auditEvents.length === 0 ? (
             <div className="empty-state">{unavailableMessage("audit") ||
               (readStates.audit === "ready" ? "No audit events recorded yet." : "Loading audit history…")}</div>

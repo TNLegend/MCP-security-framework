@@ -1,13 +1,14 @@
 from datetime import datetime
 from typing import Callable
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from common.mcp_endpoint import is_exact_local_lab_endpoint
 from app.db.database import get_db
 from app.models.mcp_server import MCPServer
+from app.models.discovery_generation import MCPDiscoveryGeneration
 from app.models.mcp_tool import MCPTool
 from app.models.tool_analysis import ToolProtocolObservation
 from app.schemas.inventory import (
@@ -43,6 +44,41 @@ except Exception:  # pragma: no cover - import fallback for unusual launch paths
     server_ref_for_server = None
 
 router = APIRouter(prefix="/inventory", tags=["Inventory"])
+
+
+@router.get("/admin/discovery-generations/latest")
+def read_latest_discovery_generation(
+    endpoint: str = Query(min_length=7, max_length=2048),
+    _: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Admin-only read-only reconciliation; never replays tools/list.
+
+    This endpoint reveals no auth context digest, bearer token, OAuth state,
+    imported tool descriptions or credential material.
+    """
+    if db.get_bind().dialect.name != "postgresql":
+        raise HTTPException(status_code=503, detail="discovery_postgresql_required")
+    try:
+        scope=discovery_scope_key(transport="streamable_http", endpoint=endpoint)
+    except DiscoveryGenerationError as exc:
+        raise HTTPException(status_code=422, detail=exc.code) from exc
+    item=db.scalar(select(MCPDiscoveryGeneration).where(
+        MCPDiscoveryGeneration.scope_key==scope,
+    ).order_by(MCPDiscoveryGeneration.generation.desc()).limit(1))
+    if item is None:
+        raise HTTPException(status_code=404, detail="discovery_generation_not_recorded")
+    return {
+        "generation_id":item.id,
+        "generation":item.generation,
+        "status":item.status,
+        "error_code":item.error_code,
+        "started_at":item.started_at,
+        "completed_at":item.completed_at,
+        "terminal":item.status in {"PUBLISHED", "FAILED", "SUPERSEDED"},
+        "may_retry_import":False,
+        "interpretation":"Only the newest durable discovery generation for this endpoint.",
+    }
 
 
 @router.get("/discovery-generations/{generation_id}")

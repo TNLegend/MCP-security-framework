@@ -154,6 +154,21 @@ class ScanDetailPublic(BaseModel):
     findings: list[FindingPublic]
     evidence: list[EvidencePublic]
     events: list[ScanEventPublic]
+    # Snapshot coverage of the bounded API payload, not scanner coverage.
+    collection_coverage: dict[str, dict[str, int | bool]] = Field(default_factory=dict)
+
+class CloudCollectionPagePublic(BaseModel):
+    """Stored items for one scan; never a completeness claim about AWS."""
+    collection: Literal["resources", "findings", "evidence", "events"]
+    items: list[dict]
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1, le=200)
+    returned: int = Field(ge=0)
+    has_more: bool
+    scope: Literal["PERSISTED_SCAN_RECORDS"] = "PERSISTED_SCAN_RECORDS"
+    model_config = ConfigDict(extra="forbid")
+
 
 class IAMMappingIdentity(BaseModel):
     kind: Literal["EC2", "ECS", "LAMBDA", "EKS_POD_IDENTITY"]
@@ -278,4 +293,19 @@ class IAMComparisonPublic(BaseModel):
     expected_actions: list[str]
     observed_actions: list[str]
     notes: str | None
+    # Projection of an evidence row correlated by an immutable comparison_id.
+    # Historical comparisons do not have this association; report None.
+    evidence_summary: dict | None = None
     model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+
+class IAMComparisonPagePublic(BaseModel):
+    items: list[IAMComparisonPublic]
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1, le=250)
+    returned: int = Field(ge=0)
+    has_more: bool
+    # Total refers to comparisons persisted for this scan, not AWS coverage.
+    scope: Literal["PERSISTED_COMPARISONS"] = "PERSISTED_COMPARISONS"
+    model_config = ConfigDict(extra="forbid")

@@ -4,9 +4,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,7 @@ from app.models.cloud_security import (
 from app.schemas.cloud_security import (
     ConnectionTestPublic, EnvironmentCreate, EnvironmentPublic,
     EvidencePublic, FindingPublic, ResourcePublic, ScanDetailPublic,
-    ScanEventPublic, ScanPublic, IAMComparisonRequest, IAMComparisonPublic,
+    ScanEventPublic, ScanPublic, IAMComparisonRequest, IAMComparisonPublic, IAMComparisonPagePublic, CloudCollectionPagePublic,
     IAMMappingCreate, IAMMappingApprove, IAMMappingPublic,
 )
 from app.services.cloud_security import (
@@ -566,17 +566,88 @@ def request_iam_mcp_comparison(
     return scan
 
 
+def _iam_public_comparisons(
+    db: Session, scan_id: str, comparisons: list[CloudIAMComparison],
+) -> list[IAMComparisonPublic]:
+    """Bind an observation to its immutable comparison ID across all scan evidence.
+
+    Never infer the source statement from similar tool names, action patterns,
+    resource ARNs or evidence storage order. Older rows without a linkage
+    remain explicitly unverified.
+    """
+    ids = [item.id for item in comparisons]
+    by_id: dict[str, dict] = {}
+    if ids:
+        # JSON expression executes in PostgreSQL or SQLite JSON1; this
+        # retrieves only matching evidence instead of blindly truncating
+        # the first 1,200 unrelated evidence records.
+        statement = (select(CloudEvidence).where(
+            CloudEvidence.scan_id == scan_id,
+            CloudEvidence.safe_summary["comparison_id"].as_string().in_(ids),
+        ).order_by(CloudEvidence.id))
+        for evidence in db.scalars(statement):
+            summary = evidence.safe_summary
+            if not isinstance(summary, dict):
+                continue
+            ident = summary.get("comparison_id")
+            if ident in ids and ident not in by_id:
+                by_id[ident] = {
+                    "id": evidence.id,
+                    "sha256": evidence.evidence_sha256,
+                    "checked_at": evidence.checked_at.isoformat(),
+                    "summary": summary,
+                }
+    return [
+        IAMComparisonPublic.model_validate(item).model_copy(
+            update={"evidence_summary": by_id.get(item.id)},
+        )
+        for item in comparisons
+    ]
+
+
 @router.get("/scans/{scan_id}/iam-comparisons",response_model=list[IAMComparisonPublic])
 def list_iam_mcp_results(
     scan_id: str,
     _: AuthenticatedControlPlaneUser=Depends(require_authenticated_user),
     db: Session=Depends(get_db),
 ):
+    """Legacy bounded endpoint, retained for existing API consumers."""
     scan=_scan(db,scan_id)
     if scan.kind!="IAM_MCP":
         raise HTTPException(status_code=404,detail="iam_comparison_not_found")
-    return db.scalars(select(CloudIAMComparison).where(
-        CloudIAMComparison.scan_id==scan_id).limit(250)).all()
+    comparisons=db.scalars(select(CloudIAMComparison).where(
+        CloudIAMComparison.scan_id==scan_id)
+        .order_by(CloudIAMComparison.id).limit(250)).all()
+    return _iam_public_comparisons(db,scan_id,comparisons)
+
+
+@router.get("/scans/{scan_id}/iam-comparisons/page",
+            response_model=IAMComparisonPagePublic)
+def page_iam_mcp_results(
+    scan_id: str,
+    offset: int=Query(default=0,ge=0,le=1000000),
+    limit: int=Query(default=100,ge=1,le=250),
+    _: AuthenticatedControlPlaneUser=Depends(require_authenticated_user),
+    db: Session=Depends(get_db),
+):
+    """Exact paginated comparison evidence, without a silent 250-row cap.
+
+    The total describes recorded comparisons for one scan. It must not be
+    interpreted as a complete audit of IAM, SCP or effective AWS access.
+    """
+    scan=_scan(db,scan_id)
+    if scan.kind!="IAM_MCP":
+        raise HTTPException(status_code=404,detail="iam_comparison_not_found")
+    total=int(db.scalar(select(func.count()).select_from(CloudIAMComparison).where(
+        CloudIAMComparison.scan_id==scan_id)) or 0)
+    rows=db.scalars(select(CloudIAMComparison).where(
+        CloudIAMComparison.scan_id==scan_id)
+        .order_by(CloudIAMComparison.id).offset(offset).limit(limit)).all()
+    return IAMComparisonPagePublic(
+        items=_iam_public_comparisons(db,scan_id,rows),
+        total=total, offset=offset, limit=limit, returned=len(rows),
+        has_more=offset+len(rows)<total,
+    )
 
 
 def _deploy_context(db: Session, scan_id: str, kind: str) -> dict:
@@ -749,18 +820,68 @@ def scan_detail(
     db:Session=Depends(get_db),
 ):
     scan=_scan(db,scan_id)
+    # Fetch one additional row in each category to prove truncation without
+    # scanning the complete table or claiming a partial result is exhaustive.
+    collections={}
+    coverage={}
+    for name, model, cap, ordering in (
+        ("resources", CloudResource, 250, CloudResource.id),
+        ("findings", CloudFinding, 300, CloudFinding.id),
+        ("evidence", CloudEvidence, 500, CloudEvidence.id),
+        ("events", CloudScanEvent, 100, (CloudScanEvent.created_at.desc(), CloudScanEvent.id.desc())),
+    ):
+        order = ordering if isinstance(ordering, tuple) else (ordering,)
+        rows=db.scalars(select(model).where(model.scan_id==scan_id)
+                        .order_by(*order).limit(cap+1)).all()
+        present=rows[:cap]
+        collections[name]=present
+        coverage[name]={
+            "returned":len(present),"display_limit":cap,
+            "truncated":len(rows)>cap,
+        }
     return ScanDetailPublic(
         scan=ScanPublic.model_validate(scan),
-        resources=[ResourcePublic.model_validate(x) for x in
-                   db.scalars(select(CloudResource).where(CloudResource.scan_id==scan_id)
-                              .limit(250)).all()],
-        findings=[FindingPublic.model_validate(x) for x in
-                  db.scalars(select(CloudFinding).where(CloudFinding.scan_id==scan_id)
-                             .limit(300)).all()],
-        evidence=[EvidencePublic.model_validate(x) for x in
-                  db.scalars(select(CloudEvidence).where(CloudEvidence.scan_id==scan_id)
-                             .limit(500)).all()],
-        events=[ScanEventPublic.model_validate(x) for x in
-                db.scalars(select(CloudScanEvent).where(CloudScanEvent.scan_id==scan_id)
-                           .order_by(CloudScanEvent.created_at.desc()).limit(100)).all()],
+        resources=[ResourcePublic.model_validate(x) for x in collections["resources"]],
+        findings=[FindingPublic.model_validate(x) for x in collections["findings"]],
+        evidence=[EvidencePublic.model_validate(x) for x in collections["evidence"]],
+        events=[ScanEventPublic.model_validate(x) for x in collections["events"]],
+        collection_coverage=coverage,
+    )
+
+
+# Dedicated paginated detail API for collections whose initial response is
+# capped. The initial scan detail remains compatible for older clients.
+_CLOUD_DETAIL_COLLECTIONS = {
+    "resources": (CloudResource, ResourcePublic, (CloudResource.id,)),
+    "findings": (CloudFinding, FindingPublic, (CloudFinding.id,)),
+    "evidence": (CloudEvidence, EvidencePublic, (CloudEvidence.id,)),
+    "events": (CloudScanEvent, ScanEventPublic,
+               (CloudScanEvent.created_at.desc(), CloudScanEvent.id.desc())),
+}
+
+
+@router.get("/scans/{scan_id}/collections/{kind}", response_model=CloudCollectionPagePublic)
+def page_scan_collection(
+    scan_id: str,
+    kind: Literal["resources", "findings", "evidence", "events"],
+    offset: int = Query(default=0, ge=0, le=1000000),
+    limit: int = Query(default=100, ge=1, le=200),
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    """Read only one scan collection; no scanner/AWS action or raw credentials.
+
+    Returns exact counts of *recorded* rows, not inferred cloud coverage.
+    """
+    _scan(db, scan_id)
+    model, public, ordering = _CLOUD_DETAIL_COLLECTIONS[kind]
+    total=int(db.scalar(select(func.count()).select_from(model)
+                        .where(model.scan_id == scan_id)) or 0)
+    stored=db.scalars(select(model).where(model.scan_id == scan_id)
+                      .order_by(*ordering).offset(offset).limit(limit)).all()
+    return CloudCollectionPagePublic(
+        collection=kind,
+        items=[public.model_validate(item).model_dump(mode="json") for item in stored],
+        total=total, offset=offset, limit=limit, returned=len(stored),
+        has_more=offset+len(stored)<total,
     )

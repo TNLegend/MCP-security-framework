@@ -19,16 +19,25 @@ export function isCurrentAnalysis(tool, analysis, bundle) {
 }
 
 export function nextAnalysisAction(tool, analysis, current) {
-  if (!tool) return "Choose a tool to see its security results.";
-  if (!current) return "Refresh the security check first.";
-  if (["BLOCKED", "QUARANTINED"].includes(tool.analysis_status)) {
-    return "Review why this tool is blocked.";
-  }
-  if (["REVIEW_REQUIRED", "PENDING_ANALYSIS"].includes(tool.analysis_status) ||
-      ["REVIEW_REQUIRED", "PENDING"].includes(analysis?.review_status)) {
-    return "Review the issues before deciding.";
-  }
-  return "Review the results before allowing use.";
+  if (!tool) return "Choose an MCP tool to inspect its security evidence.";
+  if (tool.analysis_status === "PENDING_ANALYSIS")
+    return "This tool has no completed current analysis. Run or request an analysis; do not approve an unverified observation.";
+  if (tool.analysis_status === "ANALYSIS_FAILED")
+    return "The analyzer failed. Review its recorded error, restore the analyzer, and rerun the exact tool observation before making an approval decision.";
+  if (!current)
+    return "The current tool fingerprint has no matching completed analysis. Run a fresh analysis and verify its evidence before review.";
+  if (tool.analysis_status === "BLOCKED")
+    return "This tool is blocked by a recorded decision. Review the finding and review history for this fingerprint before changing its status.";
+  if (tool.analysis_status === "QUARANTINED")
+    return "This tool is restricted pending security review. Inspect each current finding and its evidence; quarantine is not proof of an exploit.";
+  if (analysis?.drift_status === "UNVERIFIED" || analysis?.drift_status === "MAJOR_CHANGE")
+    return "Tool changes require verification. Compare the current fingerprint and contract with the approved observation before reapproval.";
+  if (["REVIEW_REQUIRED", "PENDING"].includes(analysis?.review_status)
+      || tool.analysis_status === "REVIEW_REQUIRED")
+    return "A human review is required. Inspect the current findings and risk drivers, then record a justified decision for the exact observation.";
+  if (["APPROVED", "ADMIN_ALLOWED"].includes(tool.analysis_status))
+    return "This observation has a recorded approval. Runtime still independently checks identity, signed contract, resource scope and emergency controls before any MCP call.";
+  return "Review the recorded findings and verification limits; neither a low risk score nor a model suggestion grants Runtime permissions.";
 }
 
 export function riskLedgerMatchesRecord(analysis) {

@@ -1104,11 +1104,29 @@ function BuildScanDetail({ detail, isAdmin, loading, source }) {
           <article className="status-panel compact-status">
             <span>Required scanners</span>
             <strong>{assessment.required_scanners_complete ? "COMPLETE" : "INCOMPLETE"}</strong>
-            <small>{(assessment.reason_codes || []).join(", ") || "No assessment reason codes"}</small>
+            <small>{(assessment.reason_codes || []).length ? assessment.reason_codes.length + " recorded assessment reason code(s)" : "No additional reason codes recorded"}</small>
           </article>
         </div>
       )}
 
+      {assessment && <div className="detail-panel" aria-label="Build assessment explanation">
+        <h4>Why this Build assessment?</h4>
+        <p>{assessment.summary || "The assessment did not record a summary."}</p>
+        {!assessment.required_scanners_complete && <p role="alert">
+          At least one required scanner did not finish successfully. Missing
+          coverage is not a PASS, even when no vulnerability findings appear.
+          Review each scanner's status and error code below.</p>}
+        {assessment.status === "PASS" && <p>A PASS describes the checks
+          actually completed and recorded findings, not proof that the
+          repository or deployment is free of security risks.</p>}
+        {(assessment.reason_codes || []).length > 0 && <details>
+          <summary>Recorded assessment reasons ({assessment.reason_codes.length})</summary>
+          <ul>{assessment.reason_codes.map((code, index) => <li key={index}>
+            <code>{code}</code> — investigate the associated policy condition
+            using scanner execution and findings below.
+          </li>)}</ul>
+        </details>}
+      </div>}
       <h4>Scanner runs</h4>
       <div className="build-scanner-run-list">
         {detail.scanner_runs.map((run) => (
@@ -1117,7 +1135,13 @@ function BuildScanDetail({ detail, isAdmin, loading, source }) {
             <span>{run.scanner_version || "-"}</span>
             <StatusBadge value={run.status} />
             <small>{run.finding_count} active finding(s)</small>
-            {run.error_code && <small>{run.error_code}</small>}
+            {run.status !== "COMPLETED" && <p role="note">
+              No verified completed execution for this scanner. An empty
+              findings list must not be interpreted as a successful scan.
+            </p>}
+            {run.error_code && <p role="alert">Scanner error:
+              <code>{run.error_code}</code>. Check scanner installation,
+              permissions and bounded worker logs before rerunning.</p>}
           </article>
         ))}
       </div>

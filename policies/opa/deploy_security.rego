@@ -83,6 +83,68 @@ unknown_count := value if {
 
 default unknown_count := 0
 
+# Non-sensitive, enumerated diagnostic codes explain exactly which
+# verification gate did not pass. They are explanations, not authorization.
+iam_required_provenance_fields := {
+    "signed_revision_verified",
+    "admin_mapping_approved_verified",
+    "mapping_digest_matches_scan",
+    "account_and_endpoint_bound",
+    "workload_iam_identity_resolved",
+    "identity_policy_read_complete",
+    "comparison_integrity_verified",
+}
+
+iam_failed_checks contains code if {
+    some code in iam_required_provenance_fields
+    proof := object.get(input_object, "provenance", {})
+    object.get(proof, code, false) != true
+}
+iam_failed_checks contains "SCAN_KIND_OR_STATUS_UNSUPPORTED" if {
+    not object.get(input_object, "scan_kind", "") == "IAM_MCP"
+}
+iam_failed_checks contains "SCAN_KIND_OR_STATUS_UNSUPPORTED" if {
+    not object.get(input_object, "scan_status", "") == "PARTIAL"
+}
+iam_failed_checks contains "SUMMARY_INVALID" if {
+    not valid_summary
+}
+
+cloud_failed_checks contains code if {
+    some code in cloud_provenance_fields
+    proof := object.get(input_object, "provenance", {})
+    object.get(proof, code, false) != true
+}
+cloud_failed_checks contains "SCAN_KIND_OR_STATUS_UNSUPPORTED" if {
+    not object.get(input_object, "scan_kind", "") in {"IAC_CONFIG", "AWS_ADVANCED"}
+}
+cloud_failed_checks contains "SCAN_KIND_OR_STATUS_UNSUPPORTED" if {
+    not object.get(input_object, "scan_status", "") in {"COMPLETED", "PARTIAL"}
+}
+cloud_failed_checks contains "SUMMARY_INVALID" if {
+    not cloud_summary_valid
+}
+cloud_summary_valid if {
+    candidate := object.get(input_object, "summary", null)
+    is_object(candidate)
+    findings := object.get(candidate, "finding_count", -1)
+    unknown := object.get(candidate, "unknown_count", -1)
+    is_number(findings)
+    floor(findings) == findings
+    findings >= 0
+    is_number(unknown)
+    floor(unknown) == unknown
+    unknown >= 0
+}
+
+default failed_checks := ["EVIDENCE_SCHEMA_UNRECOGNIZED"]
+failed_checks := sort([code | some code in iam_failed_checks]) if {
+    object.get(input_object, "schema_version", "") == "deploy-iam-governance-v1"
+}
+failed_checks := sort([code | some code in cloud_failed_checks]) if {
+    object.get(input_object, "schema_version", "") == "deploy-cloud-governance-v1"
+}
+
 default decision := {
     "classification": "EVIDENCE_INCOMPLETE",
     "rule_ids": ["DEPLOY_EVIDENCE_NOT_VERIFIED"],
@@ -91,6 +153,23 @@ default decision := {
     "policy_revision": "opa-deploy-security-advisory-v1",
     "runtime_enforcement": false,
     "effective_aws_authorization_proven": false,
+    "failed_checks": ["EVIDENCE_SCHEMA_UNRECOGNIZED"],
+}
+
+# Dynamic diagnostics are emitted through an ordinary rule; Rego default
+# objects cannot reference variables. This changes no review classification.
+decision := {
+    "classification": "EVIDENCE_INCOMPLETE",
+    "rule_ids": ["DEPLOY_EVIDENCE_NOT_VERIFIED"],
+    "obligations": ["REVIEW_EVIDENCE", "LOG"],
+    "explanation": "Signed approval, source binding or scanner evidence could not be fully verified.",
+    "policy_revision": "opa-deploy-security-advisory-v1",
+    "runtime_enforcement": false,
+    "effective_aws_authorization_proven": false,
+    "failed_checks": failed_checks,
+} if {
+    not trusted
+    not cloud_trusted
 }
 
 decision := {
@@ -109,6 +188,7 @@ decision := {
 decision := {
     "classification": "EVIDENCE_INCOMPLETE",
     "rule_ids": ["DEPLOY_IAM_UNKNOWN_OBSERVATIONS"],
+    "failed_checks": ["UNRESOLVED_IAM_OBSERVATIONS"],
     "obligations": ["REVIEW_EVIDENCE", "LOG"],
     "explanation": "The signed comparison is verified, but unresolved IAM observations prevent a complete review.",
     "policy_revision": "opa-deploy-security-advisory-v1",
@@ -191,6 +271,7 @@ decision := {
 decision := {
     "classification": "EVIDENCE_INCOMPLETE",
     "rule_ids": ["DEPLOY_CLOUD_SCANNER_COVERAGE_UNRESOLVED"],
+    "failed_checks": ["UNRESOLVED_CLOUD_CHECKS"],
     "obligations": ["REVIEW_EVIDENCE", "LOG"],
     "explanation": "Scanner evidence is internally verified, but some checks or environments are unassessed.",
     "policy_revision": "opa-deploy-security-advisory-v1",

@@ -34,6 +34,7 @@ function SecurityConfiguration({
   const [fieldErrors, setFieldErrors] = useState({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [validationReceipt, setValidationReceipt] = useState(null);
   const [busy, setBusy] = useState(false);
   const [loadedRevision, setLoadedRevision] = useState(null);
   const actionLock = useRef(false);
@@ -56,6 +57,7 @@ function SecurityConfiguration({
   );
 
   function loadEditor(revision) {
+    setValidationReceipt(null);
     const text = JSON.stringify(revision.content, null, 2);
     setContentText(text);
     setLoadedContentText(text);
@@ -74,6 +76,7 @@ function SecurityConfiguration({
     if (busy || revision.id === selectedRevision?.id) return;
     if (hasUnsavedChanges && !window.confirm("Discard unsaved edits and switch revisions?")) return;
     setSelectedRevisionId(revision.id);
+    setValidationReceipt(null);
   }
 
   async function runAction(action) {
@@ -110,6 +113,7 @@ function SecurityConfiguration({
     }
     setError("");
     setMessage("");
+    if (action !== "validate") setValidationReceipt(null);
     actionLock.current = true;
     setBusy(true);
     try {
@@ -123,7 +127,11 @@ function SecurityConfiguration({
           selectedRevision.id, parsedContent, summary, loadedRevision?.hash ?? selectedRevision.content_hash
         );
       } else if (action === "validate") {
-        await validateConfigRevision(selectedRevision.id, summary);
+        const receipt = await validateConfigRevision(selectedRevision.id, summary);
+        if (receipt?.valid !== true || receipt?.content_hash !== selectedRevision.content_hash) {
+          throw new Error("Validation receipt does not match the selected revision content; do not publish this draft.");
+        }
+        setValidationReceipt({ revisionId: selectedRevision.id, hash: receipt.content_hash });
       } else if (action === "publish") {
         updatedRevision = await publishConfigRevision(selectedRevision.id, summary);
       } else if (action === "rollback") {
@@ -200,6 +208,15 @@ function SecurityConfiguration({
       </div>
       <p className="hint-text" role="note">Edits do not take effect until an administrator publishes them.</p>
       {message && <div className="success-banner" role="status">{message}</div>}
+      {validationReceipt && selectedRevision?.id === validationReceipt.revisionId &&
+        selectedRevision?.content_hash === validationReceipt.hash && !hasUnsavedChanges && (
+        <div className="detail-panel" role="status">
+          <strong>Validated draft receipt</strong>
+          <p>Validation passed for revision #{selectedRevision.revision_number}.</p>
+          <p>Content SHA-256: <code>{validationReceipt.hash}</code>.</p>
+          <p>The validation applies only to this exact content. It does not publish, sign or activate the revision. A subsequent edit requires a new validation.</p>
+        </div>
+      )}
       {error && <div className="error-banner" role="alert">{error}</div>}
 
       <div className="summary-grid">
@@ -273,6 +290,15 @@ function SecurityConfiguration({
                       : "This is not the currently published revision."}
                 </span>
               </div>
+              <p className="hint-text" role="note">
+                A stored signature and content fingerprint describe this
+                published revision; they are not evidence that every running
+                Gateway instance has loaded and verified it. Compare the
+                active revision, Gateway status and startup integrity checks
+                in <a href="?view=operations">System health</a> before
+                relying on a Runtime policy change. A draft validation
+                receipt does not replace that runtime verification.
+              </p>
               <details className="configuration-technical-details">
                 <summary>View revision IDs, content fingerprint and signature metadata</summary>
                 <dl className="compact-dl">

@@ -11,6 +11,7 @@ import {
   fetchOperationsSummary,
   fetchControlPlaneMe,
   hasControlPlaneSession,
+  setCsrfToken,
   loginControlPlane,
   logoutControlPlane,
   fetchPolicies,
@@ -30,7 +31,9 @@ import RuntimeLogs from "./pages/RuntimeLogs";
 import SecurityConfiguration from "./pages/SecurityConfiguration";
 import ToolAnalysis from "./pages/ToolAnalysis";
 import Users from "./pages/Users";
+import AccountPasswordPanel from "./components/accountpasswordpanel.jsx";
 import { LIMITS, clearFieldError, validateLogin } from "./utils/validation";
+import { parseOAuthReturn, oauthReturnDescription } from "./utils/oauthreturn.js";
 
 const pages = [
   { id: "dashboard", label: "Home", group: "Home" },
@@ -55,6 +58,7 @@ const EMPTY_RUNTIME_LOG_PAGE = {
 };
 
 function pageFromLocation() {
+  if (parseOAuthReturn(window.location.hash)) return "inventory";
   const view = new URLSearchParams(window.location.search).get("view");
   return pages.some((page) => page.id === view) ? view : "dashboard";
 }
@@ -84,12 +88,15 @@ function NavigationIcon({ page }) {
 
 function App() {
   const [requestedPage, setActivePage] = useState(pageFromLocation);
+  const [oauthReturn, setOAuthReturn] = useState(() => parseOAuthReturn(window.location.hash));
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const mobileNavButtonRef = useRef(null);
   const [analysisEntryToolId, setAnalysisEntryToolId] = useState(null);
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [loginError, setLoginError] = useState("");
+  const [loginNotice, setLoginNotice] = useState("");
+  const [accountOpen, setAccountOpen] = useState(false);
   const [logoutError, setLogoutError] = useState("");
   const [signingOut, setSigningOut] = useState(false);
   const [readStates, setReadStates] = useState({});
@@ -108,6 +115,7 @@ function App() {
   const [users, setUsers] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [dashboardRefreshedAt, setDashboardRefreshedAt] = useState(null);
   const loadDataGeneration = useRef(0);
   const isAdmin = user?.role === "ADMIN";
   const activePage = requestedPage === "users" && !isAdmin ? "dashboard" : requestedPage;
@@ -147,6 +155,16 @@ function App() {
     setActivePage(pageId);
   }
 
+  useEffect(() => {
+    if (!oauthReturn) return;
+    // A backend callback uses a fragment, so OAuth tokens must not be
+    // inferred or stored by this frontend. Remove only the result marker.
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", "inventory");
+    url.hash = "";
+    window.history.replaceState(null, "", url);
+  }, [oauthReturn]);
+
   async function restoreSession() {
     if (!hasControlPlaneSession()) {
       setUser(null);
@@ -156,8 +174,11 @@ function App() {
     try {
       const me = await fetchControlPlaneMe();
       setUser(me);
-    } catch {
+    } catch (err) {
       setUser(null);
+      setLoginError(err?.status === 401
+        ? "Your session expired or was revoked. Sign in again."
+        : "The server could not verify the existing session. This may be a network or backend outage, not an expired password. Check service health before retrying.");
     } finally {
       setAuthLoading(false);
     }
@@ -166,6 +187,7 @@ function App() {
   async function handleLogin(username, password) {
     try {
       setLoginError("");
+      setLoginNotice("");
       const payload = await loginControlPlane(username, password);
       setUser(payload.user);
       return true;
@@ -275,6 +297,7 @@ function App() {
         failed.push(label);
       });
 
+      setDashboardRefreshedAt(new Date());
       if (unauthorized) {
         setUser(null);
         setError("");
@@ -415,6 +438,8 @@ function App() {
         tools={activeTools}
         policies={policies}
         runtimeLogs={runtimeLogPage.items}
+        runtimeSummary={runtimeLogPage.summary}
+        dashboardRefreshedAt={dashboardRefreshedAt}
         runtimeStatus={runtimeStatus}
         loading={loading}
         readStates={readStates}
@@ -447,7 +472,7 @@ function App() {
   }
 
   if (!user) {
-    return <LoginView error={loginError} onLogin={handleLogin} />;
+    return <LoginView error={loginError} notice={loginNotice} onLogin={handleLogin} />;
   }
 
   return (
@@ -516,6 +541,10 @@ function App() {
           <button className="secondary-action" disabled={loading || signingOut} onClick={loadData} type="button">
             {loading ? "Refreshing…" : "Refresh"}
           </button>
+          <button className="secondary-action" type="button" aria-expanded={accountOpen}
+            onClick={() => setAccountOpen((current) => !current)}>
+            My account
+          </button>
           <button className="secondary-action" disabled={signingOut} onClick={handleLogout} type="button">
             {signingOut ? "Signing out…" : "Sign out"}
           </button>
@@ -524,13 +553,34 @@ function App() {
       <main id="main-content" className="console-content" tabIndex={-1}>
         <h1 className="visually-hidden">Security center</h1>
         {(error || logoutError) && <div className="error-banner" role="alert">{logoutError || error}</div>}
+        {oauthReturn && <div className="detail-panel" role="status">
+          <strong>OAuth connection return</strong>
+          <p>{oauthReturnDescription(oauthReturn,
+            readStates.servers === "ready"
+              ? servers.find((server) => server.id === oauthReturn.serverId) : null)}</p>
+          {oauthReturn.serverId && <p>Server ID: {oauthReturn.serverId}.
+            {readStates.servers === "ready" && !servers.some((server) => server.id === oauthReturn.serverId)
+              ? " This server is not in the current inventory."
+              : " Check the corresponding server connection details."}</p>}
+          <button type="button" onClick={() => { setOAuthReturn(null); }}>Dismiss callback notice</button>
+        </div>}
+        {accountOpen && <AccountPasswordPanel
+          onClose={() => setAccountOpen(false)}
+          onChanged={() => {
+            setAccountOpen(false);
+            setUser(null);
+            setCsrfToken("");
+            setLoginError("");
+            setLoginNotice("Your password has been changed and all sessions were revoked. Sign in again with your new password.");
+          }}
+        />}
         {pageContent}
       </main>
     </div>
   );
 }
 
-function LoginView({ error, onLogin }) {
+function LoginView({ error, notice, onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
@@ -570,6 +620,7 @@ function LoginView({ error, onLogin }) {
           <h1 id="sign-in-heading">Sign in</h1>
           <p className="login-description">Use your Security Center account.</p>
           {error && <div className="error-banner" role="alert">{error}</div>}
+          {notice && <div className="success-banner" role="status">{notice}</div>}
         <form onSubmit={submit} className="login-form">
           <label>
             Username

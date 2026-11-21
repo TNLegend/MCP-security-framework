@@ -16,7 +16,10 @@ from app.services.control_plane_auth import (
     require_admin,
     require_authenticated_user,
 )
-from app.services.runtime_operations import cleanup_runtime_logs, operations_summary
+from app.services.runtime_operations import (
+    RuntimeCleanupPreviewConflict, cleanup_runtime_logs, operations_summary,
+    unresolved_runtime_operations,
+)
 from app.services.runtime_reconciliation import runtime_operation_reconciliation
 
 
@@ -32,6 +35,14 @@ def get_operations_summary(
     db: Session = Depends(get_db),
 ) -> OperationsSummary:
     return operations_summary(db)
+
+
+@router.get("/runtime-operations/unresolved")
+def list_unresolved_runtime_operations(
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    return unresolved_runtime_operations(db)
 
 
 @router.get(
@@ -58,7 +69,16 @@ def cleanup_runtime_log_storage(
     current: AuthenticatedControlPlaneUser = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> RuntimeCleanupResult:
-    result = cleanup_runtime_logs(db, dry_run=payload.dry_run)
+    if not payload.dry_run and not payload.expected_preview_fingerprint:
+        raise HTTPException(status_code=409, detail="runtime_cleanup_preview_required")
+    try:
+        result = cleanup_runtime_logs(
+            db, dry_run=payload.dry_run,
+            expected_preview_fingerprint=payload.expected_preview_fingerprint,
+        )
+    except RuntimeCleanupPreviewConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     record_control_plane_audit(
         db,
         actor=current.user,

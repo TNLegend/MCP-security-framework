@@ -11,6 +11,7 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
   const [query, setQuery] = useState("");
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [page, setPage] = useState(1);
+  const [snapshot, setSnapshot] = useState(null);
   const [pageData, setPageData] = useState({
     items: events.slice(0, PAGE_SIZE),
     total: events.length,
@@ -32,6 +33,8 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
           limit: PAGE_SIZE,
           offset: (page - 1) * PAGE_SIZE,
           search: query,
+          snapshotAt: snapshot?.at || null,
+          snapshotId: snapshot?.id || null,
         });
         if (cancelled) return;
         const total = Number(result?.total || 0);
@@ -41,6 +44,9 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
           return;
         }
         loadedRemotePage.current = true;
+        if (!snapshot && result?.snapshot_at && result?.snapshot_id) {
+          setSnapshot({ at: result.snapshot_at, id: result.snapshot_id });
+        }
         setPageData({
           items: Array.isArray(result?.items) ? result.items : [],
           total,
@@ -110,13 +116,16 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
           <button onClick={() => setRetryCount((value) => value + 1)} type="button">Retry</button>
         </div>
       )}
-      <p className="hint-text" role="note">See who changed what. Original records remain available in Details.</p>
+      <p className="hint-text" role="note">See who changed what. Original records remain available in Details.
+        {snapshot ? " This search is anchored to the same latest-event boundary during pagination; new events do not shift the result pages. Clear or change search to refresh." : " A consistent page boundary is established when results load."}
+      </p>
       <div className="action-panel inline-form">
         <label>
           Search events
           <input
             onChange={(event) => {
               setQuery(event.target.value);
+              setSnapshot(null);
               setSelectedEvent(null);
               setPage(1);
             }}
@@ -125,7 +134,7 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
             value={query}
           />
         </label>
-        {query && <button onClick={() => { setQuery(""); setSelectedEvent(null); setPage(1); }} type="button">Clear search</button>}
+        {query && <button onClick={() => { setQuery(""); setSnapshot(null); setSelectedEvent(null); setPage(1); }} type="button">Clear search</button>}
       </div>
       {pageLoading && <p className="hint-text" role="status">Searching audit events...</p>}
       <div aria-busy={pageLoading} aria-label="Audit events table" className="table-shell audit-table" tabIndex={0}>
@@ -205,6 +214,36 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
             <div><dt>Source IP</dt><dd>{selectedEvent.source_ip || "-"}</dd></div>
             <div><dt>Reason</dt><dd>{selectedEvent.reason || "-"}</dd></div>
           </dl>
+          <div className="detail-panel" aria-label="Audit target trace">
+            <h4>Trace this event</h4>
+            <p>This event is the historical audit receipt, not a live
+              verification of the target object's current security status.</p>
+            {(() => {
+              const view = ({
+                mcp_tool: "analysis",
+                mcp_server: "inventory",
+                tool_protocol_observation: "analysis",
+                control_plane_config_revision: "config",
+                cloud_scan: "cloud",
+                cloud_environment: "cloud",
+                runtime_operation: "operations",
+                runtime_logs: "operations",
+                control_plane_user: "users",
+              })[selectedEvent.target_type];
+              return view ? (
+                <p>Open the related <a href={"?view=" + view}>
+                  {view === "operations" ? "System health" : view}</a> view
+                  and locate the recorded target ID <code>{selectedEvent.target_id}</code>.
+                  The link opens the module, not an independently verified
+                  current-state match.</p>
+              ) : <p>No module deep link is defined for target type
+                <code>{selectedEvent.target_type || "unrecorded"}</code>.
+                Use the recorded type and ID to investigate manually.</p>;
+            })()}
+            {selectedEvent.revision_id && <p>Recorded configuration revision:
+              <code>{selectedEvent.revision_id}</code>. Compare it with the
+              current published revision before taking action.</p>}
+          </div>
           <AuditChangedFields before={selectedEvent.before_json} after={selectedEvent.after_json} />
           <details className="audit-technical-details">
             <summary>View original Before / After / Metadata JSON</summary>

@@ -377,7 +377,9 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                 effective_permission_status=(
                     "DENIED_BY_EXPLICIT_IDENTITY_POLICY" if status=="EXPLICIT_DENY"
                     else "UNKNOWN")
+                comparison_id=new_id()
                 summary={
+                    "comparison_id":comparison_id,
                     "identity_permission_status":identity_permission_status,
                     "effective_permission_status":effective_permission_status,
                     "tool":entry["tool"],"effect_id":entry["effect_id"],
@@ -405,6 +407,7 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     ],
                 }
                 db.add(CloudIAMComparison(
+                    id=comparison_id,
                     scan_id=scan.id,mcp_server_id=server_id,role_arn=role_arn,
                     status=status,tool_name=entry["tool"][:128],
                     identity_permission_status=identity_permission_status,
@@ -452,7 +455,9 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     ))
                 else:
                     unknown+=1
+                comparison_id=new_id()
                 reverse_summary={
+                    "comparison_id":comparison_id,
                     "direction":"IAM_POLICY_TO_APPROVED_MCP_NEEDS",
                     "status":delta.status,"reason_code":delta.reason,
                     "action":delta.action,"resource":delta.resource,
@@ -467,6 +472,7 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     "signed_revision_hash":signature_hash,
                 }
                 db.add(CloudIAMComparison(
+                    id=comparison_id,
                     scan_id=scan.id,mcp_server_id=server_id,role_arn=role_arn,
                     status=delta.status,tool_name=None,
                     identity_permission_status=(
