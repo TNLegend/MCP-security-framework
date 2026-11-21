@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,9 @@ class LocalRuntimeComponentStatus:
     endpoint: str | None = None
     managed_by_framework: bool = False
     detail: str | None = None
+    # Captured independently for each component after its status observation;
+    # not the frontend fetch time and not proof that an upstream action ran.
+    checked_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +47,7 @@ class LocalRuntimeComponentStatus:
             "endpoint": self.endpoint,
             "managed_by_framework": self.managed_by_framework,
             "detail": self.detail,
+            "checked_at": self.checked_at.isoformat(),
         }
 
 

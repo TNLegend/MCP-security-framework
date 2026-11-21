@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -15,6 +17,7 @@ router = APIRouter(tags=["Health"])
 def health_check():
     return {
         "status": "ok",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
         "service": settings.app_name,
         "version": settings.app_version,
         "environment": settings.environment,

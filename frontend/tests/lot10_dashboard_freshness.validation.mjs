@@ -25,8 +25,12 @@ const props = {
     { id: "d2", state: "REVOKED" },
     { id: "d3", state: "EXPIRED" },
   ],
-  health: { status: "ok" },
-  runtimeStatus: { database: { status: "ok" }, opa: { status: "ok" }, gateway: { status: "ok" } },
+  health: { status: "ok", checked_at: "2026-11-21T20:01:00+00:00" },
+  runtimeStatus: {
+    database: { status: "ok", checked_at: "2026-11-21T20:02:00+00:00" },
+    opa: { status: "ok", checked_at: "2026-11-21T20:03:00+00:00" },
+    gateway: { status: "ok", checked_at: "2026-11-21T20:04:00+00:00" },
+  },
   servers: [{ id: 1, status: "active" }, { id: 2, status: "active" }],
   tools: [
     { id: 1, analysis_status: "APPROVED", approved_fingerprint_match: true },
@@ -58,6 +62,7 @@ test("DB-01/HOME-02: each ready source carries a successful response timestamp a
     assert.match(html, />Allowed outcome events \(all retained\)<\/span><strong>4<\/strong>/);
     assert.match(html, />Blocked outcome events \(all retained\)<\/span><strong>3<\/strong>/);
     assert.equal((html.match(/Response received:/g) || []).length, 8);
+    assert.equal((html.match(/Checked by server:/g) || []).length, 4);
     assert.match(html, /API receipt times, not measurement times/);
   });
 });
@@ -71,6 +76,7 @@ test("HOME-02: a failed refresh never re-labels old status or revision metadata 
     assert.match(html, /Current API response unavailable/);
     assert.match(html, /previously loaded metadata, not proof of what is currently active/);
     assert.doesNotMatch(html, /<span>API<\/span><strong>Ok<\/strong>/);
+    assert.doesNotMatch(html, /Checked by server:/);
     assert.doesNotMatch(html, /signature metadata must still be verified independently/);
   });
 });

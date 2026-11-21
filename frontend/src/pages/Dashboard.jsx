@@ -117,24 +117,28 @@ function Dashboard({
         <button className="secondary-action" type="button" onClick={() => onNavigate("operations")}>Open system health</button>
       </div>
       <div className="status-grid">
-        <RuntimeStatusCard label="API" value={readStates.health === "ready" ? health?.status : readStates.health || "checking"} freshness={lastResponse("health")} />
+        <RuntimeStatusCard label="API" value={readStates.health === "ready" ? health?.status : readStates.health || "checking"} freshness={lastResponse("health")}
+          measurementAt={readStates.health === "ready" ? health?.checked_at : null} />
         <RuntimeStatusCard
           label="Database"
           value={readStates.runtimeStatus === "ready" ? runtimeStatus?.database?.status : readStates.runtimeStatus || "checking"}
           detail={readStates.runtimeStatus === "ready" ? runtimeStatus?.database?.detail : null}
           freshness={lastResponse("runtimeStatus")}
+          measurementAt={readStates.runtimeStatus === "ready" ? runtimeStatus?.database?.checked_at : null}
         />
         <RuntimeStatusCard
           label="Policy checks"
           value={readStates.runtimeStatus === "ready" ? runtimeStatus?.opa?.status : readStates.runtimeStatus || "checking"}
           detail={readStates.runtimeStatus === "ready" ? runtimeStatus?.opa?.endpoint : null}
           freshness={lastResponse("runtimeStatus")}
+          measurementAt={readStates.runtimeStatus === "ready" ? runtimeStatus?.opa?.checked_at : null}
         />
         <RuntimeStatusCard
           label="Gateway"
           value={readStates.runtimeStatus === "ready" ? runtimeStatus?.gateway?.status : readStates.runtimeStatus || "checking"}
           detail={readStates.runtimeStatus === "ready" ? runtimeStatus?.gateway?.endpoint : null}
           freshness={lastResponse("runtimeStatus")}
+          measurementAt={readStates.runtimeStatus === "ready" ? runtimeStatus?.gateway?.checked_at : null}
         />
       </div>
 
@@ -218,11 +222,12 @@ function Dashboard({
   );
 }
 
-function RuntimeStatusCard({ label, value, detail, freshness }) {
+function RuntimeStatusCard({ label, value, detail, freshness, measurementAt }) {
   return (
     <div className="status-panel compact-status">
       <span>{label}</span>
       <strong>{String(value || "unknown").toLowerCase().replace(/^./, (c) => c.toUpperCase())}</strong>
+      <small role="note">{measurementAt ? "Checked by server: " + formatDate(measurementAt) : "Server check time unavailable"}</small>
       <small role="note">{freshness || "Current API response unavailable"}</small>
       {detail && <details className="operator-technical-details">
         <summary>Connection details</summary>

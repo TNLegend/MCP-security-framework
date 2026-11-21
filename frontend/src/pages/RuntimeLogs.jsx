@@ -1,5 +1,6 @@
 import { formatServerTime } from "../utils/serverTime.js";
 import { executionDisplay } from "../utils/runtimePresentation.js";
+import { formatSafeRuntimeEvidence, safeRuntimeText } from "../utils/runtimeRedaction.js";
 import SecurityExplanation from "../components/securityexplanation.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -13,6 +14,9 @@ const ERROR_STATUSES = new Set([
   "upstream_outcome_unknown",
   "policy_error",
   "inventory_error",
+  "client_initialization_error",
+  "upstream_auth_error",
+  "audit_unavailable",
 ]);
 const EMPTY_PAGE = {
   items: [],
@@ -405,7 +409,7 @@ function RuntimeLogDetailPanel({ log, detailHeading, onClose, servers = [], tool
       <div className="metadata-grid runtime-metadata-grid">
         <MetadataSection title="Runtime context" items={[["Operation ID", log.operation_id], ["Audit phase", log.event_phase], ["Agent", log.agent_id], ["Session ID", log.session_id], ["Server", runtimeServerLabel(log, servers)], ["Server ID", log.server_id], ["Tool", log.tool_name], ["Argument summary", log.arguments_summary, "structured"], ["Recorded at", formatDate(log.created_at)]]} />
         <MetadataSection title="Policy decision" items={[["Decision", log.decision, "decision"], ["Rule ID", log.rule_id], ["Decision reason", log.decision_reason], ["Severity", log.severity, "severity"], ["Configuration revision", log.control_plane_revision_number], ["Configuration digest", log.control_plane_content_hash]]} />
-        <MetadataSection title="Transport and execution" items={[["Client protocol profile", log.client_protocol_profile_id], ["Upstream protocol profile", log.upstream_protocol_profile_id], ["Dispatch evidence", executionDisplay(log)], ["Execution status", log.execution_status, "execution"], ["Result summary", log.result_summary], ["Error summary", log.error_summary]]} />
+        <MetadataSection title="Transport and execution" items={[["Client protocol profile", log.client_protocol_profile_id], ["Upstream protocol profile", log.upstream_protocol_profile_id], ["Dispatch evidence", executionDisplay(log)], ["Execution status", log.execution_status, "execution"], ["Result summary", log.result_summary, "sensitive_text"], ["Error summary", log.error_summary, "sensitive_text"]]} />
       </div>
       </details>
     </section>
@@ -508,8 +512,8 @@ function MetadataSection({ title, items }) {
               {type === "decision" ? <Badge value={value} className={getDecisionBadgeClass(value)} />
                 : type === "execution" ? <Badge value={value} className={getExecutionBadgeClass(value)} />
                   : type === "severity" ? <Badge value={value} className={getSeverityBadgeClass(value)} />
-                    : type === "structured" ? <pre className="json-block">{formatStructuredValue(value)}</pre>
-                      : displayValue(value)}
+                    : type === "structured" ? <pre className="json-block">{formatSafeRuntimeEvidence(value)}</pre>
+                      : type === "sensitive_text" ? safeRuntimeText(value ?? "-") : displayValue(value)}
             </dd>
           </div>
         ))}
@@ -558,15 +562,7 @@ function formatBoolean(value) {
   return value === true ? "Yes" : value === false ? "No" : "-";
 }
 
-function formatStructuredValue(value) {
-  if (value === null || value === undefined || value === "") return "-";
-  if (typeof value === "string") {
-    try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
-  }
-  return JSON.stringify(value, null, 2);
-}
-
-function getDecisionBadgeClass(decision) {
+ function getDecisionBadgeClass(decision) {
   const normalized = String(decision || "").toUpperCase();
   if (normalized === "ALLOW") return "badge-allow badge-success";
   if (normalized === "BLOCK") return "badge-block badge-danger";
