@@ -3,7 +3,7 @@ import { executionDisplay } from "../utils/runtimePresentation.js";
 import SecurityExplanation from "../components/securityexplanation.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { fetchRuntimeLogs } from "../api/client";
+import { fetchRuntimeLogs, fetchRuntimeOperationReconciliation } from "../api/client";
 
 const PAGE_SIZE = 20;
 const ERROR_STATUSES = new Set([
@@ -280,11 +280,64 @@ function RuntimeLogDetailPanel({ log, detailHeading, onClose }) {
         <button onClick={onClose} type="button">Close details</button>
       </div>
       <SecurityExplanation record={log} />
+      <RuntimeReconciliation key={log.operation_id || `legacy-${log.id}`} operationId={log.operation_id} />
       <div className="metadata-grid runtime-metadata-grid">
         <MetadataSection title="Runtime context" items={[["Operation ID", log.operation_id], ["Audit phase", log.event_phase], ["Agent", log.agent_id], ["Session ID", log.session_id], ["Server ID", log.server_id], ["Tool", log.tool_name], ["Argument summary", log.arguments_summary, "structured"], ["created_at", formatDate(log.created_at)]]} />
         <MetadataSection title="Policy decision" items={[["Decision", log.decision, "decision"], ["Rule ID", log.rule_id], ["Decision reason", log.decision_reason], ["Severity", log.severity, "severity"], ["Configuration revision", log.control_plane_revision_number], ["control_plane_content_hash", log.control_plane_content_hash]]} />
         <MetadataSection title="Transport and execution" items={[["Client protocol profile", log.client_protocol_profile_id], ["Upstream protocol profile", log.upstream_protocol_profile_id], ["Executed", executionDisplay(log)], ["Execution status", log.execution_status, "execution"], ["Result summary", log.result_summary], ["Error summary", log.error_summary]]} />
       </div>
+    </section>
+  );
+}
+
+function RuntimeReconciliation({ operationId }) {
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setResult(null);
+    setError("");
+  }, [operationId]);
+
+  if (!operationId) {
+    return <p role="note" className="hint-text">Legacy event: no operation ID was recorded.
+      Automated reconciliation cannot establish the missing remote outcome.</p>;
+  }
+
+  async function examine() {
+    setBusy(true);
+    setError("");
+    setResult(null);
+    try {
+      const data = await fetchRuntimeOperationReconciliation(operationId);
+      setResult(data);
+    } catch {
+      setError("Reconciliation data is unavailable. Do not assume the remote action did not occur.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="detail-panel" aria-label="MCP operation reconciliation">
+      <h4>Execution reconciliation</h4>
+      <p>Check whether an authorized intent, dispatch admission and execution outcome were durably recorded.
+        This is a read-only check; it never retries the tool call.</p>
+      <button type="button" onClick={examine} disabled={busy}>
+        {busy ? "Checking..." : "Check operation " + operationId.slice(0, 8)}
+      </button>
+      {error && <p role="alert">{error}</p>}
+      {result && <div role="status">
+        <p><strong>Reconciliation:</strong> {result.state}</p>
+        <p>Intent recorded: {result.intent_recorded ? "Yes" : "No"}.
+          Dispatch admitted: {result.admission_recorded ? "Yes" : "No"}.
+          Outcome recorded: {result.outcome_recorded ? "Yes" : "No"}.</p>
+        <p><strong>Effect possible:</strong> {result.effect_possible ? "Yes" : "Not established"}.
+          <strong> Manual investigation:</strong> {result.manual_reconciliation_required ? "Required" : "Not required by the recorded state"}.</p>
+        {result.retry_unsafe && <p><strong>Do not retry automatically.</strong>
+          Review the MCP server's own audit trail before attempting a new action.</p>}
+      </div>}
     </section>
   );
 }

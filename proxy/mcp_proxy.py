@@ -606,6 +606,22 @@ class MCPProxy:
                 skip_reason=validation_error,
             )
 
+        # A validated, revision-bound OPA decision must never be overwritten
+        # by a later Proxy guard. Only framework-owned _runtime_* metadata
+        # carries this snapshot; caller-supplied keys are stripped at ingress.
+        # Backend identity, authorization and OPA-outage fail-closed
+        # responses are valid policy envelopes, but they are NOT OPA verdicts.
+        # Never label those as "OPA BLOCK" in the operator's audit trail.
+        if decision.policy_revision not in {
+            "trusted-identity-fail-closed-v1",
+            "subject-authorization-fail-closed-v1",
+            "opa-authoritative-fail-closed-v1",
+        }:
+            prepared_tool_call = {
+                **prepared_tool_call,
+                "_runtime_verified_opa_decision": decision.model_dump(mode="json"),
+            }
+
         unsafe_resource_reason = self._unsafe_resource_guard_reason(prepared_request)
         if unsafe_resource_reason is not None and decision.effect != PolicyEffect.DENY:
             decision = _fail_closed_proxy_decision(

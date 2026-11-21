@@ -57,6 +57,10 @@ REQUIRED_BUILD_SECURITY_TABLES = {
 }
 
 REQUIRED_RUNTIME_CALL_COLUMNS = {
+    "opa_decision",
+    "opa_rule_id",
+    "opa_policy_revision",
+    "opa_explanation",
     "explanation",
     "policy_revision",
     "decision_basis",

@@ -16,7 +16,16 @@ const nextActions = Object.fromEntries(
 
 
 export default function SecurityExplanation({ record }) {
-  const explanation = record?.explanation;
+  // The final decision may be a Proxy guard AFTER an OPA ALLOW. Keep both
+  // independently displayed; never claim OPA rejected the initial request.
+  const originalOpa = record?.opa_decision || null;
+  const laterGuard = Boolean(
+    originalOpa && (
+      originalOpa !== record?.decision ||
+      record?.opa_rule_id !== record?.rule_id
+    )
+  );
+  const explanation = record?.opa_explanation || record?.explanation;
   const verified = explanation?.explanation_version === 1 &&
     explanation?.scope === "runtime_security_model_v2" &&
     Array.isArray(explanation?.failed_checks) &&
@@ -41,8 +50,21 @@ export default function SecurityExplanation({ record }) {
   return (
     <section className="detail-panel" aria-label="Security decision explanation">
       <h4>Why was this decision made?</h4>
-      <p><strong>What happened:</strong> Policy decision {record?.decision || "not recorded"}.
+      <p><strong>What happened:</strong> Effective decision {record?.decision || "not recorded"}.
         {record?.decision === "ALLOW" ? " Authorization does not prove execution." : ""}</p>
+      {originalOpa && <p><strong>Original OPA decision:</strong> {originalOpa}
+        {record?.opa_rule_id ? " (" + record.opa_rule_id + ")" : ""}.
+        {laterGuard
+          ? " A separate Proxy control subsequently imposed " + (record?.decision || "a new outcome") +
+            " under rule " + (record?.rule_id || "not recorded") + "."
+          : " No later conflicting Proxy decision is recorded in this event."}</p>}
+      {!originalOpa && <p><strong>OPA provenance:</strong> No verified OPA verdict is recorded.
+        {record?.decision_basis === "FAIL_CLOSED_TECHNICAL"
+          ? " A required security verification failed or was unavailable, so execution was refused as a precaution. This is not evidence of an OPA policy violation."
+          : " This may be a pre-policy refusal or an older event. Do not infer an OPA verdict."}</p>}
+      {laterGuard && <p><strong>Why the final control intervened:</strong> {
+        record?.decision_reason || "The later guard reason was not recorded."
+      }</p>}
       {verified && failedCodes.length > 0 ? <>
         <p><strong>Verified failed checks:</strong> The recorded policy evaluation identified:</p>
         <ul>{failedCodes.map((code) => <li key={code}>{checkLabels[code] || "Unrecognized diagnostic code"}.</li>)}</ul>
@@ -50,13 +72,14 @@ export default function SecurityExplanation({ record }) {
         {failedEffects.length > 0 && <ul>{failedEffects.map((item, i) => (
           <li key={i}>Effect <code>{item.effect_id}</code> needs capability <code>{item.capability}</code>: {checkLabels[item.check] || item.check}.</li>
         ))}</ul>}
-      </> : verified && record?.decision === "ALLOW" ? (
-        <p>All authorization checks used by this V2 policy evaluation passed. Subsequent admission and execution are separate steps.</p>
+      </> : verified && (originalOpa || record?.decision) === "ALLOW" ? (
+        <p>The recorded V2 policy authorization checks passed. Subsequent admission, dispatch, result guards and execution are separate steps.</p>
       ) : (
         <p><strong>Evidence limitation:</strong> No detailed checks were preserved for this event.
           Its rule and reason alone cannot establish which authorization condition failed.</p>
       )}
       <p><strong>Impact:</strong> {impact}</p>
+      {laterGuard && <p><strong>After-OPA review:</strong> Inspect the effective Proxy rule and its recorded reason separately from the OPA authorization. Never widen a permission merely to bypass this guard.</p>}
       <p><strong>What to do next:</strong> {unknown
         ? "Use the operation ID and reconciliation view to verify the server-side outcome before any replay."
         : failedCodes.length
@@ -64,7 +87,9 @@ export default function SecurityExplanation({ record }) {
           : "Inspect the recorded rule, source configuration and related audit events."}</p>
       <details className="operator-technical-details">
         <summary>Technical identifiers and limitations</summary>
-        <p>Rule: <code>{record?.rule_id || "Not recorded"}</code></p>
+        <p>Effective rule: <code>{record?.rule_id || "Not recorded"}</code></p>
+        <p>Original OPA rule: <code>{record?.opa_rule_id || "Not recorded"}</code></p>
+        <p>Original OPA policy revision: {record?.opa_policy_revision || "Not recorded"}</p>
         <p>Basis: {record?.decision_basis || "Not recorded"}</p>
         <p>Policy revision: {record?.policy_revision || "Not recorded"}</p>
         <p>Operation ID: <code>{record?.operation_id || "Legacy event without an operation ID"}</code></p>

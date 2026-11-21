@@ -305,6 +305,16 @@ export async function fetchOperationsSummary() {
   return request("/control-plane/operations/summary");
 }
 
+export async function fetchRuntimeOperationReconciliation(operationId) {
+  if (!/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(String(operationId || ""))) {
+    throw new ApiError("No valid operation ID was recorded for reconciliation.", {
+      code: "invalid_runtime_operation_id",
+    });
+  }
+  return request("/control-plane/operations/runtime-operations/" +
+    encodeURIComponent(operationId) + "/reconciliation");
+}
+
 export async function fetchBuildScanners() {
   return request("/control-plane/build-security/scanners");
 }
