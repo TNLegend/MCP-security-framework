@@ -17,7 +17,11 @@ from threading import BoundedSemaphore
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, ProfileNotFound
+from botocore.exceptions import (
+    BotoCoreError, ClientError, CredentialRetrievalError,
+    NoCredentialsError, PartialCredentialsError, ProfileNotFound,
+    TokenRetrievalError, UnauthorizedSSOTokenError,
+)
 from sqlalchemy import select, update
 
 from app.db.database import SessionLocal
@@ -46,6 +50,14 @@ def _safe_error(exc: Exception) -> str:
     if isinstance(exc, ProfileNotFound):
         return "AWS_PROFILE_NOT_FOUND"
     if isinstance(exc, NoCredentialsError):
+        return "AWS_CREDENTIALS_UNAVAILABLE"
+    # Credential_process and SSO are not network errors. Do not expose the
+    # subprocess stderr, token data or botocore's potentially sensitive text.
+    if isinstance(exc, CredentialRetrievalError):
+        return "AWS_CREDENTIAL_PROCESS_FAILED"
+    if isinstance(exc, UnauthorizedSSOTokenError):
+        return "AWS_SESSION_EXPIRED"
+    if isinstance(exc, (PartialCredentialsError, TokenRetrievalError)):
         return "AWS_CREDENTIALS_UNAVAILABLE"
     if isinstance(exc, ClientError):
         code=exc.response.get("Error",{}).get("Code","")

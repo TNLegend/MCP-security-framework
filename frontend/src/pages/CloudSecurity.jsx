@@ -91,11 +91,17 @@ function CloudScanTable({ scans, onOpen, empty, loading, metric, label, mixed = 
   </div>;
 }
 
-function cloudError(err) {
+export function cloudError(err) {
   const raw = safeErrorMessage(err);
   const messages = {
     AWS_PROFILE_NOT_FOUND: "The AWS profile does not exist on this computer. Configure a temporary read-only audit profile, then test the connection.",
     AWS_CREDENTIALS_UNAVAILABLE: "No AWS credentials are available. Connect a supported temporary audit identity.",
+    AWS_CREDENTIAL_PROCESS_FAILED: "The configured AWS credential helper could not supply temporary credentials. Refresh the named audit profile or sign in again on this computer; then test the connection. No IAM permissions were changed.",
+    AWS_CONNECTION_FAILED: "The AWS service could not be reached. Check connectivity and retry the read-only connection test.",
+    AWS_INVALID_CREDENTIALS: "AWS rejected the configured audit credentials. Refresh the temporary identity or verify the named profile before retrying.",
+    AWS_RATE_LIMITED: "AWS temporarily limited audit API requests. Wait before retrying a read-only scan; checks not collected remain unknown.",
+    AWS_API_ERROR: "AWS returned an API error not classified by the collector. Consult the secure audit diagnostics and retry a read-only check.",
+    CLOUD_SCAN_INTERNAL_ERROR: "The cloud audit collector failed unexpectedly. Check local diagnostics; no security assessment can be concluded from this run.",
     AWS_SESSION_EXPIRED: "The temporary AWS session expired. Sign in again and test the connection.",
     ROOT_AWS_IDENTITY_FORBIDDEN: "The AWS root account cannot be used for security scans. Use a dedicated read-only audit identity.",
     AWS_ACCESS_DENIED: "The AWS audit identity lacks a required read permission. Check its IAM policy.",
@@ -236,6 +242,7 @@ export function iamReadErrorGuidance(code, workloadType) {
     AWS_SESSION_EXPIRED: "The temporary AWS audit session expired. Renew the audit credentials and rerun the read-only collection.",
     AWS_INVALID_CREDENTIALS: "The audit credentials were rejected. Verify the configured identity without adding permissions.",
     AWS_CREDENTIALS_UNAVAILABLE: "No usable audit credentials were available. Check the selected profile or role before retrying.",
+    AWS_CREDENTIAL_PROCESS_FAILED: "The AWS credential helper failed. Refresh the local named profile or its temporary login, then retry the read-only audit. Do not change IAM permissions to fix this.",
     AWS_PROFILE_NOT_FOUND: "The named local AWS profile was not found. Verify its configuration on the audit host.",
     AWS_RATE_LIMITED: "IAM collection was rate-limited. Retry after the service recovers; do not treat the missing checks as passed.",
     AWS_CONNECTION_FAILED: "AWS could not be reached reliably. Verify connectivity and retry without changing IAM grants.",
