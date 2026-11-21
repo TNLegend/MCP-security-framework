@@ -52,6 +52,15 @@ and matching API/callback URLs before launching the second instance.
 Never connect a fresh installation to the production database solely to
 make installation checks pass.
 
+For unattended testing of the initial ADMIN prompt, set the explicit
+MCP_BOOTSTRAP_ADMIN_STDIN=1 opt-in and supply three newline-terminated
+values on a **trusted, private stdin pipe**: ADMIN username, password,
+password confirmation. This mode does not store the password in a process
+argument, environment variable, source file or logs, and rejects a real
+terminal. It only applies when no enabled ADMIN exists. Never use this mode
+with a pipeline receiving untrusted input. Normal interactive launch uses
+the system password prompt as before.
+
 **Linux bootstrap limitation (not yet qualified):** The shell launcher exists,
 but the pinned OPA downloader in scripts/download_opa.py currently accepts
 Windows amd64 only. A Linux user cannot complete the fully automated

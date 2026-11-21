@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import sys
 from pathlib import Path
 
@@ -26,6 +27,26 @@ from app.services.control_plane_auth import (  # noqa: E402
 
 class BootstrapAdminRequired(RuntimeError):
     pass
+
+
+def read_initial_admin_passwords(*, password_func=getpass.getpass,
+                                 input_stream=None) -> tuple[str, str]:
+    """Read two secrets from a terminal or an explicitly trusted stdin pipe.
+
+    The opt-in pipe is for unattended first-install acceptance and automated
+    provisioning; no password is placed in argv, environment variables, logs,
+    or source files. Default human installations still use getpass.
+    """
+    stream = input_stream if input_stream is not None else sys.stdin
+    if os.environ.get("MCP_BOOTSTRAP_ADMIN_STDIN") == "1":
+        if stream.isatty():
+            raise BootstrapAdminRequired(
+                "MCP_BOOTSTRAP_ADMIN_STDIN requires a redirected, trusted stdin pipe."
+            )
+        password = stream.readline().rstrip("\r\n")
+        confirmation = stream.readline().rstrip("\r\n")
+        return password, confirmation
+    return password_func("Password: "), password_func("Confirm password: ")
 
 
 def ensure_initial_admin(
@@ -57,8 +78,7 @@ def ensure_initial_admin(
         username = input_func("Initial ADMIN username: ").strip()
         if not username:
             raise BootstrapAdminRequired("Initial ADMIN username must not be empty.")
-        password = password_func("Password: ")
-        confirmation = password_func("Confirm password: ")
+        password, confirmation = read_initial_admin_passwords(password_func=password_func)
         if password != confirmation:
             raise BootstrapAdminRequired("Passwords do not match.")
         if len(password) < 8:
