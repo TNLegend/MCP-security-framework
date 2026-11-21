@@ -475,12 +475,17 @@ export function iacFindingSourceEvidence(finding, evidence) {
   return evidence.filter((row) =>
     row && row.resource_id != null &&
     row.resource_id === finding.resource_id &&
-    row.rule_id === finding.rule_id &&
+    // A verified semantic merge can have a different original scanner rule.
+    // Prefer the exact, backend-recorded finding link over a guessed rule match.
+    (row.safe_summary?.linked_finding_id
+      ? row.safe_summary.linked_finding_id === finding.id
+      : row.rule_id === finding.rule_id) &&
     row.safe_summary?.scanner &&
     typeof row.safe_summary.file === "string"
   ).map((row) => ({
     id: row.id,
     scanner: row.safe_summary.scanner,
+    rule: row.safe_summary.rule || row.rule_id,
     file: row.safe_summary.file,
     line: Number.isInteger(row.safe_summary.line) && row.safe_summary.line > 0
       ? row.safe_summary.line : null,
@@ -2084,7 +2089,8 @@ export default function CloudSecurity({ isAdmin = false }) {
                       <strong>Recorded scanner source evidence</strong>
                       <ul>{sources.map((source, index) => (
                         <li key={source.id || index}>
-                          {source.scanner}{source.version ? " " + source.version : ""}:
+                          {source.scanner}{source.version ? " " + source.version : ""}
+                          {source.rule ? " (rule " + source.rule + ")" : ""}:
                           {" "}<code>{source.file}</code>
                           {source.line !== null ? " at line " + source.line
                             : " (scanner did not provide a verified line)"}

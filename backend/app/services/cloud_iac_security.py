@@ -476,7 +476,10 @@ def _store_results(db, scan: CloudScan, fingerprint: str,
         resources[name] = res
     db.flush()
     findings_seen = set()
-    semantic_seen = set()
+    # Exact verified cross-scanner equivalences point to ONE finding while
+    # preserving separate evidence for each scanner's own rule and version.
+    # Never infer equivalence from matching resource names alone.
+    semantic_seen: dict[tuple[str, str, str], str] = {}
     findings_total = 0
     unknown = 0
     merged_equivalent = 0
@@ -510,19 +513,20 @@ def _store_results(db, scan: CloudScan, fingerprint: str,
             semkey = (tag, file, logical) if tag and logical else None
             if semkey is not None and semkey in semantic_seen:
                 merged_equivalent += 1
+                linked_finding_id = semantic_seen[semkey]
                 # Keep independent evidence for the second scanner below.
             else:
                 if findings_total >= MAX_REPORTED_FINDINGS:
                     unknown += 1
                     break
-                if semkey is not None:
-                    semantic_seen.add(semkey)
                 title, remediation = _REMEDIATIONS.get(
                     item["rule"],
                     (f"{item['rule']} - Terraform configuration risk",
                      "Review the policy and correct the Terraform configuration before deployment."),
                 )
+                linked_finding_id = new_id()
                 db.add(CloudFinding(
+                    id=linked_finding_id,
                     scan_id=scan.id, resource_id=res.id, rule_id=item["rule"],
                     fingerprint=_sha(identity), severity=item["severity"], result="FAIL",
                     title=title,
@@ -530,6 +534,8 @@ def _store_results(db, scan: CloudScan, fingerprint: str,
                     remediation=remediation,
                 ))
                 findings_total += 1
+                if semkey is not None:
+                    semantic_seen[semkey] = linked_finding_id
             db.add(CloudEvidence(
                 scan_id=scan.id, resource_id=res.id, rule_id=item["rule"],
                 outcome="FAIL", evidence_sha256=_sha({
@@ -539,7 +545,8 @@ def _store_results(db, scan: CloudScan, fingerprint: str,
                 safe_summary={"scanner":tool,"version":version, "file":file,
                               "line":item["line"],"source_fingerprint":fingerprint,
                               "rule":item["rule"],
-                              "resource_hash":item["resource_hash"]},
+                              "resource_hash":item["resource_hash"],
+                              "linked_finding_id":linked_finding_id},
             ))
     if merged_equivalent:
         db.add(CloudScanEvent(scan_id=scan.id, event_type="SCANNER",
