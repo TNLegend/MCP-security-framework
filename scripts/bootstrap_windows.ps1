@@ -28,6 +28,17 @@ function Supported-Python {
     return $null
 }
 function Has-PostgreSQL {
+    # Accept a separately installed system/portable PostgreSQL distribution.
+    # Invalid explicit paths must fail instead of executing a different binary.
+    if ($env:MCP_POSTGRES_BIN_DIR) {
+        $bin = $env:MCP_POSTGRES_BIN_DIR
+        if (-not ((Test-Path (Join-Path $bin 'postgres.exe')) -and
+                  (Test-Path (Join-Path $bin 'initdb.exe')))) {
+            return $false
+        }
+        $version = & (Join-Path $bin 'postgres.exe') --version
+        return [bool]($version -match '([0-9]+)\.' -and [int]$Matches[1] -ge 15)
+    }
     $managed = Join-Path $root '.runtime\tools\postgresql\pgsql\bin'
     if ((Test-Path (Join-Path $managed 'postgres.exe')) -and
         (Test-Path (Join-Path $managed 'initdb.exe'))) {

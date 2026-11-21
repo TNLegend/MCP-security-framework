@@ -36,6 +36,30 @@ frontend lockfile dependencies, OPA, security scanners, service identities,
 database schema, and model caches are prepared. The launcher starts the
 local backend, MCP lab, OPA, gateway, identity provider and the React frontend.
 
+**Portable PostgreSQL prerequisite (Windows/Linux):** PostgreSQL 15+ server
+binaries must be available on PATH, in the official system installation, or
+in the project's own local runtime tools directory. An existing trusted
+PostgreSQL binary distribution installed elsewhere can be selected by
+setting MCP_POSTGRES_BIN_DIR to its bin directory before running the launcher
+or the dependency check. This variable specifies executable binaries, not
+database credentials. An invalid explicit path fails prerequisite checks
+instead of silently executing an unrelated binary from PATH.
+
+On a machine already running another framework instance, assign unused
+PostgreSQL, backend, frontend, Gateway, OPA and identity-provider ports
+and matching API/callback URLs before launching the second instance.
+Never connect a fresh installation to the production database solely to
+make installation checks pass.
+
+**Linux bootstrap limitation (not yet qualified):** The shell launcher exists,
+but the pinned OPA downloader in scripts/download_opa.py currently accepts
+Windows amd64 only. A Linux user cannot complete the fully automated
+install until a Linux OPA asset with a reviewed, pinned SHA-256 is added,
+its executable permissions and architecture are handled, and the full
+setup is validated on Linux. Do not interpret the presence of
+start_framework.sh as proof of a successful Linux fresh installation.
+Windows is the initial clean-clone qualification target.
+
 **Public fine-tuned M4 checkpoints** are hosted separately from GitHub:
 
 - [GLiNER PASS10](https://huggingface.co/tnlegend/mcp-security-m4-gliner-pass10) — Apache 2.0, with Microsoft MIT attribution.

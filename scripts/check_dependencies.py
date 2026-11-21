@@ -43,11 +43,17 @@ def command_path(command: str) -> str | None:
 
 
 def find_postgres_tool(command: str) -> str | None:
+    # An independently provisioned PostgreSQL distribution may be referenced
+    # explicitly. An invalid override must not silently fall back to PATH.
+    explicit_bin = os.environ.get("MCP_POSTGRES_BIN_DIR", "").strip()
+    filename = command + (".exe" if os.name == "nt" else "")
+    if explicit_bin:
+        candidate = Path(explicit_bin).expanduser() / filename
+        return str(candidate) if candidate.is_file() else None
+
     # A project-local PostgreSQL distribution is valid. Its binaries remain
     # local to the machine and must not be committed to source control.
-    managed = RUNTIME_TOOLS_DIR / "postgresql" / "pgsql" / "bin" / (
-        command + (".exe" if os.name == "nt" else "")
-    )
+    managed = RUNTIME_TOOLS_DIR / "postgresql" / "pgsql" / "bin" / filename
     if managed.is_file():
         return str(managed)
     located = shutil.which(command)
