@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { cleanupRuntimeLogs, safeErrorMessage } from "../api/client";
+import "./management.css";
 
 
 function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
@@ -8,10 +9,15 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const cleanupLock = useRef(false);
   const [error, setError] = useState("");
 
   async function runCleanup(dryRun) {
-    if (!isAdmin || busy || reason.trim().length < 10) return;
+    if (!isAdmin || loading || cleanupLock.current || reason.trim().length < 10) return;
+    if (!dryRun && (!preview || preview.planned <= 0)) return;
+    if (!dryRun && !window.confirm("Apply log retention cleanup? " + preview.planned + " eligible rows were identified in the preview.")) return;
+    cleanupLock.current = true;
+    setPreview(null);
     setBusy(true);
     setError("");
     setMessage("");
@@ -35,6 +41,7 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
     } catch (err) {
       setError(safeErrorMessage(err));
     } finally {
+      cleanupLock.current = false;
       setBusy(false);
     }
   }
@@ -50,16 +57,23 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
           <h2>System health</h2>
           <p>Check service status and recent errors.</p>
         </div>
-        <span className={"operations-ready " + (summary?.ready ? "ready" : "not-ready")}>
-          {summary?.ready ? "READY" : "NOT READY"}
+        <span className={"operations-ready " + (summary ? (summary.ready ? "ready" : "not-ready") : "readiness-unknown")}>
+          {summary ? (summary.ready ? "Ready" : "Not ready") : loading ? "Checking readiness" : "Readiness unavailable"}
         </span>
       </div>
 
-      <section className="detail-panel">
+      <nav aria-label="System health sections" className="management-jump-links">
+        <a href="#service-readiness">Service readiness</a>
+        <a href="#recent-activity">Recent activity</a>
+        <a href="#storage-diagnostics">Storage diagnostics</a>
+        <a href="#log-retention">Log retention</a>
+      </nav>
+      <section className="detail-panel" id="service-readiness">
         <div className="operations-section-heading">
           <h3>Service readiness</h3>
           <small>{summary?.generated_at ? "Generated " + formatDate(summary.generated_at) : "-"}</small>
         </div>
+        {!summary && <p className="hint-text" role="status">{loading ? "Checking service status..." : "Service status is unavailable. Use Refresh in the header to try again."}</p>}
         <div className="status-grid operations-status-grid">
           {Object.entries(summary?.components || {}).map(([key, component]) => (
             <div className="status-panel compact-status" key={key}>
@@ -72,7 +86,7 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
         </div>
       </section>
 
-      <section className="detail-panel">
+      <section className="detail-panel" id="recent-activity">
         <div className="operations-section-heading">
           <h3>Recent activity</h3>
           <small>Last {windowStats?.window_minutes || "-"} minute(s)</small>
@@ -111,7 +125,7 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
         </div>
       </section>
 
-      <div className="dashboard-layout operations-layout">
+      <div className="dashboard-layout operations-layout" id="storage-diagnostics">
         <section className="detail-panel">
           <h3>PostgreSQL pool</h3>
           <dl className="compact-dl">
@@ -167,7 +181,7 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
         </section>
       </div>
 
-      <section className="detail-panel operations-maintenance">
+      <section className="detail-panel operations-maintenance" id="log-retention">
         <h3>Runtime log retention maintenance</h3>
         <p>
           Cleanup is ADMIN-only and bounded by the configured batch size. Preview does not mutate
@@ -185,6 +199,7 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
                 onChange={(event) => {
                   setReason(event.target.value);
                   setPreview(null);
+                  setMessage("");
                 }}
                 value={reason}
               />
@@ -199,7 +214,7 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
               </button>
               <button
                 className="danger-action"
-                disabled={busy || !preview || preview.planned <= 0}
+                disabled={busy || loading || !preview || preview.planned <= 0}
                 onClick={() => runCleanup(false)}
                 type="button"
               >
@@ -217,8 +232,8 @@ function Operations({ isAdmin = false, loading = false, onRefresh, summary }) {
             )}
           </>
         )}
-        {message && <div className="success-banner">{message}</div>}
-        {error && <div className="error-banner">{error}</div>}
+        {message && <div className="success-banner" role="status">{message}</div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
       </section>
     </section>
   );
@@ -229,7 +244,7 @@ function Metric({ label, tone = "", value }) {
   return (
     <div className={"stat-card " + tone}>
       <span>{label}</span>
-      <strong>{value ?? 0}</strong>
+      <strong>{value ?? "-"}</strong>
     </div>
   );
 }
@@ -239,7 +254,7 @@ function LatencyRow({ label, stats }) {
   return (
     <tr>
       <td>{label}</td>
-      <td>{stats?.samples ?? 0}</td>
+      <td>{stats?.samples ?? "-"}</td>
       <td>{formatMs(stats?.avg_ms)}</td>
       <td>{formatMs(stats?.p50_ms)}</td>
       <td>{formatMs(stats?.p95_ms)}</td>

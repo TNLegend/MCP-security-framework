@@ -1,0 +1,324 @@
+:root {
+  --console-ink: #172639;
+  --console-muted: #526477;
+  --console-line: #d6e0e9;
+  --console-surface: #fff;
+  --console-canvas: #f2f6f9;
+  --console-sidebar: #112438;
+  --console-sidebar-text: #d4e1eb;
+  --console-accent: #0d6f65;
+  --console-focus: #087a70;
+  --console-radius: 12px;
+  color: var(--console-ink);
+  background: var(--console-canvas);
+  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+}
+
+body { background: var(--console-canvas); }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.skip-navigation {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 20;
+  padding: .65rem .9rem;
+  border-radius: 8px;
+  color: #143b35;
+  background: #fff;
+  transform: translateY(-170%);
+}
+.skip-navigation:focus { transform: none; }
+
+.app-shell.security-console {
+  display: grid;
+  grid-template-columns: 226px minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+}
+.security-console .console-sidebar {
+  grid-row: 1 / -1;
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 22px 13px;
+  background: var(--console-sidebar);
+  color: var(--console-sidebar-text);
+  scrollbar-color: #648194 var(--console-sidebar);
+}
+.console-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px;
+}
+.console-brand-icon {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  color: #9cf3d9;
+  background: #245051;
+  border-radius: 10px;
+}
+.console-brand-icon svg { width: 21px; height: 21px; }
+.console-brand strong,
+.console-brand div > span { display: block; }
+.console-brand strong { color: #fff; font-size: .98rem; line-height: 1.3; }
+.console-brand div > span { color: #bed0df; font-size: .72rem; }
+.security-console .app-nav {
+  display: grid;
+  align-content: start;
+  gap: 15px;
+  margin: 27px 0 8px;
+}
+.security-console .app-nav-group {
+  background: transparent;
+  padding: 0;
+  gap: 4px;
+}
+.security-console .app-nav-group-label {
+  padding: 0 10px;
+  color: #a5bacd;
+  font-size: .7rem;
+  font-weight: 650;
+  letter-spacing: .075em;
+  text-transform: uppercase;
+}
+.security-console .app-nav-group-links { display: grid; gap: 2px; }
+.security-console .app-nav button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--console-sidebar-text);
+  font-size: .88rem;
+  font-weight: 600;
+  text-align: left;
+}
+.security-console .app-nav button svg { flex: none; width: 17px; height: 17px; opacity: .9; }
+.security-console .app-nav button:hover { background: #203a51; color: #fff; }
+.security-console .app-nav button.active {
+  border-color: #417b76;
+  background: #214745;
+  color: #effffa;
+}
+.security-console .app-nav button.active svg { color: #a6f3d8; }
+
+.security-console .console-header {
+  min-width: 0;
+  min-height: 65px;
+  margin: 0;
+  padding: 10px clamp(16px, 3vw, 40px);
+  border-bottom: 1px solid var(--console-line);
+  background: var(--console-surface);
+}
+.console-location {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: .88rem;
+}
+.console-location span { color: var(--console-muted); }
+.console-location span::after { content: "/"; margin-left: 10px; color: #7b8c9c; }
+.console-location strong { color: var(--console-ink); }
+.console-header .session-actions { flex-wrap: wrap; justify-content: flex-end; }
+.console-header .session-user { padding-right: 8px; overflow-wrap: anywhere; min-width: 0; }
+.security-console .console-content {
+  min-width: 0;
+  width: min(100%, 1600px);
+  padding: clamp(18px, 3vw, 38px) clamp(16px, 3vw, 40px) 44px;
+  margin: 0 auto;
+}
+.console-content:focus { outline: none; }
+.security-console .page-section { min-width: 0; }
+.security-console .page-section > .section-heading:first-child {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--console-line);
+}
+.security-console .section-heading h2 {
+  color: var(--console-ink);
+  font-size: clamp(1.55rem, 1.2rem + 1vw, 2.1rem);
+  line-height: 1.2;
+  letter-spacing: -.028em;
+}
+.security-console .section-heading p,
+.security-console .hint-text { color: var(--console-muted); }
+.security-console :is(.detail-panel, .table-shell, .status-panel, .stat-card, .dashboard-priority-card) {
+  min-width: 0;
+  border-color: var(--console-line);
+  border-radius: var(--console-radius);
+  box-shadow: 0 2px 4px rgb(20 44 65 / 4%);
+}
+.security-console .table-shell { max-width: 100%; }
+.security-console .table-shell th { color: #2d455b; background: #edf3f7; }
+.security-console :is(td, dd, .info-cell, .field-error, .empty-state) { overflow-wrap: anywhere; }
+.security-console :is(pre, .table-scroll) { max-width: 100%; }
+.security-console .empty-state {
+  border: 1px dashed #bacad6;
+  border-radius: 9px;
+  background: #f6f9fb;
+  color: #41596d;
+}
+.security-console :is(input, select, textarea) {
+  max-width: 100%;
+  min-width: 0;
+  color: var(--console-ink);
+}
+.security-console :is(input, select, textarea)[aria-invalid="true"],
+.login-panel input[aria-invalid="true"] { border-color: #a82b32; }
+.security-console :is(.secondary-action, .button-row button, .quick-actions button):not(.danger-action) {
+  min-height: 38px;
+}
+.security-console button.secondary-action:not([class*="danger"]):hover:not(:disabled) {
+  border-color: #9bb8b6;
+  background-color: #f0f7f6;
+  color: #173f3b;
+}
+:is(.security-console, .login-shell) :is(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--console-focus);
+  outline-offset: 3px;
+}
+.security-console .console-sidebar :is(a, button):focus-visible { outline-color: #91e9d1; }
+
+.console-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  min-height: 42px;
+  padding: .55rem .85rem;
+  border: 1px solid var(--console-accent);
+  border-radius: 8px;
+  background: var(--console-accent);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+.console-primary:hover:not(:disabled) { background: #085951; border-color: #085951; }
+
+.app-shell.login-shell {
+  width: 100%;
+  padding: 24px;
+  display: grid;
+  place-items: center;
+  background: #ecf2f6;
+}
+.login-layout {
+  display: grid;
+  grid-template-columns: minmax(235px, .9fr) minmax(300px, 1fr);
+  width: min(100%, 800px);
+  overflow: hidden;
+  border: 1px solid var(--console-line);
+  border-radius: 18px;
+  background: var(--console-surface);
+  box-shadow: 0 18px 60px rgb(21 56 78 / 12%);
+}
+.login-intro {
+  display: grid;
+  align-content: center;
+  gap: 10px;
+  min-height: 400px;
+  padding: clamp(25px, 5vw, 48px);
+  background: #112c3f;
+  color: #d1e1ed;
+}
+.login-intro .console-brand-icon { margin-bottom: 15px; }
+.login-intro h2 { color: #fff; font-size: clamp(1.5rem, 4vw, 2.1rem); line-height: 1.13; }
+.login-intro :is(h2, p) { margin: 0; }
+.login-intro p:first-of-type { color: #b9ded5; font-size: .81rem; font-weight: 700; }
+.login-layout .login-panel {
+  align-self: center;
+  width: 100%;
+  padding: clamp(23px, 5vw, 48px);
+  border: 0;
+  background: transparent;
+}
+.login-layout h1 { font-size: 1.8rem; margin: 0 0 5px; line-height: 1.2; }
+.login-description { color: var(--console-muted); margin-bottom: 22px; }
+.login-form .console-primary { justify-self: stretch; margin-top: 2px; }
+.session-loading { display: grid; min-height: 100vh; place-items: center; }
+
+.security-console .dashboard-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 19px; }
+.security-console .dashboard-priority { margin-bottom: 16px; }
+.security-console .dashboard-priority-card { padding: 16px; }
+.security-console .dashboard-priority-card[data-tone="attention"] { border-top: 3px solid #ad6716; }
+.security-console .dashboard-priority-card[data-tone="restricted"] { border-top: 3px solid #a0444a; }
+.security-console .dashboard-priority-card[data-tone="neutral"] { border-top: 3px solid #497885; }
+.security-console .dashboard-priority-card > strong { font-variant-numeric: tabular-nums; letter-spacing: -.025em; }
+.security-console .dashboard-status-heading { justify-content: space-between; align-items: baseline; margin: 0 0 10px; }
+.security-console .dashboard-status-heading h3 { margin: 0; }
+.security-console .dashboard-layout { align-items: start; margin-top: 16px; }
+
+@media (max-width: 1020px) {
+  .app-shell.security-console { grid-template-columns: 196px minmax(0, 1fr); }
+  .console-header .session-user { max-width: 12rem; }
+}
+@media (max-width: 760px) {
+  .app-shell.security-console { display: flex; flex-direction: column; }
+  .security-console .console-sidebar {
+    position: static;
+    align-self: stretch;
+    height: auto;
+    overflow: visible;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 12px 16px;
+  }
+  .security-console .console-brand { padding: 0; }
+  .security-console .mobile-nav-toggle {
+    display: flex;
+    align-items: center;
+    min-height: 42px;
+    width: auto;
+    margin: 0;
+    color: #effffa;
+    border: 1px solid #527486;
+    background: #1c3b50;
+    white-space: nowrap;
+  }
+  .security-console .mobile-nav-toggle strong { display: none; }
+  .security-console .app-nav { display: none; }
+  .security-console .app-nav.mobile-open {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin: 6px 0 0;
+  }
+  .security-console .console-header { min-height: 56px; }
+}
+@media (max-width: 520px) {
+  .security-console .console-header { gap: 6px; align-items: stretch; flex-direction: column; }
+  .console-header .session-actions { justify-content: flex-start; gap: 6px; }
+  .console-header .session-user { justify-items: start; margin-right: auto; max-width: 100%; }
+  .console-header .session-actions button { padding: 6px 9px; font-size: .85rem; }
+  .app-shell.login-shell { padding: 14px; }
+  .login-layout { grid-template-columns: minmax(0, 1fr); }
+  .login-intro { min-height: 0; padding: 21px 24px; gap: 4px; }
+  .login-intro .console-brand-icon { margin-bottom: 4px; }
+}

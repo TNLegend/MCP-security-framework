@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import "./workflowPages.css";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   archiveServer,
   trustServer,
@@ -12,11 +13,11 @@ import {
   registerOAuthMcpServer,
   startOAuthConnection,
 } from "../api/client";
+import { useDialogFocus } from "../utils/useDialogFocus";
 import { buildGovernedEndpoint } from "../utils/gateway";
 import { Pagination, usePagination } from "../components/Pagination";
 import {
   LIMITS,
-  activateRowOnKeyboard,
   clearFieldError,
   discoverySubmissionArguments,
   oauthMcpRegistrationPayload,
@@ -62,6 +63,10 @@ function Inventory({
   const [buildSourceError, setBuildSourceError] = useState("");
   const [inventorySearch, setInventorySearch] = useState("");
   const [buildSourceFilter, setBuildSourceFilter] = useState("ALL");
+  const [serverSort, setServerSort] = useState("DEFAULT");
+  const [toolSearch, setToolSearch] = useState("");
+  const archiveRef = useRef(null);
+  const trustRef = useRef(null);
 
   useEffect(() => {
     if (!archiveDialog && !trustDialog) {
@@ -100,6 +105,9 @@ function Inventory({
     () => visibleServers.find((server) => server.id === selectedServerId) || null,
     [selectedServerId, visibleServers],
   );
+
+  useDialogFocus(Boolean(archiveDialog && isAdmin && selectedServer?.id === archiveDialog.serverId), archiveRef);
+  useDialogFocus(Boolean(trustDialog && isAdmin && selectedServer?.id === trustDialog.serverId), trustRef);
 
   const selectedServerTools = useMemo(() => {
     if (!selectedServer) {
@@ -146,16 +154,32 @@ function Inventory({
         binding?.source_locator,
         binding?.source_ref,
       ].some((value) => String(value || "").toLowerCase().includes(query));
+    }).sort((left, right) => {
+      if (serverSort === "NAME") return getServerDisplayName(left).localeCompare(getServerDisplayName(right));
+      if (serverSort === "RECENT") {
+        return (Date.parse(right.last_seen_at) || 0) - (Date.parse(left.last_seen_at) || 0);
+      }
+      return 0;
     });
-  }, [buildSourceFilter, inventorySearch, sourceBindings, visibleServers]);
+  }, [buildSourceFilter, inventorySearch, serverSort, sourceBindings, visibleServers]);
+  const filteredServerTools = useMemo(() => {
+    const query = toolSearch.trim().toLowerCase();
+    return query ? selectedServerTools.filter((tool) => [tool.title, tool.name, tool.description].some(
+      (value) => String(value || "").toLowerCase().includes(query),
+    )) : selectedServerTools;
+  }, [selectedServerTools, toolSearch]);
   const serverPagination = usePagination(
     filteredServers,
-    `${includeArchived}|${inventorySearch}|${buildSourceFilter}|${filteredServers.length}`,
+    `${includeArchived}|${inventorySearch}|${buildSourceFilter}|${serverSort}|${filteredServers.length}`,
   );
   const toolPagination = usePagination(
-    selectedServerTools,
-    `${selectedServerId || ""}|${selectedServerTools.length}`,
+    filteredServerTools,
+    `${selectedServerId || ""}|${toolSearch}|${filteredServerTools.length}`,
   );
+
+  useEffect(() => {
+    setToolSearch("");
+  }, [selectedServerId]);
 
   useEffect(() => {
     if (visibleServers.length === 0) {
@@ -281,11 +305,19 @@ function Inventory({
   }
 
   return (
-    <section className="page-section">
+    <section className="page-section inventory-page">
       <div className="section-heading">
-        <h2>MCP tools</h2>
-        <p>{visibleServers.length} server(s), {visibleTools.length} tool(s)</p>
+        <div>
+          <h2>MCP tools</h2>
+          <p>Connect servers, discover tools, and open a tool’s security review.</p>
+        </div>
       </div>
+      <nav aria-label="MCP inventory sections" className="workflow-links">
+        <a href="#inventory-servers">Servers</a>
+        {selectedServer && <a href="#inventory-server-details">Server details</a>}
+        {selectedServer && <a href="#inventory-tools">Tools</a>}
+        {selectedTool && <a href="#inventory-tool-details">Tool details</a>}
+      </nav>
 
       {isAdmin && (
         <details className="operator-technical-details inventory-add-server">
@@ -440,11 +472,11 @@ function Inventory({
               ? (authMode === "OAUTH" ? "Opening authorization..." : "Discovering...")
               : (authMode === "OAUTH" ? "Register and connect OAuth" : "Connect server")}
           </button>
-          {discoverResult && <span className="success-text">{discoverResult}</span>}
-          {discoverError && <span className="error-text">{discoverError}</span>}
           </form>
         </details>
       )}
+      {discoverResult && <div className="success-banner" role="status">{discoverResult}</div>}
+      {discoverError && <div className="error-banner" role="alert">{discoverError}</div>}
 
       <div className="summary-grid inventory-summary-grid">
         <SummaryCard label="Servers" value={visibleServers.length} />
@@ -461,10 +493,10 @@ function Inventory({
       </details>
 
       <div className="inventory-layout">
-        <div className="inventory-section">
+        <section id="inventory-servers" className="inventory-section" aria-labelledby="inventory-servers-title">
           <div className="section-heading compact-heading">
             <div>
-              <h3>MCP Servers</h3>
+              <h3 id="inventory-servers-title">MCP Servers</h3>
               <p>{filteredServers.length} shown · {visibleServers.length} available</p>
             </div>
             <label className="toggle-control">
@@ -496,16 +528,30 @@ function Inventory({
               <option value="GIT_REPOSITORY">Git sources</option>
               <option value="UNCONFIGURED">Source not configured</option>
             </select>
+            <select aria-label="Sort MCP servers" value={serverSort}
+              onChange={(event) => setServerSort(event.target.value)}>
+              <option value="DEFAULT">Default order</option>
+              <option value="NAME">Name A to Z</option>
+              <option value="RECENT">Most recently seen</option>
+            </select>
           </div>
           {buildSourceError && <div className="error-text">{buildSourceError}</div>}
-          <ServerTable
+          {filteredServers.length === 0 && visibleServers.length > 0 ? (
+            <div className="empty-state">
+              <p>No servers match the current filters.</p>
+              <button className="secondary-action" onClick={() => {
+                setInventorySearch("");
+                setBuildSourceFilter("ALL");
+              }} type="button">Clear filters</button>
+            </div>
+          ) : <ServerTable
             isAdmin={isAdmin}
             servers={serverPagination.pageItems}
             sourceBindings={sourceBindings}
             tools={visibleTools}
             selectedServerId={selectedServerId}
             onSelectServer={setSelectedServerId}
-          />
+          />}
           <Pagination
             label="MCP servers"
             onPageChange={serverPagination.setPage}
@@ -513,7 +559,7 @@ function Inventory({
             pageCount={serverPagination.pageCount}
             total={serverPagination.total}
           />
-        </div>
+        </section>
 
         {selectedServer ? (
           <ServerDetailPanel
@@ -530,9 +576,9 @@ function Inventory({
             onConnectOAuth={() => handleConnectOAuth(selectedServer)}
             onDisconnectOAuth={() => handleDisconnectOAuth(selectedServer)}
             onDiscover={() => handleDiscoverRegistered(selectedServer)}
-            onArchive={() => setArchiveDialog({ reason: "", error: "" })}
-            onTrust={() => setTrustDialog({ mode: "trust", reason: "", error: "" })}
-            onRevokeTrust={() => setTrustDialog({ mode: "revoke", reason: "", error: "" })}
+            onArchive={() => setArchiveDialog({ serverId: selectedServer.id, reason: "", error: "" })}
+            onTrust={() => setTrustDialog({ serverId: selectedServer.id, mode: "trust", reason: "", error: "" })}
+            onRevokeTrust={() => setTrustDialog({ serverId: selectedServer.id, mode: "revoke", reason: "", error: "" })}
             server={selectedServer}
             trustChanging={trustChanging}
           />
@@ -541,16 +587,28 @@ function Inventory({
         )}
 
         {selectedServer && (
-          <div className="inventory-section">
+          <section id="inventory-tools" className="inventory-section" aria-labelledby="inventory-tools-title">
             <div className="section-heading compact-heading">
-              <h3>Tools For Selected Server</h3>
-              <p>{selectedServerTools.length} tool(s)</p>
+              <h3 id="inventory-tools-title">Tools for the selected server</h3>
+              <p>{filteredServerTools.length} shown · {selectedServerTools.length} available</p>
             </div>
-            <ToolsTable
+            {selectedServerTools.length > 0 && (
+              <div className="inventory-source-controls">
+                <input aria-label="Search tools on the selected server" type="search"
+                  placeholder="Search tool names or descriptions" value={toolSearch}
+                  onChange={(event) => setToolSearch(event.target.value)} />
+              </div>
+            )}
+            {filteredServerTools.length === 0 && selectedServerTools.length > 0 ? (
+              <div className="empty-state">
+                <p>No tools match this search.</p>
+                <button className="secondary-action" onClick={() => setToolSearch("")} type="button">Clear tool search</button>
+              </div>
+            ) : <ToolsTable
               tools={toolPagination.pageItems}
               selectedToolId={selectedToolId}
               onSelectTool={setSelectedToolId}
-            />
+            />}
             <Pagination
               label="MCP tools"
               onPageChange={toolPagination.setPage}
@@ -558,7 +616,7 @@ function Inventory({
               pageCount={toolPagination.pageCount}
               total={toolPagination.total}
             />
-          </div>
+          </section>
         )}
 
         {selectedTool && (
@@ -571,11 +629,12 @@ function Inventory({
           />
         )}
       </div>
-      {archiveDialog && (
+      {isAdmin && archiveDialog && selectedServer?.id === archiveDialog.serverId && (
         <div className="modal-backdrop" role="presentation">
-          <section aria-modal="true" className="modal-panel" role="dialog">
-            <h3>Archive MCP Server</h3>
-            <p>{getServerDisplayName(selectedServer)}</p>
+          <section aria-modal="true" aria-labelledby="inventory-archive-title" className="modal-panel" ref={archiveRef} role="dialog" tabIndex={-1}>
+            <h3 id="inventory-archive-title">Archive MCP Server</h3>
+            <p>Server: {getServerDisplayName(selectedServer)}</p>
+            <p>Archived servers are listed when you select Include archived.</p>
             <form onSubmit={handleArchive}>
               <label>
                 Reason
@@ -584,7 +643,7 @@ function Inventory({
                   aria-invalid={Boolean(archiveDialog.error)}
                   maxLength={LIMITS.reasonMax}
                   minLength={LIMITS.reasonMin}
-                  onChange={(event) => setArchiveDialog({ reason: event.target.value, error: "" })}
+                  onChange={(event) => setArchiveDialog({ ...archiveDialog, reason: event.target.value, error: "" })}
                   required
                   value={archiveDialog.reason}
                 />
@@ -602,10 +661,10 @@ function Inventory({
           </section>
         </div>
       )}
-      {trustDialog && (
+      {isAdmin && trustDialog && selectedServer?.id === trustDialog.serverId && (
         <div className="modal-backdrop" role="presentation">
-          <section aria-modal="true" className="modal-panel" role="dialog">
-            <h3>{trustDialog.mode === "trust" ? "Trust MCP Server" : "Revoke MCP Server Trust"}</h3>
+          <section aria-modal="true" aria-labelledby="inventory-trust-title" className="modal-panel" ref={trustRef} role="dialog" tabIndex={-1}>
+            <h3 id="inventory-trust-title">{trustDialog.mode === "trust" ? "Trust MCP Server" : "Revoke MCP Server Trust"}</h3>
             <p>{getServerDisplayName(selectedServer)}</p>
             <form onSubmit={handleTrustChange}>
               <label>
@@ -754,7 +813,7 @@ function Inventory({
 
   async function handleTrustChange(event) {
     event.preventDefault();
-    if (!selectedServer || !trustDialog || trustChanging) return;
+    if (!isAdmin || !trustDialog || selectedServer?.id !== trustDialog.serverId || trustChanging) return;
     const reasonError = validateReason(trustDialog.reason);
     if (reasonError) {
       setTrustDialog({ ...trustDialog, error: reasonError });
@@ -779,7 +838,7 @@ function Inventory({
 
   async function handleArchive(event) {
     event.preventDefault();
-    if (!selectedServer || !archiveDialog || archiving) return;
+    if (!isAdmin || !archiveDialog || selectedServer?.id !== archiveDialog.serverId || archiving) return;
     const reasonError = validateReason(archiveDialog.reason);
     if (reasonError) {
       setArchiveDialog({ ...archiveDialog, error: reasonError });
@@ -822,7 +881,7 @@ function ServerTable({
   }
 
   return (
-    <div className="table-shell inventory-table">
+    <div className="table-shell inventory-table" role="region" tabIndex={0} aria-label="Inventory table">
       <table>
         <thead>
           <tr>
@@ -847,13 +906,11 @@ function ServerTable({
                 className={server.id === selectedServerId ? "selected-row" : ""}
                 key={server.id}
                 onClick={() => onSelectServer(server.id)}
-                onKeyDown={(event) =>
-                  activateRowOnKeyboard(event, () => onSelectServer(server.id))
-                }
-                role="button"
-                tabIndex="0"
               >
-                <td>{getServerDisplayName(server)}</td>
+                <td><button className="table-selection" aria-pressed={server.id === selectedServerId}
+                  onClick={(event) => { event.stopPropagation(); onSelectServer(server.id); }} type="button">
+                  {getServerDisplayName(server)}
+                </button></td>
                 <td><code className="inventory-endpoint-cell">{displayValue(server.endpoint)}</code></td>
                 <td>
                   {isAdmin ? (
@@ -899,7 +956,7 @@ function ToolsTable({ tools, selectedToolId, onSelectTool }) {
   }
 
   return (
-    <div className="table-shell inventory-table">
+    <div className="table-shell inventory-table" role="region" tabIndex={0} aria-label="Inventory table">
       <table>
         <thead>
           <tr>
@@ -918,13 +975,11 @@ function ToolsTable({ tools, selectedToolId, onSelectTool }) {
               className={tool.id === selectedToolId ? "selected-row" : ""}
               key={tool.id}
               onClick={() => onSelectTool(tool.id)}
-              onKeyDown={(event) =>
-                activateRowOnKeyboard(event, () => onSelectTool(tool.id))
-              }
-              role="button"
-              tabIndex="0"
             >
-              <td>{getToolDisplayName(tool)}</td>
+              <td><button className="table-selection" aria-pressed={tool.id === selectedToolId}
+                onClick={(event) => { event.stopPropagation(); onSelectTool(tool.id); }} type="button">
+                {getToolDisplayName(tool)}
+              </button></td>
               <td>{displayValue(tool.description)}</td>
               <td>
                 <Badge value={tool.sensitivity} />
@@ -967,7 +1022,7 @@ function ServerDetailPanel({
   const isOAuth = server.auth_mode === "OAUTH";
   const canDiscover = canManageServer && server.status !== "archived" && (!isOAuth || server.oauth_status === "CONNECTED");
   return (
-    <div className="detail-panel">
+    <div className="detail-panel" id="inventory-server-details">
       <div className="detail-heading">
         <h3>{getServerDisplayName(server)}</h3>
         <div className="button-row compact-actions">
@@ -1086,9 +1141,9 @@ function ToolDetailPanel({ tool, analysis, analysisError, analysisLoading, onOpe
   return (
     <div className="detail-panel">
       <div className="detail-heading">
-        <h3>{getToolDisplayName(tool)}</h3>
+        <h3 id="inventory-tool-details">{getToolDisplayName(tool)}</h3>
         <button className="tiny-action" onClick={onOpenAnalysis} type="button">
-          Open Tool Analysis
+          Open security review
         </button>
       </div>
       <div className="metadata-grid">

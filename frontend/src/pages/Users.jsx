@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Pagination, usePagination } from "../components/Pagination";
 import { useDialogFocus } from "../utils/useDialogFocus";
@@ -27,6 +27,9 @@ function Users({ users = [], loading = false, onRefresh }) {
     role: "VIEWER",
     display_name: "",
   });
+  const [accountSearch, setAccountSearch] = useState("");
+  const [accountRole, setAccountRole] = useState("");
+  const [accountStatus, setAccountStatus] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -43,7 +46,15 @@ function Users({ users = [], loading = false, onRefresh }) {
   const mutationLockRef = useRef(false);
   const modalRef = useRef(null);
   useDialogFocus(Boolean(resetTarget || actionDialog), modalRef);
-  const userPagination = usePagination(users, String(users.length));
+  const visibleUsers = useMemo(() => {
+    const term = accountSearch.trim().toLowerCase();
+    return users.filter((user) =>
+      (!term || [user.username, user.display_name].some((value) => value?.toLowerCase().includes(term))) &&
+      (!accountRole || user.role === accountRole) &&
+      (!accountStatus || user.enabled === (accountStatus === "enabled"))
+    );
+  }, [users, accountSearch, accountRole, accountStatus]);
+  const userPagination = usePagination(visibleUsers, JSON.stringify([users.length, accountSearch, accountRole, accountStatus]));
 
   useEffect(() => {
     if (!resetTarget && !actionDialog) {
@@ -261,7 +272,7 @@ function Users({ users = [], loading = false, onRefresh }) {
     });
   }
 
-  if (loading) {
+  if (loading && users.length === 0) {
     return (
       <section className="page-section">
         <div className="section-heading">
@@ -278,11 +289,134 @@ function Users({ users = [], loading = false, onRefresh }) {
         <h2>Users</h2>
         <p>{users.length} user(s)</p>
       </div>
-      {message && <div className="success-banner">{message}</div>}
-      {error && <div className="error-banner">{error}</div>}
+      {message && <div className="success-banner" role="status">{message}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
 
-      <div className="users-layout">
-        <form className="action-panel user-create-panel" onSubmit={create}>
+      <nav aria-label="User management sections" className="management-jump-links">
+        <a href="#user-directory">User directory</a>
+        <a href="#create-user">Create user</a>
+      </nav>
+      <div className="users-layout account-layout">
+        <section aria-labelledby="user-directory-title" className="account-directory" id="user-directory">
+          <div className="section-heading compact-heading">
+            <h3 id="user-directory-title">User directory</h3>
+            <p role="status">{visibleUsers.length} of {users.length} accounts</p>
+          </div>
+          <div className="filter-bar management-filters">
+            <label>
+              Find an account
+              <input onChange={(event) => setAccountSearch(event.target.value)} placeholder="Username or display name" type="search" value={accountSearch} />
+            </label>
+            <label>
+              Filter by role
+              <select onChange={(event) => setAccountRole(event.target.value)} value={accountRole}>
+                <option value="">All roles</option><option value="ADMIN">Admin</option><option value="VIEWER">Viewer</option>
+              </select>
+            </label>
+            <label>
+              Account status
+              <select onChange={(event) => setAccountStatus(event.target.value)} value={accountStatus}>
+                <option value="">All statuses</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option>
+              </select>
+            </label>
+            {(accountSearch || accountRole || accountStatus) && <button onClick={() => { setAccountSearch(""); setAccountRole(""); setAccountStatus(""); }} type="button">Clear filters</button>}
+          </div>
+          <div aria-label="User accounts table" className="table-shell users-table" tabIndex={0}>
+        <table>
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Role</th>
+              <th>Enabled</th>
+              <th>Last login</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleUsers.length === 0 ? (
+              <tr>
+                <td colSpan="5">{users.length ? "No accounts match these filters." : "No users."}</td>
+              </tr>
+            ) : (
+              userPagination.pageItems.map((user) => {
+                const finalAdmin = isFinalEnabledAdmin(user, users);
+                const lastAdminReason = finalAdmin
+                  ? "At least one enabled ADMIN is required."
+                  : undefined;
+                return (
+                  <tr key={user.id}>
+                    <td>
+                      <strong>{user.username}</strong>
+                      <small>{user.display_name || ""}</small>
+                    </td>
+                    <td>
+                      <span className="badge badge-muted">{user.role}</span>
+                    </td>
+                    <td><span className={user.enabled ? "badge badge-success" : "badge badge-muted"}>{user.enabled ? "Enabled" : "Disabled"}</span></td>
+                    <td>{formatDate(user.last_login_at)}</td>
+                    <td>
+                      <details className="user-row-actions">
+                        <summary>Manage account</summary>
+                        <div className="button-row compact-buttons">
+                        <button
+                          disabled={Boolean(busyAction) || (user.role === "ADMIN" && finalAdmin)}
+                          onClick={() => run("role", user)}
+                          title={user.role === "ADMIN" ? lastAdminReason : undefined}
+                          type="button"
+                        >
+                          Make {user.role === "ADMIN" ? "VIEWER" : "ADMIN"}
+                        </button>
+                        {user.enabled ? (
+                          <button
+                            disabled={Boolean(busyAction) || finalAdmin}
+                            onClick={() => run("disable", user)}
+                            title={lastAdminReason}
+                            type="button"
+                          >
+                            Disable
+                          </button>
+                        ) : (
+                          <button
+                            disabled={Boolean(busyAction)}
+                            onClick={() => run("enable", user)}
+                            type="button"
+                          >
+                            Enable
+                          </button>
+                        )}
+                        <button
+                          disabled={Boolean(busyAction)}
+                          onClick={() => run("reset", user)}
+                          type="button"
+                        >
+                          Reset Password
+                        </button>
+                        <button
+                          disabled={Boolean(busyAction)}
+                          onClick={() => run("revoke", user)}
+                          type="button"
+                        >
+                          Revoke Sessions
+                        </button>
+                        </div>
+                      </details>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+        </div>
+        <Pagination
+          label="Users"
+          onPageChange={userPagination.setPage}
+          page={userPagination.page}
+          pageCount={userPagination.pageCount}
+          total={userPagination.total}
+        />
+        </section>
+        <form className="action-panel user-create-panel" id="create-user" onSubmit={create}>
           <h3>Create user</h3>
           <p className="hint-text">Viewer: read-only. Admin: can change security settings.</p>
           <label>
@@ -363,100 +497,6 @@ function Users({ users = [], loading = false, onRefresh }) {
           </button>
         </form>
 
-        <div className="table-shell users-table">
-        <table>
-          <thead>
-            <tr>
-              <th>Username</th>
-              <th>Role</th>
-              <th>Enabled</th>
-              <th>Last login</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.length === 0 ? (
-              <tr>
-                <td colSpan="5">No users.</td>
-              </tr>
-            ) : (
-              userPagination.pageItems.map((user) => {
-                const finalAdmin = isFinalEnabledAdmin(user, users);
-                const lastAdminReason = finalAdmin
-                  ? "At least one enabled ADMIN is required."
-                  : undefined;
-                return (
-                  <tr key={user.id}>
-                    <td>
-                      <strong>{user.username}</strong>
-                      <small>{user.display_name || ""}</small>
-                    </td>
-                    <td>
-                      <span className="badge badge-muted">{user.role}</span>
-                    </td>
-                    <td>{user.enabled ? "yes" : "no"}</td>
-                    <td>{formatDate(user.last_login_at)}</td>
-                    <td>
-                      <details className="user-row-actions">
-                        <summary>Manage account</summary>
-                        <div className="button-row compact-buttons">
-                        <button
-                          disabled={Boolean(busyAction) || (user.role === "ADMIN" && finalAdmin)}
-                          onClick={() => run("role", user)}
-                          title={user.role === "ADMIN" ? lastAdminReason : undefined}
-                          type="button"
-                        >
-                          Make {user.role === "ADMIN" ? "VIEWER" : "ADMIN"}
-                        </button>
-                        {user.enabled ? (
-                          <button
-                            disabled={Boolean(busyAction) || finalAdmin}
-                            onClick={() => run("disable", user)}
-                            title={lastAdminReason}
-                            type="button"
-                          >
-                            Disable
-                          </button>
-                        ) : (
-                          <button
-                            disabled={Boolean(busyAction)}
-                            onClick={() => run("enable", user)}
-                            type="button"
-                          >
-                            Enable
-                          </button>
-                        )}
-                        <button
-                          disabled={Boolean(busyAction)}
-                          onClick={() => run("reset", user)}
-                          type="button"
-                        >
-                          Reset Password
-                        </button>
-                        <button
-                          disabled={Boolean(busyAction)}
-                          onClick={() => run("revoke", user)}
-                          type="button"
-                        >
-                          Revoke Sessions
-                        </button>
-                        </div>
-                      </details>
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-        </div>
-        <Pagination
-          label="Users"
-          onPageChange={userPagination.setPage}
-          page={userPagination.page}
-          pageCount={userPagination.pageCount}
-          total={userPagination.total}
-        />
       </div>
       {resetTarget && (
         <div className="modal-backdrop" role="presentation">

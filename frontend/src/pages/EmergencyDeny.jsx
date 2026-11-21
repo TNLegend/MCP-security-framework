@@ -41,6 +41,7 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
     reason: "Emergency deny from Control Center",
     expires_at: futureLocalDateTime(),
   });
+  const [scopeFilter, setScopeFilter] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -60,7 +61,8 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
   }, [pendingCreate]);
-  const denyPagination = usePagination(denies, String(denies.length));
+  const visibleDenies = scopeFilter ? denies.filter((deny) => deny.target_type === scopeFilter) : denies;
+  const denyPagination = usePagination(visibleDenies, JSON.stringify([denies.length, scopeFilter]));
 
   async function submit(event) {
     event.preventDefault();
@@ -133,7 +135,7 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
     setFieldErrors((current) => clearFieldError(current, field));
   }
 
-  if (loading) {
+  if (loading && denies.length === 0) {
     return (
       <section className="page-section">
         <div className="section-heading">
@@ -150,12 +152,20 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
         <h2>Emergency block</h2>
         <p>{denies.length} record(s)</p>
       </div>
-      {message && <div className="success-banner">{message}</div>}
-      {error && <div className="error-banner">{error}</div>}
+      {message && <div className="success-banner" role="status">{message}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
 
       <p className="hint-text" role="note">Temporarily block tools, servers or users from making MCP calls.</p>
+      <nav aria-label="Emergency block sections" className="management-jump-links">
+        {isAdmin && <a href="#new-emergency-block">Create a block</a>}
+        <a href="#emergency-block-records">Block records</a>
+      </nav>
       {isAdmin && (
-        <form className="action-panel form-grid" onSubmit={submit}>
+        <form className="action-panel form-grid" id="new-emergency-block" onSubmit={submit}>
+          <div className="wide-field">
+            <h3>Create a temporary block</h3>
+            <p className="hint-text">Choose the scope and expiry. You can review the details before applying the block.</p>
+          </div>
           <label>
             Restriction scope
             <select
@@ -287,7 +297,17 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
         </div>
       )}
 
-      <div className="table-shell">
+      <div className="section-heading compact-heading" id="emergency-block-records">
+        <div><h3>Block records</h3><p role="status">{visibleDenies.length} of {denies.length} records</p></div>
+        <label>
+          Filter by scope
+          <select onChange={(event) => setScopeFilter(event.target.value)} value={scopeFilter}>
+            <option value="">All scopes</option>
+            {TARGET_TYPES.map((scope) => <option key={scope} value={scope}>{TARGET_LABELS[scope]}</option>)}
+          </select>
+        </label>
+      </div>
+      <div aria-label="Emergency block records table" className="table-shell" tabIndex={0}>
         <table>
           <thead>
             <tr>
@@ -300,14 +320,14 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
             </tr>
           </thead>
           <tbody>
-            {denies.length === 0 ? (
+            {visibleDenies.length === 0 ? (
               <tr>
-                <td colSpan="6">No Emergency Deny records.</td>
+                <td colSpan="6">{scopeFilter ? "No block records match this scope." : "No Emergency Deny records."}</td>
               </tr>
             ) : (
               denyPagination.pageItems.map((deny) => (
                 <tr key={deny.id}>
-                  <td>{deny.target_type}</td>
+                  <td><span title={deny.target_type}>{TARGET_LABELS[deny.target_type] || deny.target_type}</span></td>
                   <td>{targetValue(deny)}</td>
                   <td>{deny.reason}</td>
                   <td>{formatDate(deny.created_at)}</td>

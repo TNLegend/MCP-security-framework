@@ -54,14 +54,45 @@ const EMPTY_RUNTIME_LOG_PAGE = {
   summary: { total: 0, allowed: 0, blocked: 0, executed: 0, skipped: 0, errors: 0 },
 };
 
+function pageFromLocation() {
+  const view = new URLSearchParams(window.location.search).get("view");
+  return pages.some((page) => page.id === view) ? view : "dashboard";
+}
+
+const navIcons = {
+  dashboard: "M3 10.5 12 3l9 7.5V20H3z M9 20v-6h6v6",
+  inventory: "M4 4h16v6H4z M4 14h16v6H4z M7 7h.01 M7 17h.01",
+  analysis: "M12 22s7-3 7-10V6l-7-3-7 3v6c0 7 7 10 7 10z M9 12l2 2 4-4",
+  build: "m8 6-5 6 5 6m8-12 5 6-5 6m-3-15-2 18",
+  cloud: "M7 18h11a4 4 0 1 0-.7-7.9A5.5 5.5 0 0 0 6.6 10 4 4 0 0 0 7 18z",
+  config: "M4 6h16M4 12h16M4 18h16 M8 4v4m8 2v4m-6 2v4",
+  emergency: "M8 3h8l5 5v8l-5 5H8l-5-5V8z M12 7v6m0 4h.01",
+  runtime: "M3 12h4l3-7 4 14 3-7h4",
+  operations: "M4 18v-5m5 5V6m5 12v-8m5 8V4M3 21h18",
+  audit: "M7 3h8l4 4v14H5V3z M14 3v5h5M8 12h8m-8 4h8",
+  users: "M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2 M21 21v-2a4 4 0 0 0-3-4 M13 7a3 3 0 1 1-6 0 3 3 0 0 1 6 0z M16 4a3 3 0 0 1 0 6",
+};
+
+function NavigationIcon({ page }) {
+  return (
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d={navIcons[page]} />
+    </svg>
+  );
+}
+
 function App() {
-  const [activePage, setActivePage] = useState("dashboard");
+  const [requestedPage, setActivePage] = useState(pageFromLocation);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const mobileNavButtonRef = useRef(null);
   const [analysisEntryToolId, setAnalysisEntryToolId] = useState(null);
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [loginError, setLoginError] = useState("");
+  const [logoutError, setLogoutError] = useState("");
+  const [signingOut, setSigningOut] = useState(false);
+  const [readStates, setReadStates] = useState({});
   const [health, setHealth] = useState(null);
   const [runtimeStatus, setRuntimeStatus] = useState(null);
   const [operationsSummary, setOperationsSummary] = useState(null);
@@ -79,6 +110,8 @@ function App() {
   const [loading, setLoading] = useState(true);
   const loadDataGeneration = useRef(0);
   const isAdmin = user?.role === "ADMIN";
+  const activePage = requestedPage === "users" && !isAdmin ? "dashboard" : requestedPage;
+  const currentPage = pages.find((page) => page.id === activePage);
   const activeServers = useMemo(
     () => servers.filter((server) => server.status !== "archived"),
     [servers],
@@ -103,6 +136,14 @@ function App() {
   function navigateToPage(pageId, toolId = null) {
     setMobileNavOpen(false);
     setAnalysisEntryToolId(pageId === "analysis" ? toolId : null);
+    if (pageId !== pageFromLocation()) {
+      const url = new URL(window.location.href);
+      if (pageId === "dashboard") url.searchParams.delete("view");
+      else url.searchParams.set("view", pageId);
+      url.hash = "";
+      window.history.pushState(null, "", url);
+      window.scrollTo({ top: 0, behavior: "instant" });
+    }
     setActivePage(pageId);
   }
 
@@ -135,8 +176,18 @@ function App() {
   }
 
   async function handleLogout() {
-    await logoutControlPlane();
-    setUser(null);
+    setSigningOut(true);
+    setLogoutError("");
+    try {
+      await logoutControlPlane();
+      loadDataGeneration.current += 1;
+      setReadStates({});
+      setUser(null);
+    } catch (err) {
+      setLogoutError(err.message || "Sign out failed. Please try again.");
+    } finally {
+      setSigningOut(false);
+    }
   }
 
   async function loadData() {
@@ -192,10 +243,20 @@ function App() {
       // Display each completed read as it arrives. Slow/failed unrelated services
       // must not keep the inventory or security review behind a global spinner.
       // The generation fence prevents an older refresh from replacing newer data.
-      const settled = await Promise.allSettled(entries.map(async ([, [, fetcher, setter]]) => {
-        const result = await fetcher();
-        if (generation === loadDataGeneration.current) setter(result);
-        return result;
+      const settled = await Promise.allSettled(entries.map(async ([key, [, fetcher, setter]]) => {
+        try {
+          const result = await fetcher();
+          if (generation === loadDataGeneration.current) {
+            setter(result);
+            setReadStates((current) => ({ ...current, [key]: "ready" }));
+          }
+          return result;
+        } catch (err) {
+          if (generation === loadDataGeneration.current) {
+            setReadStates((current) => ({ ...current, [key]: "unavailable" }));
+          }
+          throw err;
+        }
       }));
       if (generation !== loadDataGeneration.current) {
         return;
@@ -231,7 +292,20 @@ function App() {
 
   useEffect(() => {
     restoreSession();
+    function onHistoryChange() {
+      setActivePage(pageFromLocation());
+      setAnalysisEntryToolId(null);
+      setMobileNavOpen(false);
+    }
+    window.addEventListener("popstate", onHistoryChange);
+    return () => window.removeEventListener("popstate", onHistoryChange);
   }, []);
+
+  function closeMobileNavigation(event) {
+    if (event.key !== "Escape" || !mobileNavOpen) return;
+    setMobileNavOpen(false);
+    mobileNavButtonRef.current?.focus();
+  }
 
   useEffect(() => {
     if (user) {
@@ -343,12 +417,14 @@ function App() {
         runtimeLogs={runtimeLogPage.items}
         runtimeStatus={runtimeStatus}
         loading={loading}
+        readStates={readStates}
         onNavigate={navigateToPage}
       />
     );
   }, [
     activePage,
     analysisEntryToolId,
+    readStates,
     activeServers,
     activeToolAnalyses,
     activeTools,
@@ -367,7 +443,7 @@ function App() {
   ]);
 
   if (authLoading) {
-    return <div className="app-shell">Loading session...</div>;
+    return <main className="app-shell session-loading" role="status">Checking your session…</main>;
   }
 
   if (!user) {
@@ -375,31 +451,13 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <div>
-          <p className="eyebrow">MCP Security Framework</p>
-          <h1>Security center</h1>
+    <div className="app-shell security-console" onKeyDown={closeMobileNavigation}>
+      <a className="skip-navigation" href="#main-content">Skip to content</a>
+      <aside className="console-sidebar">
+        <div className="console-brand">
+          <span className="console-brand-icon"><NavigationIcon page="analysis" /></span>
+          <div><strong>Security Center</strong><span>MCP Security Framework</span></div>
         </div>
-        <div className="session-actions">
-          <div className="session-user">
-            <strong>{user.username}</strong>
-            <span>{user.role}</span>
-          </div>
-          <button
-            className="secondary-action"
-            disabled={loading}
-            onClick={loadData}
-            type="button"
-          >
-            {loading ? "Refreshing..." : "Refresh"}
-          </button>
-          <button className="secondary-action" onClick={handleLogout} type="button">
-            Logout
-          </button>
-        </div>
-      </header>
-
       <button
         ref={mobileNavButtonRef}
         className="mobile-nav-toggle secondary-action"
@@ -428,13 +486,14 @@ function App() {
                     key={page.id}
                     onClick={() => {
                       navigateToPage(page.id);
-                      if (window.matchMedia("(max-width: 600px)").matches) {
+                      if (window.matchMedia("(max-width: 760px)").matches) {
                         mobileNavButtonRef.current?.focus();
                       }
                     }}
                     type="button"
                   >
-                    {page.label}
+                    <NavigationIcon page={page.id} />
+                    <span>{page.label}</span>
                   </button>
                 ))}
               </div>
@@ -443,9 +502,30 @@ function App() {
         })}
       </nav>
 
-      {error && <div className="error-banner">{error}</div>}
-
-      <main>{pageContent}</main>
+      </aside>
+      <header className="app-header console-header">
+        <div className="console-location">
+          {currentPage.group !== currentPage.label && <span>{currentPage.group}</span>}
+          <strong>{currentPage.label}</strong>
+        </div>
+        <div className="session-actions">
+          <div className="session-user">
+            <strong>{user.username}</strong>
+            <span>{user.role === "ADMIN" ? "Administrator" : "Viewer"}</span>
+          </div>
+          <button className="secondary-action" disabled={loading || signingOut} onClick={loadData} type="button">
+            {loading ? "Refreshing…" : "Refresh"}
+          </button>
+          <button className="secondary-action" disabled={signingOut} onClick={handleLogout} type="button">
+            {signingOut ? "Signing out…" : "Sign out"}
+          </button>
+        </div>
+      </header>
+      <main id="main-content" className="console-content" tabIndex={-1}>
+        <h1 className="visually-hidden">Security center</h1>
+        {(error || logoutError) && <div className="error-banner" role="alert">{logoutError || error}</div>}
+        {pageContent}
+      </main>
     </div>
   );
 }
@@ -478,11 +558,18 @@ function LoginView({ error, onLogin }) {
   }
 
   return (
-    <div className="app-shell login-shell">
-      <section className="login-panel">
-        <p className="eyebrow">MCP Security Framework</p>
-        <h1>Control Plane Login</h1>
-        {error && <div className="error-banner">{error}</div>}
+    <main className="app-shell login-shell">
+      <div className="login-layout">
+        <div className="login-intro">
+          <span className="console-brand-icon"><NavigationIcon page="analysis" /></span>
+          <p>MCP Security Framework</p>
+          <h2>Security Center</h2>
+          <p>Review MCP tools, cloud permissions and runtime activity in one place.</p>
+        </div>
+        <section className="login-panel" aria-labelledby="sign-in-heading">
+          <h1 id="sign-in-heading">Sign in</h1>
+          <p className="login-description">Use your Security Center account.</p>
+          {error && <div className="error-banner" role="alert">{error}</div>}
         <form onSubmit={submit} className="login-form">
           <label>
             Username
@@ -518,12 +605,13 @@ function LoginView({ error, onLogin }) {
             />
             <FieldError id="login-password-error" message={fieldErrors.password} />
           </label>
-          <button className="secondary-action" disabled={busy} type="submit">
-            {busy ? "Logging in..." : "Login"}
+          <button className="console-primary" disabled={busy} type="submit">
+            {busy ? "Signing in…" : "Sign in"}
           </button>
         </form>
-      </section>
-    </div>
+        </section>
+      </div>
+    </main>
   );
 }
 

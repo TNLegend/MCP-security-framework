@@ -1,0 +1,106 @@
+.workflow-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .45rem 1rem;
+  padding: .55rem 0;
+  border-block: 1px solid var(--line, #d6dfeb);
+}
+
+.workflow-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: .15rem .35rem;
+  color: var(--link, #164d8d);
+  font-size: .875rem;
+  font-weight: 650;
+  text-underline-offset: .2em;
+}
+
+.workflow-links a:hover { text-decoration-thickness: .12em; }
+
+.inventory-page,
+.tool-review-page {
+  container: mcp-workflow / inline-size;
+}
+
+:is(.inventory-page, .tool-review-page, .build-security-page) [id] {
+  scroll-margin-top: 5.5rem;
+}
+
+:is(.inventory-page, .tool-review-page, .build-security-page) .table-selection {
+  appearance: none;
+  padding: .3rem .35rem;
+  min-height: 2.25rem;
+  max-width: 100%;
+  border: 0;
+  border-radius: .3rem;
+  background: transparent;
+  color: var(--link, #164d8d);
+  font-weight: 700;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: .18em;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+:is(.inventory-page, .tool-review-page, .build-security-page) .table-selection:hover {
+  background: var(--accent-soft, #e8f2ff);
+}
+
+:is(.inventory-page, .tool-review-page, .build-security-page) .table-selection[aria-pressed="true"] {
+  background: var(--accent-soft, #e8f2ff);
+  text-decoration-thickness: .15em;
+}
+
+.workflow-progress {
+  padding: .75rem .9rem;
+  border-inline-start: 3px solid var(--accent, #2365ab);
+  background: var(--accent-soft, #edf5fd);
+  color: var(--text, #18263b);
+  overflow-wrap: anywhere;
+}
+
+:is(.inventory-page, .tool-review-page, .build-security-page) [role="region"][tabindex="0"] {
+  min-width: 0;
+  max-width: 100%;
+  overscroll-behavior-inline: contain;
+}
+
+.inventory-page .inventory-add-server > summary {
+  min-height: 2.75rem;
+  align-content: center;
+}
+
+.tool-review-page .analysis-layout,
+.inventory-page .inventory-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.tool-review-page .analysis-layout > *,
+.inventory-page .inventory-layout > * {
+  min-width: 0;
+}
+
+@container mcp-workflow (min-width: 1120px) {
+  .tool-review-page .analysis-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.18fr);
+  }
+
+  .inventory-page .inventory-layout {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+@media (max-width: 480px) {
+  .workflow-links {
+    column-gap: .5rem;
+  }
+
+  .workflow-links a {
+    min-height: 2.75rem;
+  }
+}

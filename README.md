@@ -1518,6 +1518,21 @@ npm.cmd audit
 cd ..
 ```
 
+The GUI browser regressions use Python Playwright, an installed Chromium, and
+the production frontend build with intercepted API responses.
+
+```powershell
+cd frontend
+$env:VITE_API_BASE_URL = '/api/v1'
+npm.cmd run build -- --outDir browser-dist
+python -B tests/gui_browser_smoke.py browser-dist --chrome 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+```
+
+`tool_workflows.browser.py` and `management_workflows.browser.py` accept the same
+arguments. Serve `browser-dist` on loopback to run `cloud_workflows.browser.py`
+with that URL and the `--chromium` argument. These suites exercise synthetic data
+and intercept API traffic, including fixture mutations.
+
 Validate OPA/Rego policies:
 
 ```powershell

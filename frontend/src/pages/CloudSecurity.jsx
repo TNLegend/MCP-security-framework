@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import "./cloudSecurity.css";
 import {
   manualMappingCoverage, isMappingBoundToCurrentContext, canRequestManualAudit,
 } from "./cloudIamMapping";
@@ -15,6 +16,78 @@ import {
   fetchIAMMappings, fetchIAMMappingContext, createIAMMapping, approveIAMMapping,
   fetchServers, safeErrorMessage,
 } from "../api/client";
+
+const cloudTasks = [
+  { id: "cloud-environments", label: "AWS connections" },
+  { id: "cloud-advanced", label: "Advanced AWS checks" },
+  { id: "cloud-iam", label: "MCP permissions" },
+  { id: "cloud-iac", label: "Terraform files" },
+  { id: "cloud-scans", label: "Audit history" },
+  { id: "cloud-detail", label: "Audit review" },
+];
+
+const scanKinds = {
+  AWS_BASELINE: "AWS baseline",
+  AWS_ADVANCED: "Advanced AWS",
+  IAM_MCP: "MCP permissions",
+  IAC_CONFIG: "Terraform",
+};
+
+const scanStatuses = {
+  QUEUED: "Queued",
+  RUNNING: "Running",
+  COMPLETED: "Completed",
+  PARTIAL: "Partial",
+  FAILED: "Failed",
+  TIMED_OUT: "Timed out",
+  INTERRUPTED: "Interrupted",
+  CANCELLED: "Cancelled",
+  UNKNOWN: "Unknown",
+};
+
+function CloudStatus({ status }) {
+  const label = Object.hasOwn(scanStatuses, status) ? scanStatuses[status]
+    : status === "CONNECTED" ? "Connected" : status === "UNVERIFIED" ? "Not verified" : status || "Unknown";
+  const tone = Object.hasOwn(scanStatuses, status) || status === "CONNECTED" ? status.toLowerCase() : "unknown";
+  return <span className={`cloud-status cloud-status-${tone}`}>
+    {label}
+  </span>;
+}
+
+function CloudScanTable({ scans, onOpen, empty, loading, metric, label, mixed = false }) {
+  if (loading && !scans.length) return <p role="status">Loading audit history…</p>;
+  if (!scans.length) return <p className="cloud-empty">{empty}</p>;
+
+  return <div className="table-scroll cloud-table-scroll" tabIndex={0} role="region" aria-label={label}>
+    <table className="cloud-history-table">
+      <thead><tr>
+        <th scope="col">Started</th>
+        {mixed && <th scope="col">Audit type</th>}
+        <th scope="col">Status</th>
+        {mixed && <th scope="col">Resources / files</th>}
+        {metric && <th scope="col">{metric === "source_file_count" ? "Files" : "Resources"}</th>}
+        <th scope="col">Findings</th>
+        <th scope="col">Unknown</th>
+        <th scope="col">Details</th>
+      </tr></thead>
+      <tbody>{scans.map((scan) => {
+        const started = new Date(scan.created_at).toLocaleString();
+        return <tr key={scan.id}>
+          <td><time dateTime={scan.created_at}>{started}</time></td>
+          {mixed && <td>{scanKinds[scan.kind] || scan.kind}</td>}
+          <td><CloudStatus status={scan.status} /></td>
+          {mixed && <td>{scan.kind === "IAC_CONFIG" ? scan.source_file_count : scan.resource_count}</td>}
+          {metric && <td>{scan[metric]}</td>}
+          <td>{scan.finding_count}</td>
+          <td>{scan.unknown_checks}</td>
+          <td><button type="button" className="tiny-action"
+            aria-label={`View ${scanKinds[scan.kind] || "audit"} from ${started}`}
+            onClick={() => onOpen(scan.id)}>View</button></td>
+        </tr>;
+      })}</tbody>
+    </table>
+  </div>;
+}
 
 function cloudError(err) {
   const raw = safeErrorMessage(err);
@@ -134,6 +207,12 @@ function iamAssessmentExplanation(value) {
 }
 
 export default function CloudSecurity({ isAdmin = false }) {
+  const [activeTask, setActiveTask] = useState("cloud-environments");
+  const [historyKind, setHistoryKind] = useState("ALL");
+  const detailHeadingRef = useRef(null);
+  const iacInputRef = useRef(null);
+  const refreshGeneration = useRef(0);
+  const environmentScope = useRef("");
   const [environments, setEnvironments] = useState([]);
   const [scans, setScans] = useState([]);
   const [details, setDetails] = useState(null);
@@ -171,6 +250,8 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [iamMappingId, setIamMappingId] = useState("");
   const [approvalConfirmed, setApprovalConfirmed] = useState(false);
   const [mappingContextError, setMappingContextError] = useState("");
+  const [mappingContextKey, setMappingContextKey] = useState("");
+  const [mappingListError, setMappingListError] = useState("");
   const [iamRows, setIamRows] = useState([]);
   const [deployGovernance, setDeployGovernance] = useState(null);
   const [governanceError, setGovernanceError] = useState("");
@@ -184,29 +265,53 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [reviewReason, setReviewReason] = useState("");
   const [reviewingExceptionId, setReviewingExceptionId] = useState("");
   const [expiryDays, setExpiryDays] = useState(7);
+  const contextKey = JSON.stringify([selected, mcpServerId]);
+  const contextReady = Boolean(mappingContext && mappingContextKey === contextKey);
 
-  async function refresh() {
-    setLoading(true);
-    setError("");
-    try {
-      const [envs, runs] = await Promise.all([fetchCloudEnvironments(), fetchCloudScans()]);
-      setEnvironments(envs);
-      setScans(runs);
-      if (!selected && envs.length) setSelected(envs[0].id);
-    } catch (err) {
-      setError(cloudError(err));
-    } finally {
-      setLoading(false);
-    }
+  function selectEnvironment(id) {
+    environmentScope.current = id;
+    setSelected(id);
+    clearScanDetails();
+    setEdit(null);
+    setIamMappings([]);
+    setIamMappingId("");
+    setMappingContextKey("");
+    setApprovalConfirmed(false);
+    setPermissionPreview(null);
   }
 
-  useEffect(() => { refresh(); }, []);
-  useEffect(() => {
+  async function refresh() {
+    const generation = ++refreshGeneration.current;
+    setLoading(true);
+    setError("");
+    const [envs, runs] = await Promise.allSettled([fetchCloudEnvironments(), fetchCloudScans()]);
+    if (generation !== refreshGeneration.current) return;
+
+    const errors = [];
+    if (envs.status === "fulfilled") {
+      setEnvironments(envs.value);
+      setSelected((old) => envs.value.some((item) => item.id === old)
+        ? old : envs.value[0]?.id || "");
+    } else {
+      errors.push("AWS environments: " + cloudError(envs.reason));
+    }
+    if (runs.status === "fulfilled") {
+      setScans(runs.value);
+    } else {
+      errors.push("Audit history: " + cloudError(runs.reason));
+    }
+    setError(errors.join(" "));
+    setLoading(false);
+  }
+
+  function refreshScannerAvailability() {
+    setIacStatusError(false);
+    setProwlerStatusError(false);
     fetchIaCScannerAvailability().then(setIacStatus).catch(() => setIacStatusError(true));
-  }, []);
-  useEffect(() => {
     fetchProwlerAvailability().then(setProwlerStatus).catch(() => setProwlerStatusError(true));
-  }, []);
+  }
+
+  useEffect(() => { refresh(); refreshScannerAvailability(); }, []);
   async function loadRegisteredServers() {
     try {
       const response = await fetchServers();
@@ -221,28 +326,36 @@ export default function CloudSecurity({ isAdmin = false }) {
   }
   useEffect(() => { loadRegisteredServers(); }, []);
   useEffect(() => {
+    environmentScope.current = selected;
+    setMappingListError("");
     if (!selected) { setIamMappings([]); setIamMappingId(""); return; }
     let cancelled = false;
     fetchIAMMappings(selected).then((items) => {
       if (cancelled) return;
       setIamMappings(items);
       const preferred = items.find((item) => item.status === "APPROVED") || items[0];
-      setIamMappingId((old) => items.some((item) => item.id === old) ? old :
-        (preferred?.id || ""));
+      setIamMappingId(preferred?.id || "");
       if (preferred) setMcpServerId(String(preferred.mcp_server_id));
-    }).catch(() => { if (!cancelled) setIamMappings([]); });
+    }).catch((err) => {
+      if (!cancelled) {
+        setIamMappings([]);
+        setMappingListError("Saved mappings could not be loaded: " + cloudError(err));
+      }
+    });
     return () => { cancelled = true; };
   }, [selected]);
 
   useEffect(() => {
     if (!selected || !mcpServerId) {
-      setMappingContext(null); setMappingRows([]); return;
+      setMappingContext(null); setMappingContextKey(""); setMappingRows([]); return;
     }
     let cancelled = false;
     setMappingContextError("");
+    setApprovalConfirmed(false);
     fetchIAMMappingContext(selected, mcpServerId).then((ctx) => {
       if (cancelled) return;
       setMappingContext(ctx);
+      setMappingContextKey(contextKey);
       setUnmappedAcknowledged(false);
       setMappingRows(ctx.effects.map((effect) => ({
         tool_name: effect.tool_name, effect_id: effect.effect_id,
@@ -250,19 +363,31 @@ export default function CloudSecurity({ isAdmin = false }) {
         action: "", resource_template: effect.resource_type ? "" : "*",
         justification: "", global_resource_acknowledged: false,
       })));
-    }).catch(() => {
+    }).catch((err) => {
       if (!cancelled) {
-        setMappingContext(null); setMappingRows([]);
-        setMappingContextError("No approved and published MCP contracts were found for this server.");
+        setMappingContext(null);
+        setMappingContextKey(contextKey);
+        setMappingRows([]);
+        setMappingContextError(cloudError(err));
       }
     });
     return () => { cancelled = true; };
   }, [selected, mcpServerId]);
 
   async function reloadIAMMappings(environmentId = selected) {
-    const items = await fetchIAMMappings(environmentId);
-    setIamMappings(items);
-    return items;
+    try {
+      const items = await fetchIAMMappings(environmentId);
+      if (environmentId === environmentScope.current) {
+        setIamMappings(items);
+        setMappingListError("");
+      }
+      return items;
+    } catch (err) {
+      if (environmentId === environmentScope.current) {
+        setMappingListError("Saved mappings could not be refreshed: " + cloudError(err));
+      }
+      return null;
+    }
   }
 
   function updateMappingRow(index, field, value) {
@@ -271,7 +396,7 @@ export default function CloudSecurity({ isAdmin = false }) {
   }
 
   async function saveMappingDraft() {
-    if (!current || !mappingContext) return;
+    if (!isAdmin || !current || !contextReady || busy) return;
     const { completeRows, unmapped } = manualMappingCoverage(
       mappingContext.effects, mappingRows);
     if (unmapped.length && !unmappedAcknowledged) {
@@ -311,22 +436,22 @@ export default function CloudSecurity({ isAdmin = false }) {
       () => createIAMMapping(current.id, config),
       () => "Mapping draft saved. Review it and approve explicitly before any scan.",
     );
-    if (created) {
-      await reloadIAMMappings();
+    if (created && await reloadIAMMappings(current.id) && current.id === environmentScope.current) {
       setIamMappingId(created.id);
       setApprovalConfirmed(false);
     }
   }
 
   async function approveSelectedMapping() {
-    if (!current || !iamMappingId || !approvalConfirmed) return;
+    if (!isAdmin || !current || !contextReady || !iamMappingId ||
+        !approvalConfirmed || busy) return;
     const approved = await action(
       () => approveIAMMapping(current.id, iamMappingId),
       () => "Mapping approved for its signed MCP revision. Ready for an audit.",
     );
     if (approved) {
-      await reloadIAMMappings();
-      setApprovalConfirmed(false);
+      await reloadIAMMappings(current.id);
+      if (current.id === environmentScope.current) setApprovalConfirmed(false);
     }
   }
 
@@ -379,7 +504,7 @@ export default function CloudSecurity({ isAdmin = false }) {
       () => createCloudEnvironment(payload),
       (result) => `Environment "${result.name}" created. Test its AWS connection next.`,
     );
-    if (created) setSelected(created.id);
+    if (created) selectEnvironment(created.id);
   }
 
   function beginEdit(env) {
@@ -424,7 +549,11 @@ export default function CloudSecurity({ isAdmin = false }) {
       () => uploadTerraformZip(iacFile),
       (value) => "Terraform configuration scan queued (" + value.id + "). Refresh to follow its status.",
     );
-    if (result) { setIacFile(null); setDetails(null); }
+    if (result) {
+      setIacFile(null);
+      if (iacInputRef.current) iacInputRef.current.value = "";
+      clearScanDetails();
+    }
   }
 
   function clearScanDetails() {
@@ -446,7 +575,9 @@ export default function CloudSecurity({ isAdmin = false }) {
     setReviewReason("");
   }
 
-  async function showScan(scanId) {
+  async function showScan(scanId, focusReview = true) {
+    setActiveTask("cloud-detail");
+    if (focusReview) window.requestAnimationFrame(() => detailHeadingRef.current?.focus());
     const generation = ++scanDetailGeneration.current;
     setDetails(null);
     setDetailsLoading(true);
@@ -462,6 +593,7 @@ export default function CloudSecurity({ isAdmin = false }) {
     setReviewingExceptionId("");
     setReviewReason("");
     setExceptionFinding("");
+    setExceptionReason("");
     try {
       const item = await fetchCloudScanDetail(scanId);
       if (generation !== scanDetailGeneration.current) return;
@@ -586,36 +718,54 @@ export default function CloudSecurity({ isAdmin = false }) {
   }
 
   const current = environments.find((e) => e.id === selected);
-  const currentScans = scans.filter((s) => s.kind === "AWS_BASELINE" && s.environment_id === selected);
   const advancedScans = scans.filter((s) => s.kind === "AWS_ADVANCED" && s.environment_id === selected);
   const iacScans = scans.filter((s) => s.kind === "IAC_CONFIG");
   const iamScans = scans.filter((s) => s.kind === "IAM_MCP" && s.environment_id === selected);
+  const visibleHistory = scans.filter((scan) =>
+    (scan.kind === "IAC_CONFIG" || scan.environment_id === selected) &&
+    (historyKind === "ALL" || scan.kind === historyKind));
+  const running = visibleHistory.filter((scan) => ["QUEUED", "RUNNING"].includes(scan.status)).length;
 
   return (
-    <section className="page-panel">
+    <section className="page-panel cloud-page">
       <header className="section-heading">
         <div>
           <p className="eyebrow">Deploy Security</p>
           <h2>Cloud security</h2>
-          <p>Connect a read-only AWS identity, inventory cloud resources and review evidence. MCP Discovery remains separate.</p>
+          <p>Connect AWS, run read-only audits and review cloud permission evidence.</p>
         </div>
-        <button className="secondary-action" disabled={busy || loading} onClick={() => { refresh(); loadRegisteredServers(); }} type="button">
-          {loading ? "Loading..." : "Refresh"}
+        <button className="secondary-action" disabled={busy || loading} onClick={() => { refresh(); loadRegisteredServers(); refreshScannerAvailability(); }} type="button">
+          {loading ? "Refreshing…" : "Refresh cloud data"}
         </button>
       </header>
 
+      <div className="cloud-context">
+        <label>Select AWS environment
+          <select disabled={busy || loading || !environments.length} value={selected}
+            onChange={(event) => selectEnvironment(event.target.value)}>
+            {!environments.length && <option value="">{loading ? "Loading environments…" : "No environments configured"}</option>}
+            {environments.map((env) => <option key={env.id} value={env.id}>{env.name}</option>)}
+          </select>
+        </label>
+        {current && <CloudStatus status={current.status} />}
+      </div>
+
       <nav className="cloud-section-nav" aria-label="Cloud security tasks">
-        <a href="#cloud-environments">AWS connections</a>
-        <a href="#cloud-advanced">Advanced AWS checks</a>
-        <a href="#cloud-iam">MCP permissions</a>
-        <a href="#cloud-iac">Terraform files</a>
-        <a href="#cloud-scans">Recent audits</a>
-        <a href="#cloud-detail">Audit review</a>
+        {cloudTasks.map(({ id, label }) => (
+          <button key={id} type="button" aria-current={id === activeTask ? "location" : undefined}
+            aria-controls={id} onClick={() => setActiveTask(id)}>
+            {label}
+          </button>
+        ))}
       </nav>
 
       {error && <p className="error-banner" role="alert">{error}</p>}
       {message && <p className="success-banner" role="status">{message}</p>}
 
+      <section id="cloud-environments" className="detail-panel cloud-task-panel"
+        hidden={activeTask !== "cloud-environments"}>
+        <h3>AWS connections</h3>
+        <p>Verify an audit identity before running a baseline AWS audit.</p>
       {isAdmin && (
         <details className="inventory-add-server">
           <summary>Add AWS environment</summary>
@@ -656,22 +806,16 @@ export default function CloudSecurity({ isAdmin = false }) {
         </details>
       )}
 
-      <section id="cloud-environments" className="detail-panel cloud-task-panel">
-        <h3>AWS connections</h3>
-        <label>Select AWS environment
-          <select disabled={loading || !environments.length} value={selected} onChange={(e) => {
-            setSelected(e.target.value); clearScanDetails(); setEdit(null);
-            setPermissionPreview(null);
-          }}>
-            {!environments.length && <option value="">No environments configured</option>}
-            {environments.map((env) => (
-              <option key={env.id} value={env.id}>{env.name} — {env.status}</option>
-            ))}
-          </select>
-        </label>
+        {!current && !loading && <p className="cloud-empty">{isAdmin
+          ? "Add an AWS environment to select its regions and verify its audit identity."
+          : "No AWS environment is available. An administrator can add one."}</p>}
         {current && (
           <div>
-            <p><strong>Account:</strong> {current.account_id || "Not verified"} · <strong>Regions:</strong> {current.regions.join(", ")} · <strong>Services:</strong> {current.services.join(", ")} · <strong>Status:</strong> {current.status}</p>
+            <dl className="cloud-facts">
+              <div><dt>AWS account</dt><dd>{current.account_id || "Not verified"}</dd></div>
+              <div><dt>Regions</dt><dd>{current.regions.join(", ")}</dd></div>
+              <div><dt>Services</dt><dd>{current.services.join(", ")}</dd></div>
+            </dl>
             {current.last_error_code && <p>Last connection issue: {current.last_error_code}</p>}
             {isAdmin && (
               <div className="button-row">
@@ -684,9 +828,11 @@ export default function CloudSecurity({ isAdmin = false }) {
                     (result) => `AWS connection verified for account ${result.account_id}.`)} type="button">Test connection</button>
                 <button className="secondary-action" disabled={busy || current.status !== "CONNECTED"} onClick={() =>
                   action(() => startCloudScan(current.id),
-                    (result) => `AWS scan queued (${result.id}). Refresh to follow its status.`)} type="button">Start read-only audit</button>
+                    (result) => `AWS scan queued (${result.id}). Follow its progress in Audit history.`)} type="button">Start read-only audit</button>
               </div>
             )}
+            {isAdmin && current.status !== "CONNECTED" &&
+              <p>Test the AWS connection to enable read-only audits.</p>}
             {isAdmin && edit && (
               <form className="contract-editor" onSubmit={saveEdit}>
                 <h4>Edit selected AWS environment</h4>
@@ -736,20 +882,21 @@ export default function CloudSecurity({ isAdmin = false }) {
         )}
       </section>
 
-      <section id="cloud-advanced" className="detail-panel cloud-task-panel">
+      <section id="cloud-advanced" className="detail-panel cloud-task-panel" hidden={activeTask !== "cloud-advanced"}>
         <h3>Advanced AWS audit with Prowler</h3>
         <p>Read-only security checks for EC2, S3, IAM, CloudTrail and CloudWatch.
           Prowler uses temporary AWS STS credentials from the selected audit role.
           Missing IAM read permissions will be reported as unknown or partial, never passed.</p>
         <p role="status">
-          Prowler: {prowlerStatus?.available ? "Ready" : "Unavailable"}
+          Prowler: {prowlerStatusError ? "Could not be verified" :
+            !prowlerStatus ? "Checking availability…" : prowlerStatus.available ? "Ready" : "Unavailable"}
           {prowlerStatus?.expected_version ? " | Expected version " + prowlerStatus.expected_version : ""}
         </p>
         {prowlerStatusError && <p>Cannot verify the advanced scanner installation.</p>}
         <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
         {isAdmin && current && (
           <button className="secondary-action" type="button"
-            disabled={busy || !prowlerStatus?.available || current.status !== "CONNECTED" || !current.role_arn}
+            disabled={busy || prowlerStatusError || !prowlerStatus?.available || current.status !== "CONNECTED" || !current.role_arn}
             onClick={() => action(
               () => startProwlerCloudScan(current.id),
               (result) => "Advanced AWS audit queued (" + result.id + ").",
@@ -757,7 +904,9 @@ export default function CloudSecurity({ isAdmin = false }) {
             Start advanced read-only audit
           </button>
         )}
-        {!prowlerStatus?.available && <p>The Prowler engine must be installed and verified before an advanced scan can run.</p>}
+        {prowlerStatus && !prowlerStatus.available && <p>The Prowler engine must be installed and verified before an advanced scan can run.</p>}
+        {isAdmin && current?.status === "CONNECTED" && !current.role_arn &&
+          <p>Add a read-only audit role in AWS connections to run an advanced scan.</p>}
         {isAdmin && current && (
           <button className="secondary-action" type="button"
             disabled={busy || current.status !== "CONNECTED"}
@@ -810,28 +959,11 @@ export default function CloudSecurity({ isAdmin = false }) {
         <p>UNKNOWN checks may require human review even when all tested AWS
           read permissions are available. Scanner execution can be complete
           while the overall security assessment remains PARTIAL.</p>
-        {advancedScans.length === 0 ? <p>No advanced AWS audits yet.</p> : (
-          <div className="table-scroll">
-            <table>
-              <thead><tr><th>Started</th><th>Status</th><th>Resources</th>
-                <th>Findings</th><th>Unknown</th><th>Details</th></tr></thead>
-              <tbody>
-                {advancedScans.map((scan) => (
-                  <tr key={scan.id}>
-                    <td>{new Date(scan.created_at).toLocaleString()}</td>
-                    <td>{scan.status}</td><td>{scan.resource_count}</td>
-                    <td>{scan.finding_count}</td><td>{scan.unknown_checks}</td>
-                    <td><button type="button" className="tiny-action"
-                      onClick={() => showScan(scan.id)}>View</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <CloudScanTable scans={advancedScans} loading={loading} onOpen={showScan}
+          metric="resource_count" label="Advanced AWS audit history" empty="No advanced AWS audits for this environment." />
       </section>
 
-      <section id="cloud-iam" className="detail-panel cloud-task-panel">
+      <section id="cloud-iam" className="detail-panel cloud-task-panel" hidden={activeTask !== "cloud-iam"}>
         <h3>Review MCP cloud permissions</h3>
         <p>Choose a registered MCP server, link its verified AWS workload, then
           describe which cloud permissions each published MCP contract needs.
@@ -839,23 +971,33 @@ export default function CloudSecurity({ isAdmin = false }) {
           This only reads AWS permissions; it never grants or changes them.</p>
         <div className="contract-editor">
           <label>MCP server
-            <select value={mcpServerId} disabled={!mcpServers.length}
-              onChange={(event) => setMcpServerId(event.target.value)}>
+            <select value={mcpServerId} disabled={busy || !mcpServers.length}
+              onChange={(event) => {
+                setMcpServerId(event.target.value);
+                setIamMappingId("");
+                setMappingContextKey("");
+                setApprovalConfirmed(false);
+              }}>
               {!mcpServers.length && <option value="">No registered MCP servers</option>}
               {mcpServers.map((server) => <option value={server.id} key={server.id}>
                 {server.name}
               </option>)}
             </select>
           </label>
-          {mappingContextError && <p role="status">{mappingContextError}</p>}
-          {mappingContext && (
+          {!current && <p>Choose an AWS environment to review a mapping.</p>}
+          {selected && mcpServerId && mappingContextKey !== contextKey &&
+            <p role="status">Loading signed MCP permissions…</p>}
+          {mappingContextKey === contextKey && mappingContextError &&
+            <p className="error-banner" role="alert">{mappingContextError}</p>}
+          {contextReady && (
             <div>
               <p>Published signed MCP revision: {mappingContext.signed_revision}.
                 Approved tool capabilities: {mappingContext.effects.length}.
                 Permissions are configured per cloud action; unknown effects are
                 never silently treated as safe.</p>
               {isAdmin && (
-                <div className="contract-editor">
+                <div className="contract-editor cloud-mapping-editor">
+                  <h4>Prepare a mapping draft</h4>
                   <label>Configuration name
                     <input maxLength={128} value={mappingName}
                       onChange={(e) => setMappingName(e.target.value)} />
@@ -1030,11 +1172,16 @@ export default function CloudSecurity({ isAdmin = false }) {
               )}
             </div>
           )}
+          {mappingListError && <p className="error-banner" role="alert">{mappingListError}</p>}
+          <h4>Review a saved mapping</h4>
           <label>Mapping configuration
-            <select value={iamMappingId} onChange={(e) => {
+            <select value={iamMappingId} disabled={busy} onChange={(e) => {
               setIamMappingId(e.target.value); setApprovalConfirmed(false);
               const chosen = iamMappings.find((mapping) => mapping.id === e.target.value);
-              if (chosen) setMcpServerId(String(chosen.mcp_server_id));
+              if (chosen && String(chosen.mcp_server_id) !== mcpServerId) {
+                setMappingContextKey("");
+                setMcpServerId(String(chosen.mcp_server_id));
+              }
             }}>
               <option value="">Select a configured mapping</option>
               {iamMappings.map((mapping) => (
@@ -1047,9 +1194,10 @@ export default function CloudSecurity({ isAdmin = false }) {
           {(() => {
             const chosen = iamMappings.find((m) => m.id === iamMappingId);
             const registered = mcpServers.find((server) => server.id === chosen?.mcp_server_id);
+            const sameServer = chosen?.mcp_server_id === Number(mcpServerId);
             const validBinding = isMappingBoundToCurrentContext(
-              chosen, current, registered, mappingContext);
-            const currentRevision = chosen?.signed_revision === mappingContext?.signed_revision &&
+              chosen, current, registered, contextReady && sameServer ? mappingContext : null);
+            const currentRevision = contextReady && chosen?.signed_revision === mappingContext?.signed_revision &&
               chosen?.signed_content_hash === mappingContext?.signed_content_hash;
             return chosen && (
               <div>
@@ -1072,12 +1220,12 @@ export default function CloudSecurity({ isAdmin = false }) {
                     </p>
                   ))}
                 </details>
-                {(!validBinding || !currentRevision) && (
+                {mappingContextKey === contextKey && (!validBinding || !currentRevision) && (
                   <p role="status">This older configuration is not bound to the
                     current AWS account, registered MCP endpoint and signed
                     revision. Create a new reviewed draft before scanning.</p>
                 )}
-                {isAdmin && chosen.mcp_server_id === Number(mcpServerId) && mappingContext && (
+                {isAdmin && sameServer && contextReady && (
                   <button type="button" className="tiny-action"
                     disabled={busy}
                     onClick={() => {
@@ -1107,7 +1255,7 @@ export default function CloudSecurity({ isAdmin = false }) {
                       onClick={approveSelectedMapping}>Approve mapping</button>
                   </div>
                 )}
-                {isAdmin && canRequestManualAudit(chosen,current,registered,mappingContext) && (
+                {isAdmin && contextReady && sameServer && canRequestManualAudit(chosen,current,registered,mappingContext) && (
                   <button type="button" className="secondary-action"
                     disabled={busy || current?.status !== "CONNECTED"}
                     onClick={() => action(
@@ -1122,23 +1270,11 @@ export default function CloudSecurity({ isAdmin = false }) {
           })()}
         </div>
         <h4>Permissions comparison history</h4>
-        {iamScans.length === 0 ? <p>No IAM permission comparisons yet.</p> : (
-          <div className="table-scroll">
-            <table>
-              <thead><tr><th>Started</th><th>Status</th><th>Potential issues</th><th>Unknown</th><th>Details</th></tr></thead>
-              <tbody>{iamScans.map((scan) => <tr key={scan.id}>
-                <td>{new Date(scan.created_at).toLocaleString()}</td>
-                <td>{scan.status}</td>
-                <td>{scan.finding_count}</td><td>{scan.unknown_checks}</td>
-                <td><button className="tiny-action" type="button"
-                  onClick={() => showScan(scan.id)}>View</button></td>
-              </tr>)}</tbody>
-            </table>
-          </div>
-        )}
+        <CloudScanTable scans={iamScans} loading={loading} onOpen={showScan}
+          label="MCP permissions comparison history" empty="No permissions comparisons for this environment." />
       </section>
 
-      <section id="cloud-iac" className="detail-panel cloud-task-panel">
+      <section id="cloud-iac" className="detail-panel cloud-task-panel" hidden={activeTask !== "cloud-iac"}>
         <h3>Check Terraform configuration</h3>
         <p>Upload a Terraform ZIP to identify configuration risks before deployment.
           No AWS connection is required and Terraform code is never executed.</p>
@@ -1153,7 +1289,7 @@ export default function CloudSecurity({ isAdmin = false }) {
         {isAdmin && (
           <form className="contract-editor" onSubmit={uploadIaC}>
             <label>Terraform ZIP archive
-              <input type="file" accept=".zip,application/zip" disabled={busy}
+              <input ref={iacInputRef} type="file" accept=".zip,application/zip" disabled={busy}
                 onChange={(event) => setIacFile(event.target.files?.[0] || null)} />
             </label>
             <button className="secondary-action" disabled={busy || !iacFile} type="submit">
@@ -1162,56 +1298,48 @@ export default function CloudSecurity({ isAdmin = false }) {
           </form>
         )}
         <h4>Configuration scan history</h4>
-        {iacScans.length === 0 ? <p>No Terraform scans yet.</p> : (
-          <div className="table-scroll">
-            <table>
-              <thead><tr><th>Started</th><th>Status</th><th>Files</th><th>Findings</th><th>Unknown</th><th>Details</th></tr></thead>
-              <tbody>
-                {iacScans.map((s) => (
-                  <tr key={s.id}>
-                    <td>{new Date(s.created_at).toLocaleString()}</td>
-                    <td>{s.status}</td><td>{s.source_file_count}</td>
-                    <td>{s.finding_count}</td><td>{s.unknown_checks}</td>
-                    <td><button type="button" className="tiny-action" onClick={() => showScan(s.id)}>View</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <CloudScanTable scans={iacScans} loading={loading} onOpen={showScan}
+          metric="source_file_count" label="Terraform scan history" empty="No Terraform scans yet." />
       </section>
 
-      <section id="cloud-scans" className="detail-panel cloud-task-panel">
-        <h3>Recent AWS audits</h3>
-        {currentScans.length === 0 ? <p>No audits yet. Connect an audit identity and start a scan.</p> : (
-          <div className="table-scroll">
-            <table>
-              <thead><tr><th>Started</th><th>Status</th><th>Resources</th><th>Findings</th><th>Unknown</th><th>Details</th></tr></thead>
-              <tbody>
-                {currentScans.map((s) => (
-                  <tr key={s.id}>
-                    <td>{new Date(s.created_at).toLocaleString()}</td>
-                    <td>{s.status}</td>
-                    <td>{s.resource_count}</td><td>{s.finding_count}</td><td>{s.unknown_checks}</td>
-                    <td><button type="button" className="tiny-action" onClick={() => showScan(s.id)}>View</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <section id="cloud-scans" className="detail-panel cloud-task-panel" hidden={activeTask !== "cloud-scans"}>
+        <div className="cloud-detail-heading">
+          <div>
+            <h3>Audit history</h3>
+            <p>Review scans for the selected AWS environment and Terraform scans.</p>
           </div>
-        )}
+          <label>Audit type
+            <select value={historyKind} onChange={(event) => setHistoryKind(event.target.value)}>
+              <option value="ALL">All audit types</option>
+              {Object.entries(scanKinds).map(([kind, label]) =>
+                <option key={kind} value={kind}>{label}</option>)}
+            </select>
+          </label>
+        </div>
+        {running > 0 && <p role="status">{running} queued or running. This list updates automatically.</p>}
+        <CloudScanTable scans={visibleHistory} loading={loading} onOpen={showScan} mixed
+          label="Cloud audit history" empty="No audits match this environment and audit type." />
       </section>
 
-      {detailsLoading && <p role="status" className="cloud-loading">
-        Loading the selected audit and its evidence...
-      </p>}
-      {detailError && <p role="alert" className="error-banner">{detailError}</p>}
-      {details && (
-        <section id="cloud-detail" className="detail-panel cloud-task-panel">
-          <div className="cloud-detail-heading">
-            <h3>Audit details — {details.scan.status}</h3>
+      <section id="cloud-detail" className="detail-panel cloud-task-panel" hidden={activeTask !== "cloud-detail"}>
+        <div className="cloud-detail-heading">
+          <h3 tabIndex={-1} ref={detailHeadingRef}>Audit review</h3>
+          <button type="button" className="secondary-action" onClick={() => setActiveTask("cloud-scans")}>
+            Browse audit history
+          </button>
+        </div>
+        {detailsLoading && <p role="status" className="cloud-loading">
+          Loading the selected audit and its evidence…
+        </p>}
+        {detailError && <p role="alert" className="error-banner">{detailError}</p>}
+        {!details && !detailsLoading && !detailError && <p className="cloud-empty">
+          Choose an audit in the history to inspect its findings and evidence.
+        </p>}
+        {details && <div aria-busy={detailsLoading}>
+          <div className="cloud-detail-heading cloud-review-summary">
+            <h4>{scanKinds[details.scan.kind] || details.scan.kind} <CloudStatus status={details.scan.status} /></h4>
             <button type="button" className="secondary-action"
-              disabled={detailsLoading} onClick={() => showScan(details.scan.id)}>
+              disabled={detailsLoading} onClick={() => showScan(details.scan.id, false)}>
               Refresh details
             </button>
           </div>
@@ -1222,7 +1350,7 @@ export default function CloudSecurity({ isAdmin = false }) {
               : "Rule checks with insufficient AWS permissions are marked unknown or partial, never passed."}</p>
           {details.scan.error_code && <p>Failure code: {details.scan.error_code}</p>}
           {["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(details.scan.kind) && (
-            <div>
+            <div className="cloud-review-section">
               <h4>Security assessment and administrator review</h4>
               <p>The review policy evaluates available audit evidence and
                 recommends a follow-up. It does not change AWS permissions,
@@ -1235,7 +1363,7 @@ export default function CloudSecurity({ isAdmin = false }) {
                   ? "Evaluate and record governance" : "Preview governance"}
               </button>
               {governanceError && <p role="alert">{governanceError}</p>}
-              {deployGovernance && <div role="status">
+              {deployGovernance && <div role="status" className="cloud-assessment">
                 <strong>{deployGovernance.classification.replaceAll("_", " ")}</strong>
                 <p>{deployGovernance.explanation}</p>
                 <p>Follow-up: {deployGovernance.obligations.join(", ")}.
@@ -1251,17 +1379,17 @@ export default function CloudSecurity({ isAdmin = false }) {
                   {" | "}{item.policy_revision}
                   {" | "}Evidence <code>{item.input_sha256.slice(0, 12)}...</code>
                 </p>
-              )) : !governanceHistoryError && <p>No recorded assessments yet.</p>}
+              )) : !governanceHistoryError && !detailsLoading && <p>No recorded assessments yet.</p>}
               <h4>Exception requests ({deployExceptions.length})</h4>
               {deployExceptionsError && <p role="alert" className="error-banner">
                 Exception history could not be verified: {deployExceptionsError}
               </p>}
               <p>Exceptions remain visible alongside the original findings
                 and never override Runtime authorization.</p>
-              {!deployExceptions.length && !deployExceptionsError &&
+              {!deployExceptions.length && !deployExceptionsError && !detailsLoading &&
                 <p>No exception requests for this audit.</p>}
               {deployExceptions.map((exception) => (
-                <article key={exception.exception_id}>
+                <article key={exception.exception_id} className="cloud-finding">
                   <strong>Finding {exception.finding_id.slice(0,12)}:
                     {" "}{exception.state}</strong>
                   {exception.expires_at && <p>Expires:
@@ -1282,7 +1410,7 @@ export default function CloudSecurity({ isAdmin = false }) {
                             setExpiryDays(7);
                           }}>Review this request</button>
                       ) : <>
-                      <label>Review justification
+                      <label>Review justification (at least 20 characters)
                         <textarea maxLength={1000} value={reviewReason}
                           onChange={(e) => setReviewReason(e.target.value)} />
                       </label>
@@ -1323,6 +1451,7 @@ export default function CloudSecurity({ isAdmin = false }) {
               {isAdmin && details.findings.length > 0 &&
                 ["COMPLETED", "PARTIAL"].includes(details.scan.status) && (
                 <div>
+                  <h4>Request a finding exception</h4>
                   <label>Finding to review
                     <select value={exceptionFinding}
                       onChange={(e) => setExceptionFinding(e.target.value)}>
@@ -1331,7 +1460,7 @@ export default function CloudSecurity({ isAdmin = false }) {
                         value={finding.id}>{finding.rule_id}: {finding.title}</option>)}
                     </select>
                   </label>
-                  <label>Exception request justification
+                  <label>Exception request justification (at least 20 characters)
                     <textarea maxLength={1000} value={exceptionReason}
                       onChange={(e) => setExceptionReason(e.target.value)} />
                   </label>
@@ -1387,7 +1516,7 @@ export default function CloudSecurity({ isAdmin = false }) {
           )}
           <h4>Findings ({details.findings.length})</h4>
           {details.findings.length ? details.findings.map((f) => (
-            <article key={f.id}>
+            <article key={f.id} className="cloud-finding">
               <strong>{f.severity}: {f.title}</strong>
               <p>{f.description}</p>
               {f.remediation && <p>Suggested action: {f.remediation}</p>}
@@ -1416,8 +1545,8 @@ export default function CloudSecurity({ isAdmin = false }) {
               </article>
             ))}
           </details>
-        </section>
-      )}
+        </div>}
+      </section>
     </section>
   );
 }

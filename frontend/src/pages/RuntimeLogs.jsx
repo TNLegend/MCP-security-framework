@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchRuntimeLogs } from "../api/client";
 
@@ -37,6 +37,9 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
   const [error, setError] = useState("");
   const [selectedLogId, setSelectedLogId] = useState(null);
 
+  const requestGeneration = useRef(0);
+  const detailHeading = useRef(null);
+  const eventControl = useRef(null);
   const entries = page.items;
   const appliedFilterCount = Object.values(activeFilters).filter((value) => value !== null && value !== undefined && value !== "").length;
   const selectedLog = useMemo(
@@ -52,43 +55,47 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
 
   useEffect(() => {
     void loadPage({}, [null]);
+    return () => { requestGeneration.current += 1; };
   }, []);
 
   useEffect(() => {
-    if (entries.length === 0) {
+    if (selectedLogId !== null && !entries.some((log) => log.id === selectedLogId)) {
       setSelectedLogId(null);
-      return;
-    }
-    if (!entries.some((log) => log.id === selectedLogId)) {
-      setSelectedLogId(entries[0].id);
     }
   }, [entries, selectedLogId]);
 
   async function loadPage(filters, cursors) {
     const cursor = cursors[cursors.length - 1];
+    const generation = ++requestGeneration.current;
     setPageLoading(true);
     setError("");
     try {
       const result = await fetchRuntimeLogs({ ...filters, limit: PAGE_SIZE, cursor });
+      if (generation !== requestGeneration.current) return;
       setPage(normalizePage(result));
+      setActiveFilters(filters);
       setCursorStack(cursors);
     } catch (err) {
-      setError(err.message || "Runtime logs could not be loaded.");
+      if (generation === requestGeneration.current) {
+        setError(err.message || "Runtime logs could not be loaded.");
+      }
     } finally {
-      setPageLoading(false);
+      if (generation === requestGeneration.current) setPageLoading(false);
     }
   }
 
   async function applyFilters(event) {
     event.preventDefault();
     const filters = normalizedFilters(draftFilters);
-    setActiveFilters(filters);
+    if (filters.from && filters.to && filters.from > filters.to) {
+      setError("The end date must be on or after the start date.");
+      return;
+    }
     await loadPage(filters, [null]);
   }
 
   async function clearFilters() {
     setDraftFilters(EMPTY_FILTERS);
-    setActiveFilters({});
     await loadPage({}, [null]);
   }
 
@@ -100,6 +107,17 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
   async function previousPage() {
     if (cursorStack.length <= 1 || pageLoading) return;
     await loadPage(activeFilters, cursorStack.slice(0, -1));
+  }
+
+  function openEvent(event, id) {
+    eventControl.current = event.currentTarget;
+    setSelectedLogId(id);
+    window.requestAnimationFrame(() => detailHeading.current?.focus());
+  }
+
+  function closeEvent() {
+    setSelectedLogId(null);
+    eventControl.current?.focus();
   }
 
   if (loading && page.items.length === 0 && !pageLoading) {
@@ -114,12 +132,12 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
   }
 
   return (
-    <section className="page-section">
+    <section className="page-section activity-page">
       <div className="section-heading">
         <h2>Tool activity</h2>
         <p>{page.summary.total} matching event(s)</p>
       </div>
-      {error && <div className="error-banner">{error}</div>}
+      {error && <div className="error-banner" role="alert">{error} Previous results are retained when available.</div>}
       <p className="hint-text" role="note">
         Allowed calls are not always completed calls. Do not automatically retry an unknown result.
       </p>
@@ -164,24 +182,25 @@ function RuntimeLogs({ initialPage = EMPTY_PAGE, loading = false }) {
         <SummaryCard label="Errors" value={page.summary.errors} />
       </div>
 
-      <div className="runtime-layout">
+      <div className="runtime-layout investigation-layout">
         <div className="runtime-section">
           <div className="section-heading compact-heading">
             <h3>Runtime Events</h3>
             <p>Page {cursorStack.length} · {entries.length} row(s)</p>
           </div>
-          {pageLoading ? (
-            <div className="empty-state">Loading runtime calls...</div>
-          ) : (
-            <RuntimeLogsTable logs={entries} selectedLogId={selectedLogId} onSelectLog={setSelectedLogId} />
-          )}
+          <div aria-busy={pageLoading}>
+            {pageLoading && <p role="status" className="hint-text">Loading runtime calls...</p>}
+            {(!pageLoading || entries.length > 0) && (
+              <RuntimeLogsTable logs={entries} selectedLogId={selectedLogId} onSelectLog={openEvent} />
+            )}
+          </div>
           <div className="pagination-bar">
             <button disabled={pageLoading || cursorStack.length <= 1} onClick={previousPage} type="button">Previous</button>
             <span>Page {cursorStack.length}</span>
             <button disabled={pageLoading || !page.has_more || !page.next_cursor} onClick={nextPage} type="button">Next</button>
           </div>
         </div>
-        {selectedLog ? <RuntimeLogDetailPanel log={selectedLog} /> : null}
+        {selectedLog && <RuntimeLogDetailPanel log={selectedLog} detailHeading={detailHeading} onClose={closeEvent} />}
       </div>
     </section>
   );
@@ -221,26 +240,17 @@ function SummaryCard({ label, value }) {
 function RuntimeLogsTable({ logs, selectedLogId, onSelectLog }) {
   if (logs.length === 0) return <div className="empty-state">No runtime calls match the current filters.</div>;
   return (
-    <div className="table-shell runtime-table">
+    <div aria-label="Runtime events table" className="table-shell runtime-table" tabIndex={0}>
       <table>
         <thead><tr><th>Time</th><th>Tool</th><th>Decision</th><th>Rule</th><th>Config Rev</th><th>Executed</th><th>Execution Status</th><th>Severity</th><th>Agent</th><th>Server</th></tr></thead>
         <tbody>
           {logs.map((log) => (
-            <tr
-              className={log.id === selectedLogId ? "selected-row" : ""}
-              key={log.id}
-              onClick={() => onSelectLog(log.id)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  onSelectLog(log.id);
-                }
-              }}
-              role="button"
-              tabIndex="0"
-            >
+            <tr className={(log.id === selectedLogId ? "selected-row " : "") + "selectable-record"} key={log.id}
+              onClick={(event) => { if (!event.target.closest("button")) event.currentTarget.querySelector("button")?.click(); }}>
               <td>{formatDate(log.created_at)}</td>
-              <td>{displayValue(log.tool_name)}</td>
+              <td><button aria-pressed={log.id === selectedLogId} className="record-link" onClick={(event) => onSelectLog(event, log.id)} type="button">
+                {displayValue(log.tool_name)}<span className="record-link-context"> · #{displayValue(log.id)}</span>
+              </button></td>
               <td><Badge value={log.decision} className={getDecisionBadgeClass(log.decision)} /></td>
               <td>{displayValue(log.rule_id)}</td>
               <td>{displayValue(log.control_plane_revision_number)}</td>
@@ -257,16 +267,19 @@ function RuntimeLogsTable({ logs, selectedLogId, onSelectLog }) {
   );
 }
 
-function RuntimeLogDetailPanel({ log }) {
+function RuntimeLogDetailPanel({ log, detailHeading, onClose }) {
   return (
-    <div className="detail-panel">
-      <h3>Runtime call #{displayValue(log.id)}</h3>
-      <div className="metadata-grid runtime-metadata-grid">
-        <MetadataSection title="Runtime context" items={[["agent_id", log.agent_id], ["session_id", log.session_id], ["server_id", log.server_id], ["tool_name", log.tool_name], ["arguments_summary", log.arguments_summary, "structured"], ["created_at", formatDate(log.created_at)]]} />
-        <MetadataSection title="Policy decision" items={[["decision", log.decision, "decision"], ["rule_id", log.rule_id], ["decision_reason", log.decision_reason], ["severity", log.severity, "severity"], ["control_plane_revision_number", log.control_plane_revision_number], ["control_plane_content_hash", shorten(log.control_plane_content_hash)]]} />
-        <MetadataSection title="Transport and execution" items={[["client_protocol_profile_id", log.client_protocol_profile_id], ["upstream_protocol_profile_id", log.upstream_protocol_profile_id], ["executed", log.execution_status === "upstream_outcome_unknown" ? "Unknown — upstream effect possible" : formatBoolean(log.executed)], ["execution_status", log.execution_status, "execution"], ["result_summary", log.result_summary], ["error_summary", log.error_summary]]} />
+    <section className="detail-panel investigation-detail" aria-labelledby="runtime-event-heading">
+      <div className="section-heading compact-heading">
+        <h3 id="runtime-event-heading" ref={detailHeading} tabIndex={-1}>Runtime call #{displayValue(log.id)}</h3>
+        <button onClick={onClose} type="button">Close details</button>
       </div>
-    </div>
+      <div className="metadata-grid runtime-metadata-grid">
+        <MetadataSection title="Runtime context" items={[["Agent", log.agent_id], ["Session ID", log.session_id], ["Server ID", log.server_id], ["Tool", log.tool_name], ["Argument summary", log.arguments_summary, "structured"], ["created_at", formatDate(log.created_at)]]} />
+        <MetadataSection title="Policy decision" items={[["Decision", log.decision, "decision"], ["Rule ID", log.rule_id], ["Decision reason", log.decision_reason], ["Severity", log.severity, "severity"], ["Configuration revision", log.control_plane_revision_number], ["control_plane_content_hash", log.control_plane_content_hash]]} />
+        <MetadataSection title="Transport and execution" items={[["Client protocol profile", log.client_protocol_profile_id], ["Upstream protocol profile", log.upstream_protocol_profile_id], ["Executed", log.execution_status === "upstream_outcome_unknown" ? "Unknown — upstream effect possible" : formatBoolean(log.executed)], ["Execution status", log.execution_status, "execution"], ["Result summary", log.result_summary], ["Error summary", log.error_summary]]} />
+      </div>
+    </section>
   );
 }
 
@@ -365,8 +378,5 @@ function getSeverityBadgeClass(severity) {
   return "badge-muted";
 }
 
-function shorten(value) {
-  return value ? `${String(value).slice(0, 12)}...${String(value).slice(-8)}` : value;
-}
 
 export default RuntimeLogs;

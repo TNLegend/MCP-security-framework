@@ -18,6 +18,7 @@ function Dashboard({
   tools,
   runtimeLogs,
   loading,
+  readStates = {},
   onNavigate,
 }) {
   const approvedTools = tools.filter(
@@ -39,12 +40,29 @@ function Dashboard({
   ).length;
   const recentBlocks = runtimeLogs.filter((log) => log.decision === "BLOCK").length;
 
+  function count(source, value) {
+    return readStates[source] === "ready" ? value : "—";
+  }
+
+  function unavailableMessage(source) {
+    return readStates[source] === "unavailable" ? "The latest data is unavailable." : null;
+  }
+
   return (
     <section className="page-section">
       <div className="section-heading">
         <h2>Security overview</h2>
-        <p>{loading ? "Loading security data..." : "Your security overview"}</p>
+        <p aria-live="polite">{loading ? "Refreshing security information…" : "Review tool risks, service health and recent decisions."}</p>
       </div>
+
+      {isAdmin && (
+        <div className="dashboard-actions" aria-label="Quick actions">
+          <button className="console-primary" type="button" onClick={() => onNavigate("inventory")}>Add MCP server</button>
+          <button className="secondary-action" type="button" onClick={() => onNavigate("analysis")}>Review tools</button>
+          <button className="secondary-action" type="button" onClick={() => onNavigate("emergency")}>Emergency block</button>
+          <button className="secondary-action" type="button" onClick={() => onNavigate("users")}>Manage users</button>
+        </div>
+      )}
 
       <section className="dashboard-priority" aria-label="What needs attention">
         <div className="section-heading compact-heading">
@@ -52,26 +70,26 @@ function Dashboard({
           <p>Actions based on the latest recorded results</p>
         </div>
         <div className="dashboard-priority-grid">
-          <article className="dashboard-priority-card">
+          <article className="dashboard-priority-card" data-tone="attention">
             <span>Tools to review</span>
-            <strong>{reviewTools.length}</strong>
-            <p>See the latest security findings.</p>
+            <strong>{count("tools", reviewTools.length)}</strong>
+            <p>{unavailableMessage("tools") || "Pending, quarantined or failed tool reviews."}</p>
             <button type="button" className="secondary-action" onClick={() => onNavigate("analysis")}>
               Review tools
             </button>
           </article>
-          <article className="dashboard-priority-card">
+          <article className="dashboard-priority-card" data-tone="restricted">
             <span>Tools marked blocked</span>
-            <strong>{blockedTools.length}</strong>
-            <p>Open the tool to see why it was blocked.</p>
+            <strong>{count("tools", blockedTools.length)}</strong>
+            <p>{unavailableMessage("tools") || "Open a tool to see why it was blocked."}</p>
             <button type="button" className="secondary-action" onClick={() => onNavigate("analysis")}>
               See analysis
             </button>
           </article>
-          <article className="dashboard-priority-card">
+          <article className="dashboard-priority-card" data-tone="neutral">
             <span>Active emergency restrictions</span>
-            <strong>{activeDenies.length}</strong>
-            <p>Restrictions currently in effect.</p>
+            <strong>{count("emergencyDenies", activeDenies.length)}</strong>
+            <p>{unavailableMessage("emergencyDenies") || "Restrictions currently in effect."}</p>
             <button type="button" className="secondary-action" onClick={() => onNavigate("emergency")}>
               See restrictions
             </button>
@@ -79,37 +97,39 @@ function Dashboard({
         </div>
       </section>
 
-      <h3 className="dashboard-section-heading">Service status</h3>
-      <p className="hint-text">Some services may be unavailable.</p>
+      <div className="section-heading dashboard-status-heading">
+        <h3 className="dashboard-section-heading">Service status</h3>
+        <button className="secondary-action" type="button" onClick={() => onNavigate("operations")}>Open system health</button>
+      </div>
       <div className="status-grid">
-        <RuntimeStatusCard label="API" value={health?.status || "unavailable"} />
+        <RuntimeStatusCard label="API" value={readStates.health === "ready" ? health?.status : readStates.health || "checking"} />
         <RuntimeStatusCard
           label="Database"
-          value={runtimeStatus?.database?.status || "unknown"}
+          value={readStates.runtimeStatus === "ready" ? runtimeStatus?.database?.status : readStates.runtimeStatus || "checking"}
           detail={runtimeStatus?.database?.detail}
         />
         <RuntimeStatusCard
           label="Policy checks"
-          value={runtimeStatus?.opa?.status || "unknown"}
+          value={readStates.runtimeStatus === "ready" ? runtimeStatus?.opa?.status : readStates.runtimeStatus || "checking"}
           detail={runtimeStatus?.opa?.endpoint}
         />
         <RuntimeStatusCard
           label="Gateway"
-          value={runtimeStatus?.gateway?.status || "unknown"}
+          value={readStates.runtimeStatus === "ready" ? runtimeStatus?.gateway?.status : readStates.runtimeStatus || "checking"}
           detail={runtimeStatus?.gateway?.endpoint}
         />
       </div>
 
-      <details className="operator-technical-details"><summary>More security numbers</summary><h3 className="dashboard-section-heading">Recorded activity</h3>
+      <details className="operator-technical-details"><summary>MCP inventory and decision counts</summary><h3 className="dashboard-section-heading">Recorded activity</h3>
       <div className="stats-grid">
-        <StatCard label="MCP servers" value={servers.length || 0} />
-        <StatCard label="MCP tools" value={tools.length || 0} />
-        <StatCard label="Reviews approved" value={approvedTools.length} tone="stat-good" />
-        <StatCard label="Tools requiring review" value={reviewTools.length} tone="stat-warn" />
-        <StatCard label="Blocked tools" value={blockedTools.length} tone="stat-danger" />
-        <StatCard label="Recent allowed decisions" value={recentAllows} tone="stat-good" />
-        <StatCard label="Recent blocked decisions" value={recentBlocks} tone="stat-danger" />
-        <StatCard label="Active emergency blocks" value={activeDenies.length} tone="stat-warn" />
+        <StatCard label="MCP servers" value={count("servers", servers.length)} />
+        <StatCard label="MCP tools" value={count("tools", tools.length)} />
+        <StatCard label="Reviews approved" value={count("tools", approvedTools.length)} tone="stat-good" />
+        <StatCard label="Tools requiring review" value={count("tools", reviewTools.length)} tone="stat-warn" />
+        <StatCard label="Blocked tools" value={count("tools", blockedTools.length)} tone="stat-danger" />
+        <StatCard label="Recent allowed decisions" value={count("runtimeLogs", recentAllows)} tone="stat-good" />
+        <StatCard label="Recent blocked decisions" value={count("runtimeLogs", recentBlocks)} tone="stat-danger" />
+        <StatCard label="Active emergency blocks" value={count("emergencyDenies", activeDenies.length)} tone="stat-warn" />
       </div>
 
       </details>
@@ -120,7 +140,7 @@ function Dashboard({
           {activeRevision ? (
             <dl className="compact-dl">
               <div>
-                <dt>revision_number</dt>
+                <dt>Revision</dt>
                 <dd>{activeRevision.revision_number}</dd>
               </div>
               <div>
@@ -134,21 +154,24 @@ function Dashboard({
                 </dd>
               </div>
               <div>
-                <dt>status</dt>
+                <dt>Status</dt>
                 <dd>
                   <Badge value={activeRevision.status} />
                 </dd>
               </div>
             </dl>
           ) : (
-            <div className="empty-state">No published configuration revision found.</div>
+            <div className="empty-state">{unavailableMessage("activeRevision") ||
+              (readStates.activeRevision === "ready" ? "No published security rules yet." : "Checking for published security rules…")}</div>
           )}
+          <button className="secondary-action" type="button" onClick={() => onNavigate("config")}>Open security rules</button>
         </section>
 
         <section className="detail-panel">
           <h3>Recent activity</h3>
           {auditEvents.length === 0 ? (
-            <div className="empty-state">No audit events recorded yet.</div>
+            <div className="empty-state">{unavailableMessage("audit") ||
+              (readStates.audit === "ready" ? "No audit events recorded yet." : "Loading audit history…")}</div>
           ) : (
             <ul className="event-list">
               {auditEvents.slice(0, 6).map((event) => (
@@ -160,25 +183,10 @@ function Dashboard({
               ))}
             </ul>
           )}
+          <button className="secondary-action" type="button" onClick={() => onNavigate("audit")}>Open audit history</button>
         </section>
       </div>
 
-      {isAdmin && (
-        <div className="quick-actions">
-          <button type="button" onClick={() => onNavigate("inventory")}>
-            Add MCP server
-          </button>
-          <button type="button" onClick={() => onNavigate("analysis")}>
-            Review tools
-          </button>
-          <button type="button" onClick={() => onNavigate("emergency")}>
-            Emergency block
-          </button>
-          <button type="button" onClick={() => onNavigate("users")}>
-            Manage users
-          </button>
-        </div>
-      )}
     </section>
   );
 }

@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { fetchAuditEventPage, safeErrorMessage } from "../api/client";
 import { Pagination } from "../components/Pagination";
 
 const PAGE_SIZE = 20;
 
-function Audit({ events = [], loading = false }) {
+const EMPTY_EVENTS = [];
+function Audit({ events = EMPTY_EVENTS, loading = false }) {
   const [query, setQuery] = useState("");
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [page, setPage] = useState(1);
@@ -14,13 +15,17 @@ function Audit({ events = [], loading = false }) {
     total: events.length,
   });
   const [pageLoading, setPageLoading] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const detailHeading = useRef(null);
+  const eventControl = useRef(null);
+  const loadedRemotePage = useRef(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
+    setPageLoading(true);
+    setError("");
     const timer = window.setTimeout(async () => {
-      setPageLoading(true);
-      setError("");
       try {
         const result = await fetchAuditEventPage({
           limit: PAGE_SIZE,
@@ -34,6 +39,7 @@ function Audit({ events = [], loading = false }) {
           setPage(pageCount);
           return;
         }
+        loadedRemotePage.current = true;
         setPageData({
           items: Array.isArray(result?.items) ? result.items : [],
           total,
@@ -53,13 +59,13 @@ function Audit({ events = [], loading = false }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [page, query]);
+  }, [page, query, retryCount, events]);
 
   useEffect(() => {
-    if (!query && page === 1 && events.length > 0 && pageData.items.length === 0) {
+    if (!loadedRemotePage.current && !query && page === 1 && events.length > 0) {
       setPageData({ items: events.slice(0, PAGE_SIZE), total: events.length });
     }
-  }, [events, page, pageData.items.length, query]);
+  }, [events, page, query]);
 
   useEffect(() => {
     if (selectedEvent && !pageData.items.some((item) => item.id === selectedEvent.id)) {
@@ -68,6 +74,17 @@ function Audit({ events = [], loading = false }) {
   }, [pageData.items, selectedEvent]);
 
   const pageCount = Math.max(1, Math.ceil(pageData.total / PAGE_SIZE));
+
+  function openEvent(event, record) {
+    eventControl.current = event.currentTarget;
+    setSelectedEvent(record);
+    window.requestAnimationFrame(() => detailHeading.current?.focus());
+  }
+
+  function closeEvent() {
+    setSelectedEvent(null);
+    eventControl.current?.focus();
+  }
 
   if (loading && pageData.items.length === 0 && !pageLoading) {
     return (
@@ -86,7 +103,12 @@ function Audit({ events = [], loading = false }) {
         <h2>Audit history</h2>
         <p>{pageData.total} event(s) · 20 per page</p>
       </div>
-      {error && <div className="error-banner">{error}</div>}
+      {error && (
+        <div className="error-banner investigation-error" role="alert">
+          <span>{error} Previous results are retained when available.</span>
+          <button onClick={() => setRetryCount((value) => value + 1)} type="button">Retry</button>
+        </div>
+      )}
       <p className="hint-text" role="note">See who changed what. Original records remain available in Details.</p>
       <div className="action-panel inline-form">
         <label>
@@ -98,11 +120,14 @@ function Audit({ events = [], loading = false }) {
               setPage(1);
             }}
             placeholder="action, actor, target..."
+            type="search"
             value={query}
           />
         </label>
+        {query && <button onClick={() => { setQuery(""); setSelectedEvent(null); setPage(1); }} type="button">Clear search</button>}
       </div>
-      <div className="table-shell audit-table">
+      {pageLoading && <p className="hint-text" role="status">Searching audit events...</p>}
+      <div aria-busy={pageLoading} aria-label="Audit events table" className="table-shell audit-table" tabIndex={0}>
         <table>
           <thead>
             <tr>
@@ -123,7 +148,7 @@ function Audit({ events = [], loading = false }) {
               </tr>
             ) : pageData.items.length === 0 ? (
               <tr>
-                <td colSpan="8">No audit events.</td>
+                <td colSpan="8">{query ? "No audit events match this search." : "No audit events have been recorded."}</td>
               </tr>
             ) : (
               pageData.items.map((event) => {
@@ -142,7 +167,7 @@ function Audit({ events = [], loading = false }) {
                     </td>
                     <td>{event.reason || "-"}</td>
                     <td>
-                      <button onClick={() => setSelectedEvent(event)} type="button">
+                      <button aria-expanded={selectedEvent?.id === event.id} onClick={(click) => openEvent(click, event)} type="button">
                         View
                       </button>
                     </td>
@@ -164,12 +189,14 @@ function Audit({ events = [], loading = false }) {
         total={pageData.total}
       />
       {selectedEvent && (
-        <section className="audit-event-detail" aria-label="Audit event detail">
+        <section className="audit-event-detail investigation-detail" aria-labelledby="audit-detail-heading">
           <div className="section-heading compact-heading">
-            <h3>{humanizeAction(selectedEvent.action)}</h3>
-            <button onClick={() => setSelectedEvent(null)} type="button">Close</button>
+            <h3 id="audit-detail-heading" ref={detailHeading} tabIndex={-1}>{humanizeAction(selectedEvent.action)}</h3>
+            <button onClick={closeEvent} type="button">Close details</button>
           </div>
           <dl className="inline-metadata audit-event-metadata">
+            <div><dt>Actor</dt><dd>{selectedEvent.actor_username_snapshot || "system"}</dd></div>
+            <div><dt>Time</dt><dd>{formatDate(selectedEvent.timestamp)}</dd></div>
             <div><dt>Event ID</dt><dd>{selectedEvent.id}</dd></div>
             <div><dt>Target</dt><dd>{[selectedEvent.target_type, selectedEvent.target_id].filter(Boolean).join(" / ") || "-"}</dd></div>
             <div><dt>Revision</dt><dd>{selectedEvent.revision_id || "-"}</dd></div>
@@ -215,7 +242,7 @@ function AuditChangedFields({ before, after }) {
         <ul>
           {changed.map((key) => (
             <li key={key}>
-              <strong>{key}</strong> ?
+              <strong>{key}</strong><span aria-hidden="true"> · </span>
               {!(key in oldFields) ? " field added"
                 : !(key in newFields) ? " field removed" : " field updated"}
             </li>

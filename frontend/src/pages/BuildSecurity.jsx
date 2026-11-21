@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import "./workflowPages.css";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Pagination, usePagination } from "../components/Pagination";
 
@@ -35,6 +36,10 @@ function BuildSecurity({
   const [selectedScan, setSelectedScan] = useState(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [requestedScanId, setRequestedScanId] = useState(null);
+  const [detailError, setDetailError] = useState("");
+  const detailRequest = useRef(0);
+  const buildDataRequest = useRef(0);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -79,10 +84,17 @@ function BuildSecurity({
   const [scanSources, setScanSources] = useState({});
   const [scanSearch, setScanSearch] = useState("");
   const [scanSourceFilter, setScanSourceFilter] = useState("ALL");
+  const [scanStatusFilter, setScanStatusFilter] = useState("ALL");
+  const [scanSort, setScanSort] = useState("RECENT");
+  const scanStatuses = useMemo(
+    () => [...new Set(scans.map((scan) => scan.status).filter(Boolean))].sort(),
+    [scans],
+  );
 
   const filteredScans = useMemo(() => {
     const query = scanSearch.trim().toLowerCase();
     return scans.filter((scan) => {
+      if (scanStatusFilter !== "ALL" && scan.status !== scanStatusFilter) return false;
       if (scanSourceFilter !== "ALL" && scan.target_type !== scanSourceFilter) {
         return false;
       }
@@ -99,14 +111,19 @@ function BuildSecurity({
         server?.name,
         server?.endpoint,
       ].some((value) => String(value || "").toLowerCase().includes(query));
+    }).sort((left, right) => {
+      if (scanSort === "NAME") return (left.display_name || "").localeCompare(right.display_name || "");
+      const byDate = (Date.parse(left.created_at) || 0) - (Date.parse(right.created_at) || 0);
+      return scanSort === "OLDEST" ? byDate : -byDate;
     });
-  }, [activeServers, scanSearch, scanSourceFilter, scanSources, scans]);
+  }, [activeServers, scanSearch, scanSourceFilter, scanSources, scanStatusFilter, scanSort, scans]);
   const scanPagination = usePagination(
     filteredScans,
-    `${scanSearch}|${scanSourceFilter}|${filteredScans.length}`,
+    `${scanSearch}|${scanSourceFilter}|${scanStatusFilter}|${scanSort}|${filteredScans.length}`,
   );
 
   async function loadBuildData() {
+    const request = ++buildDataRequest.current;
     setLoading(true);
     setError("");
     const requests = [
@@ -117,6 +134,7 @@ function BuildSecurity({
       requests.push(fetchBuildSourceBindings(), fetchBuildScanSources());
     }
     const results = await Promise.allSettled(requests);
+    if (request !== buildDataRequest.current) return;
 
     const failures = [];
     if (results[0].status === "fulfilled") {
@@ -161,6 +179,10 @@ function BuildSecurity({
 
   useEffect(() => {
     loadBuildData();
+    return () => {
+      buildDataRequest.current += 1;
+      detailRequest.current += 1;
+    };
   }, [isAdmin]);
 
   useEffect(() => {
@@ -249,14 +271,18 @@ function BuildSecurity({
   }
 
   async function openScan(scanId) {
+    const request = ++detailRequest.current;
+    setRequestedScanId(scanId);
+    setSelectedScan(null);
+    setDetailError("");
     setDetailLoading(true);
-    setError("");
     try {
-      setSelectedScan(await fetchBuildScan(scanId));
+      const detail = await fetchBuildScan(scanId);
+      if (request === detailRequest.current) setSelectedScan(detail);
     } catch (err) {
-      setError(safeErrorMessage(err));
+      if (request === detailRequest.current) setDetailError(safeErrorMessage(err));
     } finally {
-      setDetailLoading(false);
+      if (request === detailRequest.current) setDetailLoading(false);
     }
   }
 
@@ -273,7 +299,7 @@ function BuildSecurity({
         linked_server_id: localLinkedServerId ? Number(localLinkedServerId) : null,
         reason: localReason.trim(),
       });
-      setMessage(`Build scan ${created.id} completed with status ${created.status}.`);
+      setMessage(`Scan request recorded. Status: ${humanize(created.status)}. See Scan evidence for details.`);
       await loadBuildData();
       await openScan(created.id);
     } catch (err) {
@@ -297,7 +323,7 @@ function BuildSecurity({
         linked_server_id: gitLinkedServerId ? Number(gitLinkedServerId) : null,
         reason: gitReason.trim(),
       });
-      setMessage(`Build scan ${created.id} completed with status ${created.status}.`);
+      setMessage(`Scan request recorded. Status: ${humanize(created.status)}. See Scan evidence for details.`);
       await loadBuildData();
       await openScan(created.id);
     } catch (err) {
@@ -387,7 +413,7 @@ function BuildSecurity({
       const created = await startInventoryBuildScan(inventoryServerId, {
         reason: inventoryReason.trim(),
       });
-      setMessage(`Inventory Build scan ${created.id} completed with status ${created.status}.`);
+      setMessage(`Scan request recorded. Status: ${humanize(created.status)}. See Scan evidence for details.`);
       await loadBuildData();
       await openScan(created.id);
     } catch (err) {
@@ -409,6 +435,13 @@ function BuildSecurity({
         </button>
       </div>
 
+      <nav aria-label="Code scan sections" className="workflow-links">
+        {isAdmin && <a href="#build-new">New scan</a>}
+        <a href="#build-history">Scan history</a>
+        <a href="#build-evidence">Scan evidence</a>
+        {isAdmin && <a href="#build-governance">Runtime governance</a>}
+      </nav>
+      {!loading && !scanners.length && <p className="workflow-progress" role="status">Scanner availability could not be confirmed.</p>}
       <div className="build-scanner-grid" aria-label="Build scanner readiness">
         {scanners.map((scanner) => (
           <article className="status-panel compact-status" key={scanner.scanner_id}>
@@ -433,23 +466,24 @@ function BuildSecurity({
         ))}
       </div>
 
-      {error && <div className="error-banner">{error}</div>}
-      {message && <div className="success-banner">{message}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
+      {message && <div className="success-banner" role="status">{message}</div>}
 
       {isAdmin ? (
-        <section className="detail-panel build-new-scan">
+        <section className="detail-panel build-new-scan" id="build-new">
           <div className="operations-section-heading">
             <h3>New scan</h3>
             <small>Administrator only ? Checks code, secrets and dependencies</small>
           </div>
 
-          <div className="build-mode-tabs" role="tablist" aria-label="Build target type">
+          <div className="build-mode-tabs" role="group" aria-label="Build target type">
             {[
               ["LOCAL_DIRECTORY", "Local directory"],
               ["GIT_REPOSITORY", "Git repository"],
               ["INVENTORY", "MCP Inventory"],
             ].map(([id, label]) => (
               <button
+                aria-pressed={mode === id}
                 className={mode === id ? "active" : ""}
                 key={id}
                 onClick={() => setMode(id)}
@@ -581,6 +615,7 @@ function BuildSecurity({
                 sourceBindings={sourceBindings}
                 value={inventoryServerId}
                 onChange={setInventoryServerId}
+                disabled={busy || pickerBusy}
                 showSource
               />
               <InventorySourceContext
@@ -702,7 +737,7 @@ function BuildSecurity({
         </div>
       )}
 
-      <section className="detail-panel">
+      <section className="detail-panel" id="build-history">
         <div className="operations-section-heading">
           <div>
             <h3>Build scan history</h3>
@@ -725,9 +760,28 @@ function BuildSecurity({
               <option value="LOCAL_DIRECTORY">Local</option>
               <option value="GIT_REPOSITORY">Git</option>
             </select>
+            <select aria-label="Filter Build scans by status" value={scanStatusFilter}
+              onChange={(event) => setScanStatusFilter(event.target.value)}>
+              <option value="ALL">All statuses</option>
+              {scanStatuses.map((status) => <option key={status} value={status}>{humanize(status)}</option>)}
+            </select>
+            <select aria-label="Sort Build scans" value={scanSort}
+              onChange={(event) => setScanSort(event.target.value)}>
+              <option value="RECENT">Newest first</option>
+              <option value="OLDEST">Oldest first</option>
+              <option value="NAME">Name A to Z</option>
+            </select>
+            {(scanSourceFilter !== "ALL" || scanSearch || scanStatusFilter !== "ALL") && (
+              <button className="secondary-action" onClick={() => {
+                setScanSourceFilter("ALL");
+                setScanSearch("");
+                setScanStatusFilter("ALL");
+              }} type="button">Clear filters</button>
+            )}
           </div>
         </div>
-        <div className="table-wrap">
+        {loading && <p className="workflow-progress" role="status">Refreshing scan history…</p>}
+        <div className="table-wrap" role="region" aria-label="Build scan history table" tabIndex={0}>
           <table>
             <thead>
               <tr>
@@ -743,13 +797,15 @@ function BuildSecurity({
             <tbody>
               {scanPagination.pageItems.map((scan) => (
                 <tr
-                  className={selectedScan?.scan?.id === scan.id ? "selected-row" : ""}
+                  className={requestedScanId === scan.id ? "selected-row" : ""}
                   key={scan.id}
                   onClick={() => openScan(scan.id)}
                 >
                   <td>{formatDate(scan.created_at)}</td>
                   <td>{humanize(scan.target_type)}</td>
-                  <td>{scan.display_name}</td>
+                  <td><button className="table-selection" aria-pressed={requestedScanId === scan.id}
+                    onClick={(event) => { event.stopPropagation(); openScan(scan.id); }}
+                    type="button">{scan.display_name}</button></td>
                   <td>
                     <SourceLocator
                       isAdmin={isAdmin}
@@ -782,8 +838,23 @@ function BuildSecurity({
         />
       </section>
 
+      <section id="build-evidence" aria-label="Scan evidence" aria-busy={detailLoading}>
+        {detailError && (
+          <div className="error-banner" role="alert">
+            <p>{detailError}</p>
+            <button className="secondary-action" onClick={() => openScan(requestedScanId)} type="button">Retry loading scan evidence</button>
+          </div>
+        )}
+        <BuildScanDetail
+          detail={selectedScan}
+          isAdmin={isAdmin}
+          loading={detailLoading}
+          source={selectedScan ? scanSources[String(selectedScan.scan.id)] || null : null}
+        />
+      </section>
+
       {isAdmin && (
-        <section className="detail-panel build-governance-panel">
+        <section className="detail-panel build-governance-panel" id="build-governance">
           <div className="operations-section-heading">
             <div>
               <h3>Runtime governance</h3>
@@ -891,17 +962,12 @@ function BuildSecurity({
         </section>
       )}
 
-      <BuildScanDetail
-        detail={selectedScan}
-        isAdmin={isAdmin}
-        loading={detailLoading}
-        source={selectedScan ? scanSources[String(selectedScan.scan.id)] || null : null}
-      />
     </section>
   );
 }
 
 function ServerSelector({
+  disabled = false,
   label,
   onChange,
   optional = false,
@@ -913,7 +979,7 @@ function ServerSelector({
   return (
     <label>
       {label}
-      <select onChange={(event) => onChange(event.target.value)} value={value}>
+      <select disabled={disabled} onChange={(event) => onChange(event.target.value)} value={value}>
         {optional && <option value="">Not linked</option>}
         {!optional && servers.length === 0 && <option value="">No active MCP server</option>}
         {servers.map((server) => {
@@ -966,13 +1032,13 @@ function InventorySourceContext({ server, binding, loading }) {
 function BuildScanDetail({ detail, isAdmin, loading, source }) {
   const findingPagination = usePagination(detail?.findings || [], detail?.scan?.id || "");
   if (loading) {
-    return <section className="detail-panel">Loading Build scan evidence...</section>;
+    return <section className="detail-panel"><p className="workflow-progress" role="status">Loading Build scan evidence…</p></section>;
   }
   if (!detail) {
     return (
       <section className="detail-panel">
         <h3>Scan evidence</h3>
-        <p className="hint-text">Select a Build scan to inspect normalized evidence.</p>
+        <p className="hint-text">Choose a scan from the history table to inspect its findings and evidence.</p>
       </section>
     );
   }

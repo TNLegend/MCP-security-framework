@@ -1,3 +1,4 @@
+import "./workflowPages.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { approveTool, blockTool, fetchToolAnalysisBundle } from "../api/client";
 import ControlledAIAssistant from "../components/ControlledAIAssistant";
@@ -7,7 +8,6 @@ import ToolContractOnboarding from "../components/ToolContractOnboarding";
 import { useDialogFocus } from "../utils/useDialogFocus";
 import { driftChangeDescription, isCurrentAnalysis, nextAnalysisAction, riskLedgerMatchesRecord } from "../utils/analysisPresentation";
 import {
-  activateRowOnKeyboard,
   hasNonEmptyAnalysisEvidence,
   validateToolJustification,
 } from "../utils/validation";
@@ -28,7 +28,7 @@ function ToolAnalysis({
   const [busy, setBusy] = useState(false);
   const [reviewDialog, setReviewDialog] = useState(null);
   const modalRef = useRef(null);
-  useDialogFocus(Boolean(reviewDialog), modalRef);
+  useDialogFocus(Boolean(reviewDialog && isAdmin), modalRef);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
@@ -163,7 +163,7 @@ function ToolAnalysis({
 
   async function submitReview(event) {
     event.preventDefault();
-    if (!reviewDialog || !selectedTool?.current_fingerprint) {
+    if (!isAdmin || busy || !reviewDialog || !selectedTool?.current_fingerprint) {
       return;
     }
     if (reviewDialog.toolId !== selectedTool.id
@@ -195,13 +195,15 @@ function ToolAnalysis({
           reviewDialog.justification.trim(),
         );
       }
-      setMessage(`${reviewDialog.action} recorded.`);
+      setMessage(reviewDialog.action === "Allow" ? "Tool review approved." : "Tool block recorded.");
       setReviewDialog(null);
       await onRefresh?.();
       setBundle(await fetchToolAnalysisBundle(selectedTool.id));
       setBundleToolId(selectedTool.id);
     } catch (err) {
-      setError(err.message || `${reviewDialog.action} failed`);
+      setReviewDialog((current) =>
+        current ? { ...current, error: err.message || "The review could not be recorded. Try again." } : current,
+      );
     } finally {
       setBusy(false);
     }
@@ -219,20 +221,26 @@ function ToolAnalysis({
   }
 
   return (
-    <section className="page-section">
+    <section className="page-section tool-review-page">
       <div className="section-heading">
-        <h2>Security review</h2>
-        <p>Check an MCP tool before making a decision.</p>
+        <div>
+          <h2>Security review</h2>
+          <p>Find an MCP tool, inspect its evidence, and record a review decision.</p>
+        </div>
       </div>
+      <nav aria-label="Security review sections" className="workflow-links">
+        <a href="#review-tools">Tool list</a>
+        {selectedTool && <a href="#review-selected-tool">Selected tool</a>}
+      </nav>
       <p className="hint-text" role="note">An approved review does not automatically allow an MCP call.</p>
 
-      {message && <div className="success-banner">{message}</div>}
-      {error && <div className="error-banner">{error}</div>}
+      {message && <div className="success-banner" role="status">{message}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
 
       <div className="analysis-layout">
         <div className="inventory-section">
           <div className="section-heading compact-heading">
-            <h3>Select a tool</h3>
+            <h3 id="review-tools">Select a tool</h3>
             <p>{filteredTools.length} displayed / {tools.length} total</p>
           </div>
           <div className="analysis-tool-filters">
@@ -264,11 +272,12 @@ function ToolAnalysis({
           </div>
           {selectedTool && !filteredTools.some((tool) => tool.id === selectedTool.id) && (
             <p role="status" className="hint-text">
-              The selected tool is hidden by the current filters; its details remain visible on the right.
+              The current filters exclude the selected tool.
+              <a href="#review-selected-tool"> View its details.</a>
             </p>
           )}
           <p className="analysis-mobile-hint hint-text">Scroll sideways to view analysis, review and risk for every tool.</p>
-          <div className="table-shell analysis-tool-table" tabIndex="0" aria-label="Tool list, horizontally scrollable on small screens">
+          <div className="table-shell analysis-tool-table" role="region" tabIndex="0" aria-label="Tool list, horizontally scrollable on small screens">
             <table>
               <thead>
                 <tr>
@@ -293,9 +302,6 @@ function ToolAnalysis({
                         className={selectedTool?.id === tool.id ? "selected-row" : ""}
                         key={tool.id}
                         onClick={selectTool}
-                        onKeyDown={(event) => activateRowOnKeyboard(event, selectTool)}
-                        role="button"
-                        tabIndex="0"
                       >
                         <td>
                           <span
@@ -305,7 +311,9 @@ function ToolAnalysis({
                             {server?.server_info_title || server?.name || tool.server_id}
                           </span>
                         </td>
-                        <td><span className="table-ellipsis" title={tool.title || tool.name}>{tool.title || tool.name}</span></td>
+                        <td><button className="table-selection" aria-pressed={selectedTool?.id === tool.id}
+                          title={tool.title || tool.name} onClick={(event) => { event.stopPropagation(); selectTool(); }}
+                          type="button">{tool.title || tool.name}</button></td>
                         <td>
                           <Badge value={tool.analysis_status} />
                         </td>
@@ -330,14 +338,15 @@ function ToolAnalysis({
         </div>
 
         <div className="detail-panel">
-          <h3>{selectedTool ? selectedTool.title || selectedTool.name : "No tool selected"}</h3>
+          <h3 id="review-selected-tool">{selectedTool ? selectedTool.title || selectedTool.name : "No tool selected"}</h3>
+          {selectedServer && <p className="hint-text">{selectedServer.server_info_title || selectedServer.name}</p>}
           {selectedTool && (
             <>
-              {bundleLoading && <p>Loading selected tool evidence...</p>}
+              {bundleLoading && <p role="status" className="workflow-progress">Loading selected tool evidence…</p>}
               <div className="analysis-quick-summary" aria-label="Tool security status">
                 <div><span>Risk</span><strong>{humanize(selectedTool.risk_level || "Unknown")}</strong></div>
                 <div><span>Review</span><strong>{displayReviewStatus(selectedTool.review_status)}</strong></div>
-                <div><span>Can it run?</span><strong>Check runtime policy</strong></div>
+                <div><span>Execution authority</span><strong>Checked by runtime policy</strong></div>
               </div>
               <details className="analysis-technical-identity">
                 <summary>Technical identifiers</summary>
@@ -372,6 +381,7 @@ function ToolAnalysis({
               {isAdmin && (
                 <div className="button-row">
                   <button
+                    className="secondary-action"
                     disabled={busy || Boolean(approveDisabledReason)}
                     onClick={() => openReview("Allow")}
                     title={approveDisabledReason}
@@ -380,6 +390,7 @@ function ToolAnalysis({
                     Approve review
                   </button>
                   <button
+                    className="danger-action"
                     disabled={busy || Boolean(blockDisabledReason)}
                     onClick={() => openReview("Block")}
                     title={blockDisabledReason}
@@ -412,7 +423,7 @@ function ToolAnalysis({
           )}
         </div>
       </div>
-      {reviewDialog && (
+      {isAdmin && reviewDialog && (
         <div className="modal-backdrop" role="presentation">
           <section aria-modal="true" aria-labelledby="analysis-review-dialog-title"
             className="modal-panel" ref={modalRef} role="dialog" tabIndex={-1}>
@@ -441,7 +452,7 @@ function ToolAnalysis({
                   required
                   value={reviewDialog.justification}
                 />
-                <span className="field-error" id="review-justification-error">
+                <span className="field-error" id="review-justification-error" role="alert">
                   {reviewDialog.error}
                 </span>
               </label>

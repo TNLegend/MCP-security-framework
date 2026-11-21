@@ -1,0 +1,145 @@
+.management-jump-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding-block: 4px 8px;
+}
+
+.management-jump-links a {
+  color: var(--accent, #1858a5);
+  text-underline-offset: 0.2em;
+  font-weight: 650;
+}
+
+.management-jump-links a:hover { text-decoration-thickness: 2px; }
+
+.page-section :is(#service-readiness, #recent-activity, #storage-diagnostics, #log-retention,
+  #user-directory, #create-user, #new-emergency-block, #emergency-block-records,
+  #configuration-history, #configuration-editor, #configuration-actions) {
+  scroll-margin-block-start: 12px;
+}
+
+.page-section .management-config-layout {
+  grid-template-columns: minmax(0, 0.87fr) minmax(0, 1.13fr);
+}
+
+.page-section .management-config-layout > *,
+.page-section .investigation-layout > *,
+.page-section .account-layout > * {
+  min-inline-size: 0;
+}
+
+.page-section .account-layout {
+  display: grid;
+  grid-template-areas: "directory create";
+  grid-template-columns: minmax(0, 1.6fr) minmax(230px, 0.75fr);
+}
+
+.account-layout .account-directory { grid-area: directory; }
+.account-layout .user-create-panel { grid-area: create; }
+
+.account-directory .table-shell,
+#configuration-history .table-shell { margin-block: 12px 0; }
+
+.account-directory .management-filters {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.management-filters label {
+  flex: 1 1 140px;
+  min-inline-size: 0;
+}
+
+.management-filters button { flex: none; }
+
+.page-section button.record-link {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--accent, #1858a5);
+  font-weight: 675;
+  overflow-wrap: anywhere;
+  padding: 4px 6px;
+  text-align: start;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.page-section button.record-link:hover { text-decoration-thickness: 2px; }
+.record-link-context { font-size: .85em; font-weight: 550; }
+.selectable-record { cursor: pointer; }
+
+.page-section .investigation-detail {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.investigation-detail h3:focus-visible { outline-offset: 4px; }
+
+.page-section .investigation-error,
+.page-section .investigation-detail .compact-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  justify-content: space-between;
+}
+
+.operations-page .readiness-unknown {
+  background: #edf1f7;
+  color: #3d526b;
+}
+
+@media (max-width: 1200px) {
+  .page-section .management-config-layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 1024px) {
+  .page-section .account-layout {
+    grid-template-areas: "directory" "create";
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .page-section .investigation-detail .audit-json-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.page-section .investigation-layout,
+.page-section .runtime-section {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.page-section .runtime-section > div {
+  min-inline-size: 0;
+}
+
+.page-section .runtime-table {
+  max-inline-size: 100%;
+  overflow-x: auto;
+}
+
+.rules-page .summary-grid,
+.activity-page .runtime-summary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr));
+}
+
+.rules-page .summary-card,
+.activity-page .summary-card {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.rules-page .summary-card strong {
+  font-size: clamp(1.12rem, 2vw, 1.55rem);
+}
+
+.rules-page :is(.configuration-selection-summary, .configuration-editor, .configuration-section, .structured-editor) {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
