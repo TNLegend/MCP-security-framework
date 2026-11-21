@@ -126,6 +126,55 @@ def _matches(policy_pattern, value: str, *, action: bool = False) -> bool:
     return False
 
 
+# CL-07: security risk and availability impact are different dimensions.
+# Severity expresses how bad the stated impact is; it never ranks a broken
+# tool (availability) above a possible over-permission (security).
+IAM_MCP_FINDING_SEMANTICS = {
+    "POTENTIAL_EXCESS": {
+        "impact": "SECURITY_OVER_PERMISSION", "severity": "MEDIUM",
+        "title": "Security: IAM may allow more than MCP tool {tool} needs for {action}",
+        "impact_text": ("Security impact: the workload identity may hold permissions broader "
+                        "than the signed MCP contract (over-permission)."),
+        "remediation": ("Narrow the IAM identity policy to the action and resource of the signed "
+                        "MCP contract after review; never widen the contract to match IAM."),
+    },
+    "EXPLICIT_DENY": {
+        "impact": "AVAILABILITY_TOOL_WILL_LIKELY_FAIL", "severity": "MEDIUM",
+        "title": "Availability: IAM explicitly denies {action} needed by MCP tool {tool}",
+        "impact_text": ("Availability impact: the approved MCP tool will likely fail. This is "
+                        "not a security exposure; the deny itself is restrictive."),
+        "remediation": ("Decide whether the tool should keep this capability. Do not remove the "
+                        "deny without reviewing why it exists."),
+    },
+    "POTENTIAL_MISSING": {
+        "impact": "AVAILABILITY_TOOL_MAY_FAIL", "severity": "LOW",
+        "title": "Availability: no IAM Allow found for {action} needed by MCP tool {tool}",
+        "impact_text": ("Availability impact: the approved MCP tool may fail if no other policy "
+                        "grants the action. This is not a security exposure."),
+        "remediation": ("Confirm whether another policy grants the action before adding any "
+                        "permission; grant only the signed contract's action and resource."),
+    },
+}
+
+
+def iam_mcp_finding_text(status: str, entry: dict) -> dict:
+    spec = IAM_MCP_FINDING_SEMANTICS[status]
+    tool = str(entry.get("tool") or "unknown tool")[:96]
+    action = str(entry.get("action") or "an unresolved action")[:128]
+    resource = str(entry.get("resource") or "an unresolved resource")[:512]
+    return {
+        "severity": spec["severity"],
+        "title": spec["title"].format(tool=tool, action=action)[:255],
+        "description": (
+            f"{spec['impact_text']} Impact category: {spec['impact']}. MCP tool {tool}, "
+            f"IAM action {action}, resource {resource}. Identity-policy observation only: "
+            "effective authorization depends on resource policies, conditions, session "
+            "restrictions and organization-level controls."
+        ),
+        "remediation": spec["remediation"],
+    }
+
+
 def compare_policy(action: str, resource: str, statements: list[dict],
                    *, restrictions_unknown: bool = True) -> tuple[str, str, list[str]]:
     """Conservative *identity-policy* signals, not effective AWS permission verdicts.
@@ -369,24 +418,14 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     unknown+=1
                 if status in ("EXPLICIT_DENY","POTENTIAL_EXCESS","POTENTIAL_MISSING"):
                     issues+=1
-                    title={
-                        "EXPLICIT_DENY":"IAM policy explicitly denies an approved MCP capability",
-                        "POTENTIAL_EXCESS":"IAM permissions may exceed the approved MCP contract",
-                        "POTENTIAL_MISSING":"IAM identity Allow may be missing for an approved MCP capability",
-                    }[status]
                     db.add(CloudFinding(
                         scan_id=scan.id,resource_id=res.id,
                         rule_id="IAM_MCP_"+status,
-                        severity="HIGH" if status=="EXPLICIT_DENY" else "MEDIUM",
                         result=status,
                         fingerprint=digest([scan.id,entry["tool"],
                                             entry["effect_id"],entry["action"],
                                             entry["resource"],status]),
-                        title=title,
-                        description=("Identity-policy observation only. Effective authorization "
-                                     "depends on resource policies, conditions, session restrictions "
-                                     "and organization-level controls."),
-                        remediation="Review signed MCP contract and cloud identity policies before any access changes.",
+                        **iam_mcp_finding_text(status,entry),
                     ))
                 identity_permission_status=(
                     "PRESENT_BROADER_THAN_CONTRACT" if status=="POTENTIAL_EXCESS"

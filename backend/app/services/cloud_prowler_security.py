@@ -42,6 +42,54 @@ _CAPACITY = BoundedSemaphore(1)
 _RULE_RE = re.compile(r"^[a-z][a-z0-9_]{2,95}$")
 _REGION_RE = re.compile(r"^[a-z]{2}(?:-gov)?-[a-z]+-\d$")
 _SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "UNKNOWN"}
+# CL-05: actionable resource identity. Only a well-formed ARN of the SCANNED
+# account (or an account-less ARN such as S3) is kept; anything else is
+# withheld with an explicit status. No free text from Prowler is stored.
+_ARN_RE = re.compile(
+    r"^arn:(aws|aws-cn|aws-us-gov):([a-z0-9-]{2,32}):([a-z0-9-]*):(\d{12}|aws)?:"
+    r"([A-Za-z0-9+=,.@_/:*-]{1,400})$"
+)
+_AWS_TYPE_RE = re.compile(r"^Aws[A-Za-z0-9]{2,60}$")
+MAX_ARN_LENGTH = 512
+
+
+def resource_identity(item: dict, account: str, allowed_regions: list[str]) -> dict:
+    """Validated, display-safe identity of an OCSF resource (CL-05).
+
+    The OCSF `name` is deliberately ignored: it can carry a tag value or other
+    user content, which this adapter never persists."""
+    identifier = item.get("uid")
+    identity: dict = {"aws_arn": None, "identifier_status": "NON_ARN_IDENTIFIER",
+                      "aws_resource_type": None}
+    if isinstance(identifier, str) and len(identifier) <= MAX_ARN_LENGTH:
+        match = _ARN_RE.fullmatch(identifier)
+        if match:
+            arn_region, arn_account = match.group(3), match.group(4)
+            if arn_account not in (None, "", "aws") and arn_account != account:
+                identity["identifier_status"] = "ARN_OUTSIDE_SCANNED_ACCOUNT_WITHHELD"
+            elif arn_region and arn_region not in allowed_regions:
+                identity["identifier_status"] = "ARN_OUTSIDE_SCANNED_REGIONS_WITHHELD"
+            else:
+                identity["aws_arn"] = identifier
+                identity["identifier_status"] = "ARN_VERIFIED_SCANNED_ACCOUNT"
+    elif isinstance(identifier, str):
+        identity["identifier_status"] = "IDENTIFIER_TOO_LONG_WITHHELD"
+    kind = item.get("type")
+    if isinstance(kind, str) and _AWS_TYPE_RE.fullmatch(kind):
+        identity["aws_resource_type"] = kind
+    return identity
+
+
+def resource_display_name(identity: dict, resource_hash: str) -> str:
+    arn = identity.get("aws_arn")
+    if arn:
+        tail = re.split(r"[/:]", arn)[-1]
+        return (tail or arn)[:255]
+    return "AWS resource " + resource_hash[:12]
+
+
+def _humanized_rule(rule: str) -> str:
+    return rule.replace("_", " ")
 
 
 # Trusted, scanner-independent guidance; never persist untrusted Prowler
@@ -279,6 +327,7 @@ def _normalize(record: object, account: str, allowed_regions: list[str]) -> dict
         severity = "UNKNOWN"
     return {"rule": rule, "outcome": "UNKNOWN" if status == "MANUAL" else status,
             "severity": severity, "region": region, "resource_hash": resource_hash,
+            "identity": resource_identity(items[0], account, allowed_regions),
             "service": next((x for x in SERVICES if rule.startswith(x + "_")), "other")}
 
 
@@ -443,11 +492,16 @@ def _store(db, scan: CloudScan, rows: list[dict], overflow: int, result: str,
         if len(indexed) >= MAX_RESOURCES:
             unknown += 1
             continue
+        identity = row.get("identity") or {
+            "aws_arn": None, "identifier_status": "NOT_RECORDED",
+            "aws_resource_type": None}
+        # resource_arn/resource_type stay the stable integrity identity that
+        # deploy governance verifies; the actionable identity is alongside.
         res = CloudResource(
             id=new_id(), scan_id=scan.id, environment_id=scan.environment_id,
             resource_type="AWS_RESOURCE", resource_arn=f"prowler://{key}",
-            region=row["region"], display_name="AWS resource " + key[:12],
-            safe_attributes={"scanner": "prowler", "resource_sha256": key},
+            region=row["region"], display_name=resource_display_name(identity, key),
+            safe_attributes={"scanner": "prowler", "resource_sha256": key, **identity},
         )
         db.add(res)
         indexed[key] = res
@@ -476,14 +530,20 @@ def _store(db, scan: CloudScan, rows: list[dict], overflow: int, result: str,
                 findings.add(fp)
                 title, remediation = _RULE_GUIDANCE.get(
                     row["rule"],
-                    ("Cloud check failed: " + row["rule"],
-                     "Review the AWS configuration and the Prowler check."),
+                    ("Prowler check failed: " + _humanized_rule(row["rule"]),
+                     "Review the AWS configuration and the Prowler check " + row["rule"] + "."),
                 )
+                attrs = res.safe_attributes
+                where = attrs.get("aws_arn") or (
+                    res.display_name + " (identifier withheld: "
+                    + attrs.get("identifier_status", "NOT_RECORDED") + ")")
+                kind = attrs.get("aws_resource_type") or "AWS resource"
                 db.add(CloudFinding(
                     scan_id=scan.id, resource_id=res.id, rule_id=row["rule"],
                     fingerprint=fp, severity=row["severity"], result="FAIL",
                     title=title,
-                    description="Prowler reported an AWS security configuration risk.",
+                    description=(f"Prowler check {row['rule']} failed for {kind} {where} "
+                                 f"in region {row['region']}.")[:2000],
                     remediation=remediation,
                 ))
             elif len(findings) >= MAX_FINDINGS:

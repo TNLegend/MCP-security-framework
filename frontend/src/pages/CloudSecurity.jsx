@@ -320,6 +320,51 @@ function DeployEvidenceExplanation({ decision }) {
   );
 }
 
+export function humanizeCloudState(value) {
+  return String(value || "unknown").replaceAll("_", " ").toLowerCase();
+}
+
+// CL-05: actionable resource identity from validated backend attributes only.
+const IDENTIFIER_STATUS_LABELS = {
+  ARN_VERIFIED_SCANNED_ACCOUNT: "ARN verified in the scanned account",
+  ARN_OUTSIDE_SCANNED_ACCOUNT_WITHHELD: "ARN withheld: it does not belong to the scanned account",
+  ARN_OUTSIDE_SCANNED_REGIONS_WITHHELD: "ARN withheld: region outside the scanned regions",
+  IDENTIFIER_TOO_LONG_WITHHELD: "Identifier withheld: too long",
+  NON_ARN_IDENTIFIER: "Prowler did not report an ARN for this resource",
+  NOT_RECORDED: "Identity not recorded (older scan)",
+};
+
+export function cloudResourceIdentity(resource) {
+  const attrs = resource?.safe_attributes || {};
+  return {
+    arn: typeof attrs.aws_arn === "string" ? attrs.aws_arn : null,
+    type: attrs.aws_resource_type || resource?.resource_type || "AWS resource",
+    name: resource?.display_name || "Unnamed resource",
+    region: resource?.region || "unknown region",
+    status: IDENTIFIER_STATUS_LABELS[attrs.identifier_status]
+      || (attrs.scanner === "prowler" ? IDENTIFIER_STATUS_LABELS.NOT_RECORDED : null),
+  };
+}
+
+function CloudResourceLabel({ resource }) {
+  const identity = cloudResourceIdentity(resource);
+  return (
+    <>
+      {identity.type}: <strong>{identity.name}</strong> ({identity.region})
+      {identity.arn ? <> <code>{identity.arn}</code></> : identity.status && <> [{identity.status}]</>}
+    </>
+  );
+}
+
+function CloudFindingResource({ finding, resources }) {
+  if (!finding.resource_id) return <p>Resource: not linked to a specific resource.</p>;
+  const resource = (resources || []).find((item) => item.id === finding.resource_id);
+  if (!resource) {
+    return <p role="note">Resource: not in the currently returned resource list (display limit). Load more resources.</p>;
+  }
+  return <p>Resource: <CloudResourceLabel resource={resource} /></p>;
+}
+
 export default function CloudSecurity({ isAdmin = false }) {
   const [activeTask, setActiveTask] = useState("cloud-environments");
   const [historyKind, setHistoryKind] = useState("ALL");
@@ -1641,8 +1686,10 @@ export default function CloudSecurity({ isAdmin = false }) {
                 <p>No exception requests for this audit.</p>}
               {deployExceptions.map((exception) => (
                 <article key={exception.exception_id} className="cloud-finding">
-                  <strong>Finding {exception.finding_id.slice(0,12)}:
-                    {" "}{exception.state}</strong>
+                  <strong>
+                    {(details.findings.find((finding) => finding.id === exception.finding_id)?.title)
+                      || ("Finding " + exception.finding_id.slice(0, 12) + " (not in the returned list)")}
+                    {" - "}exception {humanizeCloudState(exception.state)}</strong>
                   {(() => {
                     const linked = details.findings.find((finding) => finding.id === exception.finding_id);
                     return linked
@@ -1806,6 +1853,7 @@ export default function CloudSecurity({ isAdmin = false }) {
           {details.findings.length ? details.findings.map((f) => (
             <article key={f.id} id={"cloud-finding-" + f.id} className="cloud-finding">
               <strong>{f.severity}: {f.title}</strong>
+              <CloudFindingResource finding={f} resources={details.resources} />
               <p>{f.description}</p>
               {f.remediation && <p>Suggested action: {f.remediation}</p>}
             </article>
@@ -1817,7 +1865,7 @@ export default function CloudSecurity({ isAdmin = false }) {
             </button>
           )}
           <h4>Resources ({details.resources.length})</h4>
-          {details.resources.map((r) => <p key={r.id}>{r.resource_type} — {r.display_name} ({r.region})</p>)}
+          {details.resources.map((r) => <p key={r.id}><CloudResourceLabel resource={r} /></p>)}
           {details.collection_coverage?.["resources"]?.truncated && (
             <button type="button" className="secondary-action"
               disabled={Boolean(collectionBusy)} onClick={() => loadNextCloudCollection("resources")}>
