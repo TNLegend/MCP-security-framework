@@ -7,7 +7,7 @@ import M4SemanticsPanel from "../components/m4semanticspanel";
 import { Pagination, usePagination } from "../components/Pagination";
 import ToolContractOnboarding from "../components/ToolContractOnboarding";
 import { useDialogFocus } from "../utils/useDialogFocus";
-import { driftChangeDescription, isCurrentAnalysis, nextAnalysisAction, riskLedgerMatchesRecord } from "../utils/analysisPresentation";
+import { driftChangeDescription, driftComparisonState, isCurrentAnalysis, nextAnalysisAction, riskLedgerMatchesRecord } from "../utils/analysisPresentation";
 import { validateToolJustification } from "../utils/validation";
 
 function ToolAnalysis({
@@ -571,6 +571,7 @@ function AnalysisOverview({ bundle, isAdmin, latestAnalysis, onAskAI, tool }) {
     : null;
   const changes = current && Array.isArray(latestAnalysis?.drift_result?.changes)
     ? latestAnalysis.drift_result.changes : null;
+  const drift = driftComparisonState(latestAnalysis, bundle, current);
   // TA-02: the persisted M3 SHADOW projection, never a label/regex guess.
   const m3 = current ? latestAnalysis?.m3_shadow : null;
   const restriction = bundle?.status?.status_reason_detail;
@@ -591,11 +592,12 @@ function AnalysisOverview({ bundle, isAdmin, latestAnalysis, onAskAI, tool }) {
                 <span>Instruction-injection check (advisory)</span>
                 <strong>{m3SummaryLine(m3)}</strong>
               </div>
-              <div>
+              <div className={"drift-state drift-state-" + drift.state} data-drift-state={drift.state}>
                 <span>Tool changes</span>
-                <strong>{changes === null ? "Result unavailable"
-                  : changes.length === 0 ? "No changes recorded"
-                    : changes.length + " change(s) recorded"}</strong>
+                <span className="drift-value">
+                  <strong>{drift.label}</strong>
+                  <small>{drift.detail}</small>
+                </span>
               </div>
               <div>
                 <span>Other security findings</span>

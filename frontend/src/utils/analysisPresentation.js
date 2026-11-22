@@ -40,6 +40,75 @@ export function nextAnalysisAction(tool, analysis, current) {
   return "Review the recorded findings and verification limits; neither a low risk score nor a model suggestion grants Runtime permissions.";
 }
 
+function shortRef(value) {
+  return value ? String(value).slice(0, 12) : "unknown";
+}
+
+// UX-06: an empty changes array never proves "unchanged" on its own. The
+// state requires a comparison target recorded by M6 (drift_result.comparison)
+// or, for legacy rows, a conservative reading that says what is unknown.
+export function driftComparisonState(analysis, bundle, current) {
+  const drift = analysis?.drift_result;
+  if (!current || !drift || !Array.isArray(drift.changes)) {
+    return { state: "unavailable", label: "Comparison unavailable",
+      detail: "No current, completed drift result is available for this observation." };
+  }
+  const baselineReadFailed = Boolean(bundle?.errors?.baseline);
+  const currentBaseline = baselineReadFailed ? undefined : (bundle?.baseline ?? null);
+  const comparison = drift.comparison && typeof drift.comparison === "object" ? drift.comparison : null;
+  const count = drift.changes.length;
+  if (count > 0) {
+    const target = comparison?.baseline_fingerprint
+      ? " against approved baseline " + shortRef(comparison.baseline_fingerprint) : "";
+    return { state: "changed", label: count + " change(s) recorded" + target,
+      detail: "Exact changes are listed in Detected issues and Technical details.",
+      baselineFingerprint: comparison?.baseline_fingerprint || null };
+  }
+  if (comparison) {
+    if (comparison.comparison_ran === false) {
+      return { state: "unavailable", label: "Comparison unavailable",
+        detail: "The analysis did not complete, so no drift comparison ran." };
+    }
+    if (!comparison.baseline_present) {
+      if (currentBaseline) {
+        return { state: "stale", label: "No baseline at analysis time",
+          detail: "An approved baseline (" + shortRef(currentBaseline.fingerprint)
+            + ") now exists. Re-run the analysis to compare against it." };
+      }
+      return { state: "no_baseline", label: "No approved baseline",
+        detail: "Nothing has been approved for this tool yet, so there is nothing to compare against." };
+    }
+    if (!comparison.compared) {
+      return { state: "unavailable", label: "Comparison unavailable",
+        detail: "The approved baseline's observation snapshot was not available when this analysis ran." };
+    }
+    if (currentBaseline && comparison.baseline_fingerprint
+        && currentBaseline.fingerprint !== comparison.baseline_fingerprint) {
+      return { state: "stale", label: "Compared against a previous baseline",
+        detail: "This result compared baseline " + shortRef(comparison.baseline_fingerprint)
+          + "; the approved baseline is now " + shortRef(currentBaseline.fingerprint) + ". Re-run the analysis." };
+    }
+    return { state: "unchanged",
+      label: "No drift against baseline " + shortRef(comparison.baseline_fingerprint),
+      detail: "Exact comparison with approved observation version "
+        + (comparison.baseline_version_id ?? "unknown") + " found no security-relevant change.",
+      baselineFingerprint: comparison.baseline_fingerprint || null };
+  }
+  // Legacy rows: the comparison target was not recorded.
+  if (drift.similarity === null || drift.similarity === undefined) {
+    if (currentBaseline === null) {
+      return { state: "no_baseline", label: "No approved baseline",
+        detail: "No approved baseline is recorded for this tool (legacy result without a comparison reference)." };
+    }
+    return { state: "unavailable", label: "Comparison unavailable",
+      detail: baselineReadFailed
+        ? "The approved baseline could not be read, and this legacy result did not record what it compared."
+        : "This legacy result did not record a comparison target. Re-run the analysis to verify drift." };
+  }
+  return { state: "legacy_unchanged", label: "No changes recorded (legacy result)",
+    detail: "A comparison ran, but this older result did not record which baseline it used. Re-run to bind it." };
+}
+
 export function riskLedgerMatchesRecord(analysis) {
   const evidence = analysis?.semantic_scores?.m7_risk_evidence;
   return Boolean(evidence
@@ -106,9 +175,7 @@ export function analysisModuleCards(tool, analysis, bundle) {
       title: "Version changes",
       status: existing(drift?.status) ? label(drift.status) : "Unknown",
       explanation: "Changes to the recorded tool contract or description compared with a previous observation.",
-      detail: Array.isArray(drift?.changes)
-        ? drift.changes.length + " recorded change(s)."
-        : "Current drift details unavailable.",
+      detail: driftComparisonState(analysis, bundle, current).label + ".",
     },
     {
       id: "M7",

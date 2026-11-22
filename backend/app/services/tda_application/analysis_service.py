@@ -550,7 +550,12 @@ class ToolAnalysisService:
                 else result["semantic_scores"]
             ),
             consistency_result=_json_safe(result["consistency_result"]),
-            drift_result=result["drift_result"],
+            drift_result=drift_result_with_comparison_target(
+                result["drift_result"], baseline, baseline_snapshot,
+                comparison_ran=STATUS_ANALYSIS_FAILED not in (
+                    result.get("analysis_status"), result.get("review_status"),
+                ),
+            ),
             model_versions=result["model_versions"],
             analyzer_revision=ANALYZER_REVISION,
             created_at=now,
@@ -823,6 +828,35 @@ class ToolAnalysisService:
         db.flush()
         apply_analysis_to_tool(tool, analysis, baseline, protocol_approved_match=True)
         return analysis
+
+
+DRIFT_COMPARISON_SCHEMA = "m6.comparison_target.v1"
+
+
+def drift_result_with_comparison_target(drift_result, baseline, baseline_snapshot, *, comparison_ran=True):
+    """UX-06: bind persisted M6 drift output to the exact comparison target.
+
+    An empty ``changes`` list alone cannot distinguish "no approved baseline",
+    "baseline snapshot unavailable" and "compared unchanged". This additive
+    JSON block records which approved baseline (if any) was compared, without
+    changing any status computed by M6/M7.
+    """
+    if not isinstance(drift_result, dict):
+        return drift_result
+    snapshot_available = baseline is not None and baseline_snapshot is not None
+    comparison = {
+        "schema": DRIFT_COMPARISON_SCHEMA,
+        "baseline_present": baseline is not None,
+        "baseline_snapshot_available": snapshot_available,
+        "baseline_id": getattr(baseline, "id", None),
+        "baseline_version_id": getattr(baseline, "version_id", None),
+        "baseline_fingerprint": getattr(baseline, "fingerprint", None),
+        "baseline_approval_source": getattr(baseline, "approval_source", None),
+        # True only when M6 actually ran against a retained baseline snapshot.
+        "compared": bool(comparison_ran and snapshot_available),
+        "comparison_ran": bool(comparison_ran),
+    }
+    return {**drift_result, "comparison": comparison}
 
 
 def baseline_mismatch_reason_for(

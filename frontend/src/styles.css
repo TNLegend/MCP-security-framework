@@ -3084,6 +3084,12 @@ code {
   color: #5c3600;
   font-weight: 700;
 }
+/* UX-06: drift states carry their qualifier, never just a reassuring count. */
+.operator-checks .drift-state .drift-value { display: grid; justify-items: end; gap: 2px; text-align: right; max-width: 62ch; }
+.operator-checks .drift-state small { display: block; font-weight: 400; color: #4a5568; line-height: 1.4; }
+.operator-checks .drift-state-no_baseline strong,
+.operator-checks .drift-state-unavailable strong,
+.operator-checks .drift-state-stale strong { color: #7a4100; }
 /* UX-03: freshness of the visible runtime query; stale rows stay readable. */
 .runtime-freshness { margin: 4px 0 8px; }
 .runtime-freshness.is-stale { color: #7a4100; font-weight: 600; }

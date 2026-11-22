@@ -87,7 +87,56 @@ def check_ux03(browser, server, shots):
     return "ADMIN: header Refresh and Refresh events re-read applied decision=BLOCK; failed refresh kept 3 rows labelled stale"
 
 
-CHECKS = {"UX-03": check_ux03}
+def open_review(page):
+    smoke.navigate(page, "Security review", 1440)
+    row = page.get_by_role("row").filter(has_text="read_documents").first
+    if row.count():
+        row.click()
+    expect(page.get_by_role("region", name="Security summary")).to_be_visible()
+    return page.get_by_role("region", name="Security summary").locator("[data-drift-state]")
+
+
+def check_ux06(browser, server, shots):
+    """UX-06: empty drift changes are never presented as verified absence of drift."""
+    context, page, api, errors = smoke.open_page(browser, server, "ADMIN", 1440)
+    cell = open_review(page)
+    expect(cell).to_have_attribute("data-drift-state", "no_baseline")
+    expect(cell).to_contain_text("No approved baseline")
+    expect(cell).not_to_contain_text("No changes recorded")
+    if shots:
+        page.get_by_role("region", name="Security summary").screenshot(path=str(shots / "ux06-drift-no-baseline.png"))
+    context.close()
+
+    bound = {**smoke.ANALYSIS, "drift_result": {"status": "NONE", "changes": [], "similarity": 1.0, "comparison": {
+        "schema": "m6.comparison_target.v1", "baseline_present": True, "baseline_snapshot_available": True,
+        "baseline_id": 4, "baseline_version_id": 9, "baseline_fingerprint": "c" * 64,
+        "compared": True, "comparison_ran": True}}}
+    original = RemediationAPI.read
+
+    def read(self, path, query):
+        if path.endswith("/tool-analysis/tools/1/analyses") or path == "/control-plane/tool-analysis/analyses":
+            return [bound]
+        if path.endswith("/tool-analysis/tools/1/baseline"):
+            return {"id": 4, "tool_id": 1, "version_id": 9, "fingerprint": "c" * 64,
+                    "approval_provenance": {"label": "Administrator approval"}}
+        return original(self, path, query)
+
+    RemediationAPI.read = read
+    try:
+        context, page, api, errors = smoke.open_page(browser, server, "ADMIN", 1440)
+        cell = open_review(page)
+        expect(cell).to_have_attribute("data-drift-state", "unchanged")
+        expect(cell).to_contain_text("No drift against baseline cccccccccccc")
+        if shots:
+            page.get_by_role("region", name="Security summary").screenshot(path=str(shots / "ux06-drift-unchanged-bound.png"))
+        assert not errors, errors
+        context.close()
+    finally:
+        RemediationAPI.read = original
+    return "no-baseline fixture reads 'No approved baseline'; bound comparison reads 'No drift against baseline cccccccccccc'"
+
+
+CHECKS = {"UX-03": check_ux03, "UX-06": check_ux06}
 
 
 def main():
