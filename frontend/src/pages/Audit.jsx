@@ -1,7 +1,7 @@
 import { formatServerTime } from "../utils/serverTime.js";
 import { useEffect, useRef, useState } from "react";
 
-import { fetchAuditEventPage, fetchRelatedSecurityTimeline, safeErrorMessage } from "../api/client";
+import { fetchAuditEventPage, fetchRelatedSecurityTimeline, generateSecurityAuditReport, safeErrorMessage } from "../api/client";
 import { Pagination } from "../components/Pagination";
 import NestedChanges from "../components/NestedChanges";
 import CodeBlock from "../components/CodeBlock.jsx";
@@ -10,7 +10,7 @@ import { auditTargetLink } from "../utils/operationNavigation.js";
 const PAGE_SIZE = 20;
 
 const EMPTY_EVENTS = [];
-function Audit({ events = EMPTY_EVENTS, loading = false, refreshToken = 0 }) {
+function Audit({ events = EMPTY_EVENTS, loading = false, refreshToken = 0, isAdmin = false }) {
   const [query, setQuery] = useState("");
   const [selectedEventId, setSelectedEventId] = useState(null);
   const [page, setPage] = useState(1);
@@ -25,6 +25,12 @@ function Audit({ events = EMPTY_EVENTS, loading = false, refreshToken = 0 }) {
   const eventControl = useRef(null);
   const loadedRemotePage = useRef(false);
   const [error, setError] = useState("");
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
+  const [reportError, setReportError] = useState("");
+  const [reportPeriod, setReportPeriod] = useState("30d");
+  const [reportFormat, setReportFormat] = useState("pdf");
+  const [includeEvidence, setIncludeEvidence] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +105,36 @@ function Audit({ events = EMPTY_EVENTS, loading = false, refreshToken = 0 }) {
     setRetryCount((value) => value + 1);
   }
 
+  async function downloadReport(event) {
+    event.preventDefault();
+    if (reportBusy || !isAdmin) return;
+    setReportBusy(true);
+    setReportError("");
+    try {
+      const file = await generateSecurityAuditReport({
+        period: reportPeriod,
+        format: reportFormat,
+        include_evidence: includeEvidence,
+      });
+      const url = window.URL.createObjectURL(file);
+      try {
+        const link = window.document.createElement("a");
+        link.href = url;
+        link.download = `mcp-security-audit-${reportPeriod}.${reportFormat}`;
+        window.document.body.appendChild(link);
+        try { link.click(); } finally { link.remove(); }
+      } finally {
+        window.setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+      }
+      setReportOpen(false);
+      refreshResults();
+    } catch (err) {
+      setReportError(safeErrorMessage(err) || "The security report could not be generated.");
+    } finally {
+      setReportBusy(false);
+    }
+  }
+
   if (loading && pageData.items.length === 0 && !pageLoading) {
     return (
       <section className="page-section">
@@ -116,6 +152,60 @@ function Audit({ events = EMPTY_EVENTS, loading = false, refreshToken = 0 }) {
         <h2>Audit history</h2>
         <p>{pageData.total} event(s) · 20 per page</p>
       </div>
+      {isAdmin && (
+        <div className="detail-panel" aria-label="Security audit report generator">
+          <div className="section-heading compact-heading">
+            <div>
+              <h3>Security audit report</h3>
+              <p>Create a downloadable summary from recorded security evidence, without running new scans.</p>
+            </div>
+            <button
+              type="button"
+              className="primary-action"
+              aria-expanded={reportOpen}
+              aria-controls="audit-report-settings"
+              onClick={() => { setReportOpen((open) => !open); setReportError(""); }}
+              disabled={reportBusy}
+            >
+              Generate report
+            </button>
+          </div>
+          {reportOpen && (
+            <form id="audit-report-settings" className="filter-toolbar" onSubmit={downloadReport}>
+              <label>
+                Reporting period
+                <select value={reportPeriod} onChange={(event) => setReportPeriod(event.target.value)} disabled={reportBusy}>
+                  <option value="7d">Last 7 days</option>
+                  <option value="30d">Last 30 days</option>
+                  <option value="90d">Last 90 days</option>
+                  <option value="all">All available history</option>
+                </select>
+              </label>
+              <label>
+                Output format
+                <select value={reportFormat} onChange={(event) => setReportFormat(event.target.value)} disabled={reportBusy}>
+                  <option value="pdf">PDF document</option>
+                  <option value="html">HTML document</option>
+                  <option value="json">JSON data</option>
+                  <option value="csv">CSV data</option>
+                </select>
+              </label>
+              <label className="checkbox-label">
+                <input type="checkbox" checked={includeEvidence} onChange={(event) => setIncludeEvidence(event.target.checked)} disabled={reportBusy}/>
+                Include redacted evidence references
+              </label>
+              <div className="toolbar-actions">
+                <button type="submit" className="primary-action" disabled={reportBusy}>
+                  {reportBusy ? "Generating..." : "Generate & download"}
+                </button>
+                <button type="button" disabled={reportBusy} onClick={() => setReportOpen(false)}>Cancel</button>
+              </div>
+              <p className="toolbar-note">Reports contain aggregated PostgreSQL evidence, not raw credentials, tool arguments, or cloud policies. Generating a report creates an audit receipt.</p>
+            </form>
+          )}
+          {reportError && <p role="alert" className="field-error">{reportError}</p>}
+        </div>
+      )}
       <RelatedSecurityTimeline />
       {error && (
         <div className="error-banner investigation-error" role="alert">

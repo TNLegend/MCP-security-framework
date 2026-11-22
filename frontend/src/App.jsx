@@ -598,7 +598,7 @@ function App() {
     }
 
     if (activePage === "audit") {
-      return <Audit events={auditEvents} loading={loading} refreshToken={viewRefreshToken} />;
+      return <Audit events={auditEvents} loading={loading} refreshToken={viewRefreshToken} isAdmin={isAdmin} />;
     }
 
     if (activePage === "users" && isAdmin) {

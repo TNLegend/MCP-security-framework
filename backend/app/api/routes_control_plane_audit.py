@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, HTTPException, Path
+from fastapi import APIRouter, Depends, Query, HTTPException, Path, Response
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -19,10 +21,71 @@ from app.models.tool_analysis import ToolProtocolObservation
 from app.models.cloud_security import (
     CloudScanEvent, CloudDeployGovernanceDecision, CloudDeployExceptionEvent,
 )
-from app.services.control_plane_auth import ROLE_ADMIN, AuthenticatedControlPlaneUser, require_authenticated_user
+from app.services.control_plane_auth import ROLE_ADMIN, AuthenticatedControlPlaneUser, require_authenticated_user, require_admin
+from app.services.control_plane_audit import record_control_plane_audit
+from app.services.audit_reports import collect_report, render_report
 from app.services.emergency_deny import emergency_deny_state
 
 router = APIRouter(prefix="/control-plane/audit", tags=["Control Plane Audit"])
+
+
+class GenerateSecurityReportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    period: Literal["7d", "30d", "90d", "all"] = "30d"
+    format: Literal["pdf", "html", "json", "csv"] = "pdf"
+    include_evidence: bool = True
+
+
+@router.post("/reports/generate")
+def generate_security_report(
+    payload: GenerateSecurityReportRequest,
+    current: AuthenticatedControlPlaneUser = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Generate a read-only, redacted evidence summary; log only its hash.
+
+    ADMIN + active session + CSRF required by the standard control-plane auth
+    dependency. A POST is intentional because report creation is audited.
+    No scanner, cloud or model execution is triggered by this endpoint.
+    """
+    snapshot = collect_report(
+        db,
+        period=payload.period,
+        include_evidence=payload.include_evidence,
+    )
+    document, media_type, filename = render_report(snapshot, payload.format)
+    digest = hashlib.sha256(document).hexdigest()
+    record_control_plane_audit(
+        db,
+        actor=current.user,
+        action="SECURITY_REPORT_GENERATED",
+        target_type="security_report",
+        target_id=snapshot["report_id"],
+        result="SUCCESS",
+        metadata={
+            "format": payload.format,
+            "period": payload.period,
+            "since_utc": snapshot["since_utc"],
+            "until_utc": snapshot["until_utc"],
+            "sha256": digest,
+            "byte_count": len(document),
+            "includes_evidence": payload.include_evidence,
+        },
+    )
+    db.commit()
+    return Response(
+        content=document,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store, private",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+            "X-Report-SHA256": digest,
+        },
+    )
+
 
 
 def _event_public(event: ControlPlaneAuditEvent) -> dict:

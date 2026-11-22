@@ -149,12 +149,21 @@ async function performRequest(path, options, controller = new AbortController())
   }
 }
 
-async function requestBlob(path) {
+async function requestBlob(path, options = {}) {
   const generation = sessionGeneration;
   const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  const { timeoutMs, ...requestOptions } = options;
+  const method = requestOptions.method || "GET";
+  const headers = { ...(requestOptions.headers || {}) };
+  const currentCsrf = csrfToken || csrfFromCookie();
+  if (method !== "GET" && currentCsrf) headers["x-csrf-token"] = decodeURIComponent(currentCsrf);
+  if (requestOptions.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
+      ...requestOptions,
+      method,
+      headers,
       credentials: "include",
       signal: controller.signal,
     });
@@ -940,6 +949,18 @@ export function fetchExactAuditTarget(type, id) {
 
 export async function fetchAuditEvents() {
   return request("/control-plane/audit/events");
+}
+
+export async function generateSecurityAuditReport({ period = "30d", format = "pdf", include_evidence = true } = {}) {
+  if (!["7d", "30d", "90d", "all"].includes(period) ||
+      !["pdf", "html", "json", "csv"].includes(format)) {
+    throw new ApiError("Choose a supported report period and format.", { code: "report_options_invalid" });
+  }
+  return requestBlob("/control-plane/audit/reports/generate", {
+    method: "POST",
+    body: JSON.stringify({ period, format, include_evidence }),
+    timeoutMs: 60_000,
+  });
 }
 
 export async function fetchAuditEventPage({ limit = 20, offset = 0, search = "", snapshotAt = null, snapshotId = null } = {}) {
