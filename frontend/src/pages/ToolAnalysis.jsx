@@ -307,8 +307,8 @@ function ToolAnalysis({
                 <tr>
                   <th>Server</th>
                   <th>Tool</th>
-                  <th>Status</th>
-                  <th>Review</th>
+                  <th>Analysis</th>
+                  <th>Human review</th>
                   <th>Risk</th>
                 </tr>
               </thead>
@@ -385,6 +385,34 @@ function ToolAnalysis({
                   Approved baseline: {activeBundle.baseline.approval_provenance.label}
                 </p>
               )}
+
+              <ReviewDecisionEvidence
+                bundle={activeBundle}
+                bundleLoading={bundleLoading}
+                isAdmin={isAdmin}
+                latestAnalysis={latestAnalysis}
+                onOpenTab={setActiveTab}
+                tool={selectedTool}
+              />
+
+              <ReviewActionControls
+                isAdmin={isAdmin}
+                busy={busy}
+                approveDisabledReason={approveDisabledReason}
+                blockDisabledReason={blockDisabledReason}
+                onApprove={() => openReview("Allow")}
+                onBlock={() => openReview("Block")}
+              />
+
+              <AnalysisWorkspace
+                activeTab={activeTab}
+                bundle={activeBundle}
+                isAdmin={isAdmin}
+                latestAnalysis={latestAnalysis}
+                onComplete={onRefresh}
+                onSelectTab={setActiveTab}
+                tool={selectedTool}
+              />
               <details className="analysis-technical-identity">
                 <summary>Technical identifiers</summary>
                 <dl className="compact-dl">
@@ -414,25 +442,6 @@ function ToolAnalysis({
                 </div>
                 </dl>
               </details>
-
-              <ReviewActionControls
-                isAdmin={isAdmin}
-                busy={busy}
-                approveDisabledReason={approveDisabledReason}
-                blockDisabledReason={blockDisabledReason}
-                onApprove={() => openReview("Allow")}
-                onBlock={() => openReview("Block")}
-              />
-
-              <AnalysisWorkspace
-                activeTab={activeTab}
-                bundle={activeBundle}
-                isAdmin={isAdmin}
-                latestAnalysis={latestAnalysis}
-                onComplete={onRefresh}
-                onSelectTab={setActiveTab}
-                tool={selectedTool}
-              />
             </>
           )}
         </div>
@@ -975,6 +984,59 @@ const ELIGIBILITY_NEXT_ACTION = {
   RESOLVE_REVIEW_STATUS: "Resolve the review status first.",
   RECORD_REVIEW_DECISION: "Record a review decision with a justification.",
 };
+
+// UX-07: decision evidence precedes the decision controls. It renders the
+// backend eligibility contract (TA-06) and the recorded restriction; an
+// unreadable eligibility is never presented as a verified refusal.
+export function reviewDecisionState(bundle, latestAnalysis, bundleLoading = false) {
+  if (bundleLoading && !bundle) return { state: "loading", reasons: [], next: "" };
+  if (bundle?.errors?.eligibility) return { state: "unavailable", reasons: [], next: "Refresh the tool evidence before deciding." };
+  const eligibility = bundle?.eligibility;
+  if (!eligibility) return { state: "unavailable", reasons: [], next: "Eligibility has not been loaded." };
+  if (eligibility.fingerprint && latestAnalysis?.fingerprint && eligibility.fingerprint !== latestAnalysis.fingerprint) {
+    return { state: "stale", reasons: [], next: "The evidence changed while loading. Refresh before deciding." };
+  }
+  const reasons = (eligibility.reasons || []).map((reason) => ({ code: reason.code || "UNSPECIFIED", message: reason.message || "" }));
+  return {
+    state: eligibility.eligible ? "eligible" : "ineligible",
+    reasons,
+    next: ELIGIBILITY_NEXT_ACTION[eligibility.next_action] || "",
+  };
+}
+
+export function ReviewDecisionEvidence({ bundle, bundleLoading, isAdmin, latestAnalysis, onOpenTab, tool }) {
+  const decision = reviewDecisionState(bundle, latestAnalysis, bundleLoading);
+  const restriction = bundle?.status?.status_reason_detail;
+  const strongest = restriction?.label || decision.reasons[0]?.message
+    || nextAnalysisAction(tool, latestAnalysis, isCurrentAnalysis(tool, latestAnalysis, bundle));
+  const heading = {
+    eligible: "Ready for a recorded decision",
+    ineligible: "Approval is not possible yet",
+    unavailable: "Eligibility could not be verified",
+    stale: "Evidence changed while loading",
+    loading: "Loading decision evidence",
+  }[decision.state];
+  return (
+    <section aria-label="Decision evidence" className={"review-decision-evidence decision-" + decision.state}
+      data-eligibility-state={decision.state}>
+      <h4>{heading}</h4>
+      <p className="review-strongest-reason"><strong>Strongest recorded reason:</strong> {strongest}</p>
+      {decision.reasons.length > 0 && (
+        <ul className="review-reason-codes" aria-label="Backend eligibility reasons">
+          {decision.reasons.map((reason) => (
+            <li key={reason.code}><code>{reason.code}</code> {reason.message}</li>
+          ))}
+        </ul>
+      )}
+      {decision.next && <p><strong>Next action:</strong> {decision.next}</p>}
+      <div className="button-row compact-actions">
+        <button className="tiny-action" onClick={() => onOpenTab?.("findings")} type="button">Open detected issues</button>
+        <button className="tiny-action" onClick={() => onOpenTab?.("history")} type="button">Open review history</button>
+      </div>
+      {!isAdmin && <p className="hint-text">Read-only: only an administrator can record a decision for this observation.</p>}
+    </section>
+  );
+}
 
 // TA-06: the eligibility decision comes from the backend contract only.
 // This function only renders it; it never recomputes the security rule.

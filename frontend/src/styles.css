@@ -3092,6 +3092,15 @@ code {
   color: #5c3600;
   font-weight: 700;
 }
+/* UX-07: decision evidence before decision controls. */
+.review-decision-evidence { border: 1px solid #d7deea; border-left: 4px solid #64748b; border-radius: 10px; padding: 12px 14px; margin: 10px 0; background: #fff; }
+.review-decision-evidence h4 { margin: 0 0 6px; }
+.review-decision-evidence.decision-ineligible { border-left-color: #c2410c; }
+.review-decision-evidence.decision-unavailable,
+.review-decision-evidence.decision-stale { border-left-color: #d99f38; background: #fffaf0; }
+.review-decision-evidence.decision-eligible { border-left-color: #15803d; }
+.review-reason-codes { margin: 6px 0; padding-left: 18px; }
+.review-reason-codes code { margin-right: 6px; }
 /* UX-23: label and value never touch ("MODEExplain"). */
 .controlled-ai-meta, .controlled-ai-provider { display: inline-flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
 /* UX-19: execution / findings / coverage as three comparable facts. */
