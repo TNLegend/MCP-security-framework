@@ -308,6 +308,101 @@ def prowler_fixture():
     return scans, details
 
 
+def cloud_page(scans, query):
+    """Server-side behaviour of /scans/page for the mocks (env, kind, IaC inclusion, paging)."""
+    env = (query.get("environment_id") or [""])[0]
+    kind = (query.get("kind") or [""])[0]
+    include_iac = (query.get("include_unscoped_iac") or ["false"])[0] == "true"
+    rows = [s for s in scans
+            if (not kind or s["kind"] == kind)
+            and (not env or s.get("environment_id") == env
+                 or (include_iac and s["kind"] == "IAC_CONFIG" and not s.get("environment_id")))]
+    rows.sort(key=lambda s: (s["created_at"], s["id"]), reverse=True)
+    offset, limit = int((query.get("offset") or ["0"])[0]), int((query.get("limit") or ["25"])[0])
+    items = rows[offset:offset + limit]
+    return {"scope": "PERSISTED_CLOUD_SCANS", "items": items, "total": len(rows), "offset": offset,
+            "limit": limit, "returned": len(items), "has_more": offset + len(items) < len(rows)}
+
+
+def check_ux11(browser, server, shots):
+    """UX-11: an older scan of a quiet environment stays in its own history and
+    reopens by copied link, Reload and Back; an unknown ID is explicit."""
+    envs = [{"id": "env-a", "name": "Quiet A", "provider": "AWS", "status": "CONNECTED", "regions": ["eu-west-3"],
+             "services": ["S3"], "account_id": "111111111111", "role_arn": "arn:aws:iam::111111111111:role/QA"},
+            {"id": "env-b", "name": "Busy B", "provider": "AWS", "status": "CONNECTED", "regions": ["eu-west-3"],
+             "services": ["S3"], "account_id": "222222222222", "role_arn": "arn:aws:iam::222222222222:role/QA"}]
+    base = {"kind": "AWS_ADVANCED", "status": "COMPLETED", "resource_count": 3, "finding_count": 0,
+            "unknown_checks": 0, "scanner_version": "5.x", "error_code": None, "completed_at": None}
+    scans = [{**base, "id": f"b{i:07d}-0000-4000-8000-000000000000", "environment_id": "env-b",
+              "created_at": f"2026-11-21T{10 + i // 60:02d}:{i % 60:02d}:00Z", "started_at": None} for i in range(100)]
+    older = {**base, "id": "a0000001-0000-4000-8000-000000000000", "environment_id": "env-a",
+             "created_at": "2026-10-01T08:00:00Z", "started_at": "2026-10-01T08:01:00Z"}
+    scans.append(older)
+    original = RemediationAPI.read
+
+    def read(self, path, query):
+        if path == smoke.CLOUD + "/environments":
+            return envs
+        if path == smoke.CLOUD + "/scans":
+            return sorted(scans, key=lambda s: s["created_at"], reverse=True)[:100]  # legacy latest-100
+        if path == smoke.CLOUD + "/scans/page":
+            return cloud_page(scans, query)
+        if path.startswith(smoke.CLOUD + "/scans/"):
+            scan_id, _, suffix = path.removeprefix(smoke.CLOUD + "/scans/").partition("/")
+            found = next((s for s in scans if s["id"] == scan_id), None)
+            if suffix == "" and found:
+                return {"scan": found, "resources": [], "events": [], "evidence": [], "findings": [],
+                        "collection_coverage": {}, "assessment_summary": None}
+            return []
+        return original(self, path, query)
+
+    def route(self, route):
+        from urllib.parse import urlsplit
+        path = urlsplit(route.request.url).path.removeprefix("/api/v1")
+        if path.startswith(smoke.CLOUD + "/scans/deadbeef"):
+            return route.fulfill(status=404, json={"detail": "cloud_scan_not_found"})
+        return super(RemediationAPI, self).route(route)
+
+    RemediationAPI.read = read
+    RemediationAPI.route = route
+    try:
+        context, page, api, errors = smoke.open_page(browser, server, "VIEWER", 1440)
+        root = page.url.split("?")[0].rstrip("/")
+        page.goto(root + "/?view=cloud&env=env-a&task=cloud-scans")
+        history = page.get_by_role("region", name="Cloud audit history")
+        expect(page.get_by_test_id("cloud-history-range")).to_have_text("Showing 1–1 of 1 stored scans.")
+        open_a = history.get_by_role("button", name="View Advanced AWS a0000001", exact=False)
+        expect(open_a).to_be_visible()
+        assert any(q.get("environment_id") == ["env-a"] for m, p, q in api.requests if p.endswith("/scans/page"))
+        open_a.click()
+        expect(page.get_by_role("heading", name="Audit review")).to_be_visible()
+        assert "scan=a0000001-0000-4000-8000-000000000000" in page.url, page.url
+        copied = page.url
+        page.reload()
+        expect(page.get_by_text("Scan a0000001 was not found")).to_have_count(0)
+        expect(page.locator(".cloud-review-summary")).to_contain_text("Advanced AWS")
+        assert any(p.endswith("/scans/a0000001-0000-4000-8000-000000000000") for m, p, q in api.requests)
+        page.go_back()
+        expect(page.get_by_test_id("cloud-history-range")).to_be_visible()
+        context.close()
+
+        # A copied link opened in a fresh session reopens the same scan.
+        context, page, api, errors = smoke.open_page(browser, server, "VIEWER", 1440)
+        page.goto(copied)
+        expect(page.locator(".cloud-review-summary")).to_contain_text("Advanced AWS")
+        page.goto(root + "/?view=cloud&scan=deadbeef-0000-4000-8000-000000000000")
+        expect(page.get_by_role("alert").filter(has_text="Scan deadbeef was not found or is not available to you. No other scan was substituted.")).to_be_visible()
+        expect(page.locator(".cloud-review-summary")).to_have_count(0)
+        if shots:
+            page.locator("#cloud-detail").screenshot(path=str(shots / "ux11-cloud-unknown-scan-1440.png"))
+        assert not [e for e in errors if "404" not in e], errors
+        context.close()
+    finally:
+        RemediationAPI.read = original
+        del RemediationAPI.route
+    return "older A behind 100 newer B: found in A's history (server env filter), reopened by link, Reload, Back; unknown ID explicit, nothing substituted"
+
+
 def check_ux19(browser, server, shots):
     """UX-19 (+UX-22/23 history text): execution, findings and coverage are separate;
     findings lead the detail; a failed run reads Coverage unavailable."""
@@ -317,6 +412,8 @@ def check_ux19(browser, server, shots):
     def read(self, path, query):
         if path == smoke.CLOUD + "/scans":
             return scans
+        if path == smoke.CLOUD + "/scans/page":
+            return cloud_page(scans, query)
         if path.startswith(smoke.CLOUD + "/scans/"):
             scan_id, _, suffix = path.removeprefix(smoke.CLOUD + "/scans/").partition("/")
             if suffix == "" and scan_id in details:
@@ -458,7 +555,7 @@ def check_ux09(browser, server, shots):
 
 
 CHECKS = {"UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06,
-          "UX-09": check_ux09, "UX-19": check_ux19}
+          "UX-09": check_ux09, "UX-11": check_ux11, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 
 

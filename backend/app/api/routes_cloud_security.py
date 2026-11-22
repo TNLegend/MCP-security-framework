@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -841,6 +841,56 @@ def list_scans(
     if environment_id:
         statement=statement.where(CloudScan.environment_id==environment_id)
     return db.scalars(statement).all()
+
+
+_SCAN_KINDS = {"AWS_BASELINE", "AWS_ADVANCED", "IAM_MCP", "IAC_CONFIG"}
+
+
+@router.get("/scans/page")
+def page_scans(
+    environment_id: str | None = Query(default=None, max_length=36),
+    kind: str | None = Query(default=None, max_length=32),
+    include_unscoped_iac: bool = Query(default=False),
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    offset: int = Query(default=0, ge=0, le=1_000_000),
+    limit: int = Query(default=25, ge=1, le=100),
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    """UX-11: server-side environment/type/date filtering with stable paging.
+
+    Unlike the legacy global latest-100 list, an older scan of a quiet
+    environment stays reachable in its own history. Terraform scans are not
+    environment-bound and can be included explicitly.
+    """
+    filters = []
+    if kind:
+        normalized = kind.strip().upper()
+        if normalized not in _SCAN_KINDS:
+            raise HTTPException(status_code=422, detail="cloud_scan_kind_invalid")
+        filters.append(CloudScan.kind == normalized)
+    if environment_id:
+        scope = CloudScan.environment_id == environment_id
+        if include_unscoped_iac:
+            scope = or_(scope, and_(CloudScan.kind == "IAC_CONFIG", CloudScan.environment_id.is_(None)))
+        filters.append(scope)
+    if created_from is not None:
+        filters.append(CloudScan.created_at >= created_from.replace(tzinfo=None))
+    if created_to is not None:
+        filters.append(CloudScan.created_at <= created_to.replace(tzinfo=None))
+    total = int(db.scalar(select(func.count(CloudScan.id)).where(*filters)) or 0)
+    rows = db.scalars(
+        select(CloudScan).where(*filters)
+        .order_by(CloudScan.created_at.desc(), CloudScan.id.desc())
+        .offset(offset).limit(limit)
+    ).all()
+    return {
+        "scope": "PERSISTED_CLOUD_SCANS",
+        "items": [ScanPublic.model_validate(row).model_dump(mode="json") for row in rows],
+        "total": total, "offset": offset, "limit": limit, "returned": len(rows),
+        "has_more": offset + len(rows) < total,
+    }
 
 
 @router.get("/scans/{scan_id}",response_model=ScanDetailPublic)

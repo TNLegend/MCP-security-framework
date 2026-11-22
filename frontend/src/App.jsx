@@ -91,7 +91,7 @@ function pageUrl(pageId, toolId = null, options = {}) {
   else url.searchParams.delete("tool");
   // A normal navigation must not accidentally keep a previous investigation.
   url.searchParams.delete("operation_id");
-  for (const key of ["queue", "section", "outcome"]) url.searchParams.delete(key);
+  for (const key of ["queue", "section", "outcome", "scan", "env", "kind", "task"]) url.searchParams.delete(key);
   if (pageId === "analysis" && options.queue) url.searchParams.set("queue", options.queue);
   if (pageId === "operations" && options.section) url.searchParams.set("section", options.section);
   if (pageId === "runtime" && normalizeOutcomeState(options.outcome)) {

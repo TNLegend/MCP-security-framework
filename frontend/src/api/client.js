@@ -1008,6 +1008,15 @@ export async function fetchCloudScans(environmentId = null) {
   return request(`/control-plane/cloud-security/scans${qs}`, { timeoutMs: 45000 });
 }
 
+// UX-11: server-filtered, paginated Cloud scan history.
+export async function fetchCloudScanPage(params = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && String(value) !== "") query.set(key, String(value));
+  }
+  return request(`/control-plane/cloud-security/scans/page?${query.toString()}`, { timeoutMs: 45000 });
+}
+
 export async function fetchCloudScanDetail(scanId) {
   return request(`/control-plane/cloud-security/scans/${scanId}`, { timeoutMs: 45000 });
 }

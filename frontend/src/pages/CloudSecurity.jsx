@@ -6,7 +6,7 @@ import {
   manualMappingCoverage, isMappingBoundToCurrentContext, canRequestManualAudit,
 } from "./cloudIamMapping";
 import {
-  createCloudEnvironment, fetchCloudEnvironments, fetchCloudScans,
+  createCloudEnvironment, fetchCloudEnvironments, fetchCloudScanPage, fetchCloudScans,
   fetchCloudScanDetail, fetchCloudScanCollectionPage, startCloudScan, testCloudEnvironment,
   updateCloudEnvironment,
   fetchIaCScannerAvailability, uploadTerraformZip,
@@ -204,6 +204,78 @@ export function emptyFindingsText(details, severity) {
     return "Scan did not finish · Coverage unavailable. No findings were collected.";
   }
   return "No failed rule/resource findings were recorded in this scan's collected results.";
+}
+
+// UX-11: Cloud selection lives in the address so a copied link, Reload or
+// Back reopens the same environment, filters and exact scan.
+const CLOUD_URL_KEYS = { scan: "scan", env: "env", kind: "kind", task: "task" };
+const CLOUD_TASKS = new Set(["cloud-environments", "cloud-scans", "cloud-detail"]);
+
+export function readCloudLocation(search = typeof window === "undefined" ? "" : window.location.search) {
+  const params = new URLSearchParams(search);
+  if (params.get("view") !== "cloud") return { scan: null, env: null, kind: null, task: null };
+  const scan = params.get(CLOUD_URL_KEYS.scan);
+  const kind = params.get(CLOUD_URL_KEYS.kind);
+  const task = params.get(CLOUD_URL_KEYS.task);
+  return {
+    scan: scan && /^[A-Za-z0-9-]{8,64}$/.test(scan) ? scan : null,
+    env: params.get(CLOUD_URL_KEYS.env),
+    kind: Object.hasOwn(scanKinds, kind || "") ? kind : null,
+    task: CLOUD_TASKS.has(task) ? task : null,
+  };
+}
+
+export function writeCloudLocation(changes, push = false) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("view") !== "cloud") return;
+  for (const [key, value] of Object.entries(changes)) {
+    const name = CLOUD_URL_KEYS[key];
+    if (!name) continue;
+    if (value) url.searchParams.set(name, value);
+    else url.searchParams.delete(name);
+  }
+  if (url.href === window.location.href) return;
+  window.history[push ? "pushState" : "replaceState"](null, "", url);
+}
+
+const HISTORY_PAGE_SIZE = 25;
+
+export function CloudHistoryBrowser({ environmentId, kind, onOpen, refreshToken = 0, load = fetchCloudScanPage }) {
+  const [offset, setOffset] = useState(0);
+  const [state, setState] = useState({ status: "idle", page: null, error: "" });
+  const generation = useRef(0);
+  useEffect(() => { setOffset(0); }, [environmentId, kind]);
+  useEffect(() => {
+    const current = ++generation.current;
+    setState((previous) => ({ ...previous, status: "loading", error: "" }));
+    load({ environment_id: environmentId || undefined, kind: kind === "ALL" ? undefined : kind,
+      include_unscoped_iac: true, offset, limit: HISTORY_PAGE_SIZE })
+      .then((page) => { if (current === generation.current) setState({ status: "ready", page, error: "" }); })
+      .catch((err) => {
+        if (current === generation.current) {
+          setState((previous) => ({ status: "error", page: previous.page,
+            error: "Audit history could not be loaded: " + cloudError(err) }));
+        }
+      });
+    return () => { generation.current += 1; };
+  }, [environmentId, kind, offset, refreshToken]);
+  const page = state.page;
+  return <div className="cloud-history-browser">
+    {state.error && <p role="alert" className="error-text">{state.error}{page ? " Showing the previous page." : ""}</p>}
+    <p className="hint-text" role="status" data-testid="cloud-history-range">
+      {!page ? (state.status === "loading" ? "Loading audit history…" : "")
+        : page.total ? "Showing " + (page.offset + 1) + "–" + (page.offset + page.returned) + " of " + page.total + " stored scans."
+          : "No stored scans match this environment and audit type."}
+    </p>
+    <CloudScanTable scans={page?.items || []} loading={state.status === "loading"} onOpen={onOpen} mixed
+      label="Cloud audit history" empty="No stored scans match this environment and audit type." />
+    {page && page.total > HISTORY_PAGE_SIZE && <div className="pagination-bar">
+      <button disabled={state.status === "loading" || offset === 0} onClick={() => setOffset(Math.max(0, offset - HISTORY_PAGE_SIZE))} type="button">Previous</button>
+      <span>Page {Math.floor(offset / HISTORY_PAGE_SIZE) + 1} of {Math.ceil(page.total / HISTORY_PAGE_SIZE)}</span>
+      <button disabled={state.status === "loading" || !page.has_more} onClick={() => setOffset(offset + HISTORY_PAGE_SIZE)} type="button">Next</button>
+    </div>}
+  </div>;
 }
 
 export function CloudScanTable({ scans, onOpen, empty, loading, metric, label, mixed = false }) {
@@ -626,7 +698,8 @@ function CloudFindingResource({ finding, resources }) {
 
 export default function CloudSecurity({ isAdmin = false }) {
   const [activeTask, setActiveTask] = useState("cloud-environments");
-  const [historyKind, setHistoryKind] = useState("ALL");
+  const [historyKind, setHistoryKind] = useState(() => readCloudLocation().kind || "ALL");
+  const [historyRefresh, setHistoryRefresh] = useState(0);
   const detailHeadingRef = useRef(null);
   const iacInputRef = useRef(null);
   const refreshGeneration = useRef(0);
@@ -719,13 +792,16 @@ export default function CloudSecurity({ isAdmin = false }) {
     const errors = [];
     if (envs.status === "fulfilled") {
       setEnvironments(envs.value);
+      const fromUrl = readCloudLocation().env;
       setSelected((old) => envs.value.some((item) => item.id === old)
-        ? old : envs.value[0]?.id || "");
+        ? old
+        : (fromUrl && envs.value.some((item) => item.id === fromUrl)) ? fromUrl : envs.value[0]?.id || "");
     } else {
       errors.push("AWS environments: " + cloudError(envs.reason));
     }
     if (runs.status === "fulfilled") {
       setScans(runs.value);
+      setHistoryRefresh((value) => value + 1);
     } else {
       errors.push("Audit history: " + cloudError(runs.reason));
     }
@@ -741,6 +817,22 @@ export default function CloudSecurity({ isAdmin = false }) {
   }
 
   useEffect(() => { refresh(); refreshScannerAvailability(); }, []);
+
+  // UX-11: reopen the exact scan from the address on load and on Back/Forward.
+  useEffect(() => {
+    function syncFromLocation() {
+      const location = readCloudLocation();
+      if (location.kind) setHistoryKind(location.kind);
+      if (location.scan) {
+        void showScan(location.scan, false, { updateUrl: false });
+      } else if (location.task) {
+        setActiveTask(location.task);
+      }
+    }
+    syncFromLocation();
+    window.addEventListener("popstate", syncFromLocation);
+    return () => window.removeEventListener("popstate", syncFromLocation);
+  }, []);
   async function loadRegisteredServers() {
     try {
       const response = await fetchServers();
@@ -886,6 +978,7 @@ export default function CloudSecurity({ isAdmin = false }) {
 
   // A diagnostic is only valid for the environment that was probed.
   useEffect(() => { setPermissionPreview(null); }, [selected]);
+  useEffect(() => { if (selected) writeCloudLocation({ env: selected }, false); }, [selected]);
 
   // A queued scan progresses without requiring repeated manual Refresh clicks.
   useEffect(() => {
@@ -1090,8 +1183,10 @@ export default function CloudSecurity({ isAdmin = false }) {
     }
   }
 
-  async function showScan(scanId, focusReview = true) {
+  async function showScan(scanId, focusReview = true, { updateUrl = true } = {}) {
     setActiveTask("cloud-detail");
+    // UX-11: the exact scan is part of the address (copy, Reload and Back).
+    if (updateUrl) writeCloudLocation({ scan: scanId, task: "cloud-detail" }, focusReview);
     if (focusReview) window.requestAnimationFrame(() => detailHeadingRef.current?.focus());
     const generation = ++scanDetailGeneration.current;
     collectionRequest.current = false;
@@ -1121,6 +1216,10 @@ export default function CloudSecurity({ isAdmin = false }) {
       const item = await fetchCloudScanDetail(scanId);
       if (generation !== scanDetailGeneration.current) return;
       setDetails(item);
+      // Scope check: show the scan inside its own environment, never another.
+      if (item.scan.environment_id && item.scan.environment_id !== selected) {
+        setSelected(item.scan.environment_id);
+      }
       const loads = [];
       if (item.scan.kind === "IAM_MCP") {
         loads.push(fetchIAMMCPResultsPage(scanId).then((page) => {
@@ -1158,7 +1257,9 @@ export default function CloudSecurity({ isAdmin = false }) {
       });
     } catch (err) {
       if (generation === scanDetailGeneration.current) {
-        setDetailError("The selected audit could not be opened: " + cloudError(err));
+        setDetailError(err?.status === 404 || err?.status === 403
+          ? "Scan " + scanReference(scanId) + " was not found or is not available to you. No other scan was substituted."
+          : "The selected audit could not be opened: " + cloudError(err));
       }
     } finally {
       if (generation === scanDetailGeneration.current) setDetailsLoading(false);
@@ -1281,7 +1382,10 @@ export default function CloudSecurity({ isAdmin = false }) {
       <nav className="cloud-section-nav" aria-label="Cloud security tasks">
         {cloudTasks.map(({ id, label }) => (
           <button key={id} type="button" aria-current={id === activeTask ? "location" : undefined}
-            aria-controls={id} onClick={() => setActiveTask(id)}>
+            aria-controls={id} onClick={() => {
+              setActiveTask(id);
+              writeCloudLocation({ task: id, scan: id === "cloud-detail" ? readCloudLocation().scan : null }, false);
+            }}>
             {label}
           </button>
         ))}
@@ -1897,10 +2001,13 @@ export default function CloudSecurity({ isAdmin = false }) {
         <div className="cloud-detail-heading">
           <div>
             <h3>Audit history</h3>
-            <p>Review scans for the selected AWS environment and Terraform scans from the most recent 100 audit records.</p>
+            <p>Every stored scan for the selected AWS environment, plus Terraform scans, newest first.</p>
           </div>
           <label>Audit type
-            <select value={historyKind} onChange={(event) => setHistoryKind(event.target.value)}>
+            <select value={historyKind} onChange={(event) => {
+              setHistoryKind(event.target.value);
+              writeCloudLocation({ kind: event.target.value === "ALL" ? null : event.target.value, scan: null, task: "cloud-scans" }, false);
+            }}>
               <option value="ALL">All audit types</option>
               {Object.entries(scanKinds).map(([kind, label]) =>
                 <option key={kind} value={kind}>{label}</option>)}
@@ -1908,14 +2015,17 @@ export default function CloudSecurity({ isAdmin = false }) {
           </label>
         </div>
         {running > 0 && <p role="status">{running} queued or running. This list updates automatically.</p>}
-        <CloudScanTable scans={visibleHistory} loading={loading} onOpen={showScan} mixed
-          label="Cloud audit history" empty="No recent audit records match this environment and audit type." />
+        <CloudHistoryBrowser environmentId={selected} kind={historyKind} onOpen={showScan}
+          refreshToken={historyRefresh} />
       </section>
 
       <section id="cloud-detail" className="detail-panel cloud-task-panel" hidden={activeTask !== "cloud-detail"}>
         <div className="cloud-detail-heading">
           <h3 tabIndex={-1} ref={detailHeadingRef}>Audit review</h3>
-          <button type="button" className="secondary-action" onClick={() => setActiveTask("cloud-scans")}>
+          <button type="button" className="secondary-action" onClick={() => {
+            setActiveTask("cloud-scans");
+            writeCloudLocation({ scan: null, task: "cloud-scans" }, true);
+          }}>
             Browse audit history
           </button>
         </div>
