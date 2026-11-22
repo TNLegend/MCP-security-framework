@@ -794,7 +794,63 @@ def check_ux08(browser, server, shots):
     return "audit shows exact nested resource path, typed before/after and omitted unchanged count"
 
 
-CHECKS = {"UX-08": check_ux08, "UX-17": check_ux17, "UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
+
+def check_ux22(browser, server, shots):
+    scans, details = prowler_fixture()
+    scan_id = scans[0]["id"]
+    template = details[scan_id]["findings"][0]
+    findings = [{**template, "id": f"bounded-{index:04}", "title": f"Bounded finding {index}"}
+                for index in range(400)]
+    resources = [{"id": f"asset-{index}", "resource_type": "fixture", "display_name": f"Asset {index}"}
+                 for index in range(43)]
+    events = [{"id": f"event-{index}", "message_code": f"EVENT_{index}", "created_at": smoke.STAMP}
+              for index in range(43)]
+    scans[0]["finding_count"] = 400
+    detail = {**details[scan_id], "findings": findings[:300], "resources": resources, "events": events,
+              "collection_coverage": {"findings": {"returned": 300, "display_limit": 300, "truncated": True}}}
+    detail["assessment_summary"]["findings"].update(total=400, by_severity={"CRITICAL": 400})
+    original = RemediationAPI.read
+
+    def read(self, path, query):
+        base = smoke.CLOUD + "/scans/" + scan_id
+        if path == base:
+            return detail
+        if path == base + "/collections/findings":
+            offset, limit = int(query["offset"][0]), int(query["limit"][0])
+            items = findings[offset:offset + limit]
+            return {"collection": "findings", "items": items, "offset": offset, "limit": limit,
+                    "total": 400, "returned": len(items), "has_more": offset + len(items) < 400}
+        if path.startswith(base + "/"):
+            return []
+        return original(self, path, query)
+
+    RemediationAPI.read = read
+    try:
+        context, page, api, errors = smoke.open_page(browser, server, "VIEWER", 1440)
+        page.goto(page.url.split("?")[0] + "?view=cloud&scan=" + scan_id)
+        listing = page.get_by_role("region", name="Cloud findings")
+        expect(listing.locator(".cloud-finding-row")).to_have_count(20)
+        assert listing.evaluate("(node) => node.clientHeight < 550")
+        assert page.evaluate("document.documentElement.scrollHeight") < 4400
+        assert listing.bounding_box()["y"] < page.get_by_role(
+            "heading", name="Security assessment and administrator review").bounding_box()["y"]
+        listing.get_by_role("button", name=re.compile("Bounded finding 0")).first.click()
+        expect(page.get_by_role("region", name="Selected cloud finding")).to_contain_text("bounded-0000")
+        page.get_by_role("button", name="Load more findings records").click()
+        expect(listing.get_by_text("CRITICAL: Bounded finding 300", exact=True)).to_be_visible()
+        for label in ("Cloud resources", "Cloud events"):
+            page.get_by_role("button", name=f"Next {label.lower()} page").click()
+            expect(page.get_by_text(f"{label}: 21–40 of 43 loaded", exact=True)).to_be_visible()
+        if shots:
+            listing.screenshot(path=str(shots / "ux22-cloud-findings-1440.png"))
+        assert not errors, errors
+        context.close()
+    finally:
+        RemediationAPI.read = original
+    return "400 findings, 20 DOM rows, first finding before governance, resources and events paged"
+
+
+CHECKS = {"UX-22": check_ux22, "UX-08": check_ux08, "UX-17": check_ux17, "UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
           "UX-09": check_ux09, "UX-11": check_ux11, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 

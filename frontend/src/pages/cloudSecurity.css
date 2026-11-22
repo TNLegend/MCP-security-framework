@@ -290,3 +290,16 @@
 @media (max-width: 640px) {
   .iam-row, .iam-evidence-sides { grid-template-columns: minmax(0, 1fr); }
 }
+
+.cloud-findings-workspace { display: grid; gap: 10px; min-width: 0; }
+.cloud-record-list {
+  max-block-size: min(52dvh, 430px);
+  padding: 4px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+}
+.cloud-finding.cloud-finding-row { padding: 0; }
+.cloud-finding-row button { width: 100%; display: grid; gap: 4px; text-align: start; }
+.cloud-finding-row button[aria-pressed="true"] { box-shadow: inset 3px 0 currentColor; }
+.cloud-finding-detail { overflow-wrap: anywhere; }

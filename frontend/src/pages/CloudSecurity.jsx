@@ -21,6 +21,40 @@ import {
   fetchServers, safeErrorMessage,
 } from "../api/client";
 
+
+const CLOUD_RECORDS_PER_PAGE = 20;
+
+function CloudCollectionPager({ label, items, renderItem, hasMore, busy, onLoadMore, loadLabel, selectedId }) {
+  const [page, setPage] = useState(0);
+  const scrollRef = useRef(null);
+  const pageIndex = Math.min(page, Math.max(0, Math.ceil(items.length / CLOUD_RECORDS_PER_PAGE) - 1));
+  const offset = pageIndex * CLOUD_RECORDS_PER_PAGE;
+  const shown = items.slice(offset, offset + CLOUD_RECORDS_PER_PAGE);
+  useEffect(() => {
+    const index = selectedId ? items.findIndex((item) => item.id === selectedId) : -1;
+    if (index >= 0) setPage(Math.floor(index / CLOUD_RECORDS_PER_PAGE));
+  }, [selectedId]);
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [pageIndex]);
+  if (!items.length && !hasMore) return <p className="hint-text">No records returned.</p>;
+  return <>
+    <p className="hint-text" role="status">
+      {label}: {shown.length ? `${offset + 1}–${offset + shown.length} of ${items.length} loaded` : "No matching records loaded"}
+    </p>
+    <div ref={scrollRef} className="cloud-record-list" role="region" aria-label={label} tabIndex={0}>
+      {shown.map((item) => <div key={item.id}>{renderItem(item)}</div>)}
+    </div>
+    <div className="button-row">
+      <button type="button" disabled={pageIndex === 0} aria-label={"Previous " + label.toLowerCase() + " page"}
+        onClick={() => setPage(pageIndex - 1)}>Previous</button>
+      <button type="button" disabled={offset + shown.length >= items.length} aria-label={"Next " + label.toLowerCase() + " page"}
+        onClick={() => setPage(pageIndex + 1)}>Next</button>
+      {hasMore && <button type="button" disabled={Boolean(busy)} onClick={async () => {
+        if (await onLoadMore()) setPage(Math.floor(items.length / CLOUD_RECORDS_PER_PAGE));
+      }}>{loadLabel}</button>}
+    </div>
+  </>;
+}
+
 const cloudTasks = [
   { id: "cloud-environments", label: "AWS connections" },
   { id: "cloud-advanced", label: "Advanced AWS checks" },
@@ -853,6 +887,7 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [exceptionFinding, setExceptionFinding] = useState("");
   // UX-19: severity filter over the findings list; reset whenever a scan opens.
   const [findingSeverity, setFindingSeverity] = useState("");
+  const [selectedFindingId, setSelectedFindingId] = useState(null);
   const [reviewReason, setReviewReason] = useState("");
   const [reviewingExceptionId, setReviewingExceptionId] = useState("");
   const [expiryDays, setExpiryDays] = useState(7);
@@ -1173,7 +1208,14 @@ export default function CloudSecurity({ isAdmin = false }) {
     }
   }
 
+  function prepareFindingException(id) {
+    setExceptionFinding(id);
+    setExceptionReason("");
+    window.requestAnimationFrame(() => document.getElementById("cloud-exception-request-reason")?.focus());
+  }
+
   function clearScanDetails() {
+    setSelectedFindingId(null);
     // Invalidate outstanding network requests when changing the AWS environment.
     scanDetailGeneration.current += 1;
     collectionRequest.current = false;
@@ -1233,6 +1275,7 @@ export default function CloudSecurity({ isAdmin = false }) {
           },
         };
       });
+      return true;
     } catch {
       if (generation === scanDetailGeneration.current) {
         setCollectionError("Additional scan records could not be verified. Previously loaded evidence remains visible. Refresh details before loading more records.");
@@ -1301,6 +1344,7 @@ export default function CloudSecurity({ isAdmin = false }) {
     setExceptionFinding("");
     setExceptionReason("");
     setFindingSeverity("");
+    setSelectedFindingId(null);
     try {
       const item = await fetchCloudScanDetail(scanId);
       if (generation !== scanDetailGeneration.current) return;
@@ -2177,27 +2221,32 @@ export default function CloudSecurity({ isAdmin = false }) {
           {findingSeverity && (
             <button className="tiny-action" onClick={() => setFindingSeverity("")} type="button">Show all severities</button>
           )}
-          {visibleFindings(details, findingSeverity).length ? visibleFindings(details, findingSeverity).map((f) => (
-            <article key={f.id} id={"cloud-finding-" + f.id} className="cloud-finding">
-              <strong>{f.severity}: {f.title}</strong>
-              <p className={"finding-target" + (findingTarget(f, details.evidence).legacy ? " legacy" : "")}
-                data-testid="finding-target">
-                {findingTarget(f, details.evidence).text}
-              </p>
-              {isAdmin && ["COMPLETED", "PARTIAL"].includes(details.scan.status) && (
-                <button type="button" className="tiny-action"
-                  aria-label={"Prepare exception request for " + f.title + ": " + findingTarget(f, details.evidence).text}
-                  disabled={governanceLoading}
-                  onClick={() => {
-                    // Only select the exact stored finding; never create or
-                    // approve an exception without a typed justification.
-                    setExceptionFinding(f.id);
-                    setExceptionReason("");
-                    document.getElementById("cloud-exception-request-reason")?.focus();
-                  }}>
-                  Request exception for this finding
-                </button>
-              )}
+          {visibleFindings(details, findingSeverity).length ? (
+            <div className="cloud-findings-workspace">
+              <CloudCollectionPager key={details.scan.id + findingSeverity}
+                label="Cloud findings" items={visibleFindings(details, findingSeverity)}
+                selectedId={selectedFindingId} hasMore={details.collection_coverage?.findings?.truncated}
+                busy={collectionBusy} onLoadMore={() => loadNextCloudCollection("findings")}
+                loadLabel="Load more findings records" renderItem={(finding) => (
+                  <article className="cloud-finding cloud-finding-row" id={"cloud-finding-" + finding.id}>
+                    <button type="button" aria-pressed={finding.id === selectedFindingId}
+                      onClick={() => setSelectedFindingId(finding.id)}>
+                      <strong>{finding.severity}: {finding.title}</strong>
+                      <span>{findingTarget(finding, details.evidence).text}</span>
+                    </button>
+                  </article>
+                )} />
+              {visibleFindings(details, findingSeverity).filter((finding) => finding.id === selectedFindingId).map((f) => (
+                <section className="detail-panel cloud-finding-detail" key={f.id} aria-label="Selected cloud finding">
+                  <h5>{f.title}</h5>
+                  <p><code>{f.id}</code></p>
+                  {isAdmin && ["COMPLETED", "PARTIAL"].includes(details.scan.status) && (
+                    <button type="button" className="tiny-action"
+                      aria-label={"Prepare exception request for " + f.title + ": " + findingTarget(f, details.evidence).text}
+                      disabled={governanceLoading} onClick={() => prepareFindingException(f.id)}>
+                      Request exception for this finding
+                    </button>
+                  )}
               <CloudFindingResource finding={f} resources={details.resources} />
               {details.scan.kind === "IAC_CONFIG" && (() => {
                 const sources = iacFindingSourceEvidence(f, details.evidence);
@@ -2220,13 +2269,13 @@ export default function CloudSecurity({ isAdmin = false }) {
               })()}
               <p>{f.description}</p>
               {f.remediation && <p>Suggested action: {f.remediation}</p>}
-            </article>
-          )) : <p className="cloud-empty" data-testid="cloud-findings-empty">{emptyFindingsText(details, findingSeverity)}</p>}
-          {details.collection_coverage?.["findings"]?.truncated && (
-            <button type="button" className="secondary-action"
-              disabled={Boolean(collectionBusy)} onClick={() => loadNextCloudCollection("findings")}>
-              {collectionBusy === "findings" ? "Loading..." : "Load more findings records"}
-            </button>
+                </section>
+              ))}
+            </div>
+          ) : <p className="cloud-empty" data-testid="cloud-findings-empty">{emptyFindingsText(details, findingSeverity)}</p>}
+          {!visibleFindings(details, findingSeverity).length && details.collection_coverage?.findings?.truncated && (
+            <button type="button" className="secondary-action" disabled={Boolean(collectionBusy)}
+              onClick={() => loadNextCloudCollection("findings")}>Load more findings records</button>
           )}
           {["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(details.scan.kind) && (
             <div className="cloud-review-section">
@@ -2291,7 +2340,13 @@ export default function CloudSecurity({ isAdmin = false }) {
                   {(() => {
                     const linked = details.findings.find((finding) => finding.id === exception.finding_id);
                     return linked
-                      ? <p>Linked finding: <a href={"#cloud-finding-" + linked.id}>
+                      ? <p>Linked finding: <a href={"#cloud-finding-" + linked.id}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            setFindingSeverity("");
+                            setSelectedFindingId(linked.id);
+                            document.getElementById("cloud-findings-heading")?.focus();
+                          }}>
                           {linked.rule_id}: {linked.title}</a>.
                           The exception does not erase this original finding
                           or change Runtime authorization.</p>
@@ -2431,22 +2486,16 @@ export default function CloudSecurity({ isAdmin = false }) {
               </p>}
             </div>
           )}
-          <h4>Resources ({details.resources.length})</h4>
-          {details.resources.map((r) => <p key={r.id}><CloudResourceLabel resource={r} /></p>)}
-          {details.collection_coverage?.["resources"]?.truncated && (
-            <button type="button" className="secondary-action"
-              disabled={Boolean(collectionBusy)} onClick={() => loadNextCloudCollection("resources")}>
-              {collectionBusy === "resources" ? "Loading..." : "Load more resources records"}
-            </button>
-          )}
-          <h4>Audit history</h4>
-          {details.events.map((e) => <p key={e.id}>{e.message_code} — {formatServerTime(e.created_at)}</p>)}
-          {details.collection_coverage?.["events"]?.truncated && (
-            <button type="button" className="secondary-action"
-              disabled={Boolean(collectionBusy)} onClick={() => loadNextCloudCollection("events")}>
-              {collectionBusy === "events" ? "Loading..." : "Load more events records"}
-            </button>
-          )}
+          <h4>Resources</h4>
+          <CloudCollectionPager key={details.scan.id + "-resources"} label="Cloud resources" items={details.resources}
+            hasMore={details.collection_coverage?.resources?.truncated} busy={collectionBusy}
+            onLoadMore={() => loadNextCloudCollection("resources")} loadLabel="Load more resources records"
+            renderItem={(resource) => <p><CloudResourceLabel resource={resource} /></p>} />
+          <h4>Audit events</h4>
+          <CloudCollectionPager key={details.scan.id + "-events"} label="Cloud events" items={details.events}
+            hasMore={details.collection_coverage?.events?.truncated} busy={collectionBusy}
+            onLoadMore={() => loadNextCloudCollection("events")} loadLabel="Load more events records"
+            renderItem={(event) => <p>{event.message_code} — {formatServerTime(event.created_at)}</p>} />
           <details>
             <summary>Evidence records ({details.evidence.length})</summary>
             <p>SHA-256 integrity digests of normalized observations, not AWS-signed attestations.
