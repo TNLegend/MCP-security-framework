@@ -97,9 +97,12 @@ def main():
                              toolHeight:tool.height,
                              shellFits:el.getBoundingClientRect().width<=
                                document.querySelector("main").getBoundingClientRect().width+1,
-                             badgeStyles:[...el.querySelectorAll("tbody .badge")].map(b=>
-                                ({whiteSpace:getComputedStyle(b).whiteSpace,
-                                  overflow:getComputedStyle(b).overflow}))};
+                             // Geometry, not style: a badge must show its whole label on one line.
+                             badgeStyles:[...el.querySelectorAll("tbody .badge")].map(b=>{
+                                const lh=parseFloat(getComputedStyle(b).lineHeight)||16;
+                                return {clipped:b.scrollWidth>b.clientWidth+1,
+                                        wrapped:b.getBoundingClientRect().height>lh*1.8+8,
+                                        text:b.innerText};})};
                         }""")
                         assert result["tableWidth"]>=899,(width,result)
                         assert result["toolWidth"]>=150,(width,result)
@@ -111,8 +114,10 @@ def main():
                                 width,result)
                         else:
                             assert result["scrollWidth"] >= result["width"],(width,result)
-                        assert all(x["whiteSpace"]=="normal" for x in result["badgeStyles"]),(width,result)
-                        assert all(x["overflow"]!="hidden" for x in result["badgeStyles"]),(width,result)
+                        # Previously asserted white-space:normal, which encoded per-character
+                        # badge wrapping ("AD/MI/N"). The UX requirement is a complete label.
+                        assert not any(x["clipped"] for x in result["badgeStyles"]),(width,result)
+                        assert not any(x["wrapped"] for x in result["badgeStyles"]),(width,result)
                         fixture.check_width(page,f"Tool review at {width}px")
                         cases+=1
 

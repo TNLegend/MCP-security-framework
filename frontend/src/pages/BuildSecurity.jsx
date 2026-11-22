@@ -1306,7 +1306,7 @@ export function findingsRangeText(page) {
   if (!page.total) return "No findings match" + (page.unfiltered_total ? " these filters (" + page.unfiltered_total + " stored)." : ".");
   const from = page.offset + 1;
   const to = page.offset + page.returned;
-  const filtered = page.total !== page.unfiltered_total ? " · filtered from " + page.unfiltered_total + " stored" : " stored";
+  const filtered = Number.isFinite(page.unfiltered_total) && page.total !== page.unfiltered_total ? " · filtered from " + page.unfiltered_total + " stored" : " stored";
   return "Showing " + from + "–" + to + " of " + page.total + filtered + ".";
 }
 

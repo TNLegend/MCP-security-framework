@@ -497,3 +497,14 @@ form .button-row > button[type="submit"]:not(.danger-action, .secondary-action, 
 
 .form-grid > button { justify-self: start; align-self: end; }
 
+
+/* Responsive table -> stacked rows when the table's own container is narrow.
+ * Opt in with .responsive-rows on the table-shell and data-label on cells. */
+.trusted-adapter-catalog { container-type: inline-size; }
+@container (max-width: 680px) {
+  .trusted-adapter-catalog table { min-width: 0; }
+  .trusted-adapter-catalog thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .trusted-adapter-catalog tbody tr { display: block; padding: 8px 12px; border-bottom: 1px solid var(--ds-line); }
+  .trusted-adapter-catalog tbody td { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr); gap: 12px; padding: 4px 0; border: 0; white-space: normal; }
+  .trusted-adapter-catalog tbody td::before { content: attr(data-label); color: var(--ds-muted); font-size: var(--ds-text-xs); font-weight: 650; align-self: start; padding-top: 2px; }
+}

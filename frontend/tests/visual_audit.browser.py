@@ -89,8 +89,10 @@ BUILD_SCAN = {"id": "scan-build-1", "display_name": "documentation-mcp repositor
 BUILD_FINDINGS = [{"id": f"bf-{i:04d}", "scanner_id": ["semgrep", "trivy", "gitleaks"][i % 3],
                    "rule_id": f"python.lang.security.audit.rule-{i:03d}", "severity": ["CRITICAL", "HIGH", "MEDIUM", "LOW"][i % 4],
                    "finding_state": "OPEN", "title": f"Finding {i} with a reasonably descriptive title",
-                   "path": f"src/services/very/deep/package/structure/module_{i:03d}_with_long_filename.py",
-                   "line": 10 + i, "fingerprint": DIGEST} for i in range(60)]
+                   "file_path": f"src/services/very/deep/package/structure/module_{i:03d}_with_long_filename.py",
+                   "line_start": 10 + i, "fingerprint": DIGEST,
+                   **({"package_name": "urllib3", "package_version": "1.26.4", "fixed_version": "1.26.19",
+                       "vulnerability_id": f"CVE-2026-{1000 + i}"} if i % 3 == 1 else {})} for i in range(400)]
 AUDIT_ROWS = [{**smoke.AUDIT, "id": i, "correlation_id": "6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f",
                "target_id": "3fc60cb3-13bd-4f9c-a506-d9ac811e6d94" if i % 2 else DIGEST}
               for i in range(1, 9)]
@@ -125,7 +127,7 @@ class VisualAPI(smoke.MockAPI):
             offset = int((query.get("offset") or ["0"])[0])
             limit = int((query.get("limit") or ["50"])[0])
             rows = BUILD_FINDINGS[offset:offset + limit]
-            return {"items": rows, "total": len(BUILD_FINDINGS), "stored_total": len(BUILD_FINDINGS),
+            return {"items": rows, "total": len(BUILD_FINDINGS), "unfiltered_total": len(BUILD_FINDINGS),
                     "offset": offset, "limit": limit, "returned": len(rows),
                     "has_more": offset + len(rows) < len(BUILD_FINDINGS)}
         return super().read(path, query)
@@ -324,6 +326,32 @@ def s_security_rules(page, width):
         catalog.first.scroll_into_view_if_needed()
 
 
+def s_review_tab(name):
+    def run(page, width):
+        go(page, "Security review", width)
+        row = page.get_by_role("row").filter(has_text="read_documents").first
+        if row.count():
+            row.click()
+        page.get_by_role("tab", name=name).click()
+        page.wait_for_timeout(300)
+    return run
+
+
+def s_cloud_task(task):
+    def run(page, width):
+        go(page, "Cloud security", width)
+        page.get_by_role("navigation", name="Cloud security tasks").get_by_role("button", name=task, exact=True).click()
+        page.wait_for_timeout(300)
+    return run
+
+
+def s_cloud_scan(page, width):
+    s_cloud_task("Audit history")(page, width)
+    button = page.get_by_role("button", name="View", exact=False).first
+    button.click()
+    page.wait_for_timeout(400)
+
+
 def s_audit_detail(page, width):
     go(page, "Audit history", width)
     page.get_by_role("button", name="View", exact=True).first.click()
@@ -339,10 +367,17 @@ SCENARIOS = {
     "review": ("ADMIN", s_page("Security review")),
     "review-ai": ("ADMIN", s_review_ai),
     "review-technical": ("ADMIN", s_review_technical),
+    "review-issues": ("ADMIN", s_review_tab("Detected issues")),
+    "review-description": ("ADMIN", s_review_tab("Description check")),
+    "review-history": ("ADMIN", s_review_tab("History")),
+    "review-tool-settings": ("ADMIN", s_review_tab("Tool settings")),
     "build": ("ADMIN", s_page("Code scans")),
     "build-findings": ("ADMIN", s_build_findings),
     "cloud": ("ADMIN", s_page("Cloud security")),
     "cloud-mapping": ("ADMIN", s_cloud_mapping),
+    "cloud-advanced": ("ADMIN", s_cloud_task("Advanced AWS checks")),
+    "cloud-terraform": ("ADMIN", s_cloud_task("Terraform files")),
+    "cloud-scan": ("ADMIN", s_cloud_scan),
     "rules": ("ADMIN", s_security_rules),
     "emergency": ("ADMIN", s_page("Emergency block")),
     "activity": ("ADMIN", s_page("Tool activity")),
