@@ -1,0 +1,499 @@
+/*
+ * MCP Security Console design system (visual remediation, 2026-11-22).
+ *
+ * One baseline for every form control, label, toolbar, badge, table, modal,
+ * key-value list and code viewer. Element baselines use :where() so they carry
+ * zero specificity: component rules can still refine them, but nothing renders
+ * as a browser default any more. See docs in DESIGN_SYSTEM.md (work folder).
+ */
+:root {
+  /* Palette: keeps the console identity (navy rail, teal accent). */
+  --ds-ink: #172639;
+  --ds-ink-2: #2f4256;
+  --ds-muted: #526477;
+  --ds-line: #d6e0e9;
+  --ds-line-strong: #b8c6d3;
+  --ds-surface: #ffffff;
+  --ds-surface-2: #f6f9fb;
+  --ds-canvas: #f2f6f9;
+  --ds-accent: #0d6f65;
+  --ds-accent-strong: #085951;
+  --ds-accent-soft: #e6f3f1;
+  --ds-danger: #a82b32;
+  --ds-danger-soft: #fbeced;
+  --ds-warn: #8a5a00;
+  --ds-warn-soft: #fff5df;
+  --ds-ok: #1f6b3a;
+  --ds-ok-soft: #e7f5ec;
+  --ds-focus: #2461b8;
+  /* Type: system UI for text, Cascadia/Consolas for evidence values. */
+  --ds-font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+  --ds-text-xs: 0.75rem;
+  --ds-text-sm: 0.8125rem;
+  --ds-text-md: 0.875rem;
+  --ds-text-base: 0.9375rem;
+  /* Dense dashboard spacing scale (4 px base). */
+  --ds-space-1: 4px;
+  --ds-space-2: 8px;
+  --ds-space-3: 12px;
+  --ds-space-4: 16px;
+  --ds-space-5: 20px;
+  --ds-space-6: 24px;
+  --ds-space-8: 32px;
+  /* Controls */
+  --ds-control-h: 38px;
+  --ds-control-h-sm: 32px;
+  --ds-radius-sm: 6px;
+  --ds-radius: 8px;
+  --ds-radius-lg: 12px;
+  --ds-shadow-1: 0 1px 2px rgb(20 44 65 / 6%);
+  --ds-shadow-modal: 0 24px 60px rgb(15 23 42 / 28%);
+  --border: var(--ds-line);
+}
+
+/* ---------- Text wrapping ----------
+ * Prose wraps between words and only breaks a word that cannot fit
+ * (break-word keeps min-content sizing). Opaque tokens - hashes, ARNs, IDs,
+ * code - may break anywhere so they never force a column wider. */
+:where(code, kbd, samp, .mono, .hash-value, .digest-value, .record-id) {
+  overflow-wrap: anywhere;
+}
+:where(code, kbd, samp, .mono) { font-family: var(--ds-font-mono); font-size: 0.92em; }
+
+/* ---------- Form controls ---------- */
+:where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"], [type="color"], [type="hidden"], [type="submit"], [type="button"]), select, textarea) {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: var(--ds-control-h);
+  padding: 7px 12px;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-radius);
+  background-color: var(--ds-surface);
+  color: var(--ds-ink);
+  font: inherit;
+  font-size: var(--ds-text-md);
+  font-weight: 400;
+  line-height: 1.4;
+}
+:where(select) {
+  appearance: none;
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23526477' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  text-overflow: ellipsis;
+}
+:where(select[multiple]) { background-image: none; padding-right: 12px; }
+:where(textarea) { min-height: 88px; padding: 9px 12px; line-height: 1.5; resize: vertical; }
+:where(input, select, textarea)::placeholder { color: #7a8a9a; opacity: 1; }
+:where(input, select, textarea):hover:not(:disabled, :focus) { border-color: #93a6b8; }
+:where(input, select, textarea):focus { border-color: var(--ds-focus); }
+:where(input, select, textarea):disabled { background-color: #eef2f5; color: #6a7a8a; cursor: not-allowed; }
+:where(input[type="checkbox"], input[type="radio"]) { width: 16px; height: 16px; margin: 0; accent-color: var(--ds-accent); flex: none; }
+
+/* ---------- Labels ----------
+ * A label that wraps a text control stacks its text above the control with a
+ * fixed 6 px gap. Checkbox / radio labels sit inline. */
+:where(label):has(> :is(input:not([type="checkbox"], [type="radio"], [type="hidden"]), select, textarea)) {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-width: 0;
+  color: var(--ds-ink-2);
+  font-size: var(--ds-text-sm);
+  font-weight: 650;
+  line-height: 1.35;
+}
+:where(label):has(> :is(input:not([type="checkbox"], [type="radio"], [type="hidden"]), select, textarea)) > :is(input, select, textarea) {
+  width: 100%;
+}
+:where(label):has(> :is(input[type="checkbox"], input[type="radio"])) {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--ds-ink-2);
+  font-size: var(--ds-text-md);
+  font-weight: 500;
+  line-height: 1.4;
+}
+:where(label):has(> :is(input[type="checkbox"], input[type="radio"])) > input { margin-top: 2px; }
+.field-help,
+:where(label) > :is(small, .field-help, .hint-text) {
+  color: var(--ds-muted);
+  font-size: var(--ds-text-xs);
+  font-weight: 450;
+  line-height: 1.45;
+}
+
+/* ---------- Buttons ---------- */
+:where(button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--ds-control-h-sm);
+  padding: 6px 14px;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-radius);
+  background: var(--ds-surface);
+  color: var(--ds-ink);
+  font: inherit;
+  font-size: var(--ds-text-md);
+  font-weight: 650;
+  line-height: 1.25;
+  text-align: center;
+  text-wrap: balance;
+  cursor: pointer;
+}
+:where(button):hover:not(:disabled) { border-color: #93a6b8; background-color: var(--ds-surface-2); }
+.button-row > button,
+.button-row > a,
+.toolbar-actions > button { flex: 0 0 auto; max-width: 100%; }
+/* A form's submit button is its primary action unless it is destructive. */
+.primary-action,
+form .button-row > button[type="submit"]:not(.danger-action, .secondary-action, .tiny-action) {
+  border-color: var(--ds-accent);
+  background: var(--ds-accent);
+  color: #fff;
+}
+.primary-action:hover:not(:disabled),
+form .button-row > button[type="submit"]:not(.danger-action, .secondary-action, .tiny-action):hover:not(:disabled) {
+  border-color: var(--ds-accent-strong);
+  background: var(--ds-accent-strong);
+}
+
+/* ---------- Badges ---------- */
+.badge,
+.status-pill {
+  flex: none;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+/* ---------- Forms ---------- */
+.form-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  align-items: start;
+}
+.form-grid > :is(.button-row, .wide-field, .error-banner, .success-banner, .hint-text, .field-help, p, fieldset, details, .full-row) {
+  grid-column: 1 / -1;
+}
+.form-stack,
+.modal-panel .form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ds-space-4);
+}
+.modal-panel .button-row { justify-content: flex-end; margin: var(--ds-space-2) 0 0; }
+
+/* ---------- Toolbars (filters, investigation bars) ---------- */
+.filter-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--ds-space-3);
+  margin: 0 0 var(--ds-space-4);
+  padding: var(--ds-space-3);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius);
+  background: var(--ds-surface-2);
+}
+.filter-toolbar > :is(label, .toolbar-field) { flex: 1 1 180px; max-width: 280px; min-width: 0; }
+.filter-toolbar > :is(label, .toolbar-field).toolbar-search { flex: 2 1 260px; max-width: 420px; }
+.filter-toolbar > :is(label, .toolbar-field).toolbar-wide { flex: 3 1 320px; max-width: 520px; }
+.filter-toolbar > .toolbar-actions { display: flex; flex-wrap: wrap; gap: var(--ds-space-2); margin-left: auto; }
+.filter-toolbar > .toolbar-note { flex: 1 1 100%; margin: 0; color: var(--ds-muted); font-size: var(--ds-text-xs); }
+@media (max-width: 520px) {
+  .filter-toolbar > :is(label, .toolbar-field) { flex-basis: 100%; max-width: none; }
+  .filter-toolbar > .toolbar-actions { margin-left: 0; }
+}
+
+/* ---------- Tables ---------- */
+.table-shell { overflow-x: auto; }
+.table-shell th { white-space: nowrap; }
+.table-shell td { vertical-align: top; }
+.table-shell td:has(> .badge:only-child),
+.table-shell td:has(> .status-pill:only-child) { white-space: nowrap; }
+.cell-stack { display: grid; gap: 2px; min-width: 0; }
+.cell-stack > .cell-secondary { color: var(--ds-muted); font-size: var(--ds-text-sm); font-weight: 450; }
+
+/* ---------- Key-value evidence lists ---------- */
+.kv-list {
+  display: grid;
+  grid-template-columns: minmax(9rem, max-content) minmax(0, 1fr);
+  gap: 8px 20px;
+  margin: 0;
+}
+.kv-list > div { display: contents; }
+.kv-list dt { color: var(--ds-muted); font-size: var(--ds-text-sm); font-weight: 600; }
+.kv-list dd { min-width: 0; margin: 0; color: var(--ds-ink); font-size: var(--ds-text-md); overflow-wrap: break-word; }
+.kv-list > div.kv-span > dd { grid-column: 1 / -1; }
+@media (max-width: 520px) {
+  .kv-list { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .kv-list dd { margin-bottom: 8px; }
+}
+
+/* ---------- Code / JSON viewer ---------- */
+.code-viewer {
+  min-width: 0;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius);
+  background: #f7f9fb;
+}
+.code-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-2);
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--ds-line);
+  color: var(--ds-muted);
+  font-size: var(--ds-text-xs);
+  font-weight: 650;
+}
+.code-viewer pre {
+  margin: 0;
+  max-height: 360px;
+  padding: 10px 12px;
+  overflow: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  color: #1d2b3a;
+  font-family: var(--ds-font-mono);
+  font-size: 0.78rem;
+  line-height: 1.55;
+  tab-size: 2;
+}
+.code-viewer.is-tall pre { max-height: 560px; }
+
+/* ---------- Modals ---------- */
+.modal-panel {
+  width: min(520px, 100%);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-radius-lg);
+  box-shadow: var(--ds-shadow-modal);
+}
+.modal-panel > h2 { margin-bottom: var(--ds-space-2); font-size: 1.2rem; line-height: 1.3; }
+.modal-panel > p { color: var(--ds-muted); font-size: var(--ds-text-md); }
+
+/* ---------- Disclosures ---------- */
+:where(details) > summary { cursor: pointer; }
+
+/* ---------- Component: technical metadata (Inventory, Review) ----------
+ * Sections reflow by available width instead of forcing three columns into a
+ * narrow detail panel; JSON rows put the label above a full-width viewer. */
+.metadata-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  align-items: start;
+}
+.metadata-row { grid-template-columns: minmax(8.5rem, 0.4fr) minmax(0, 1fr); }
+.metadata-row dt { overflow-wrap: anywhere; font-family: var(--ds-font-mono); font-size: var(--ds-text-xs); font-weight: 600; }
+.metadata-row dd { max-height: none; }
+.metadata-row.metadata-row-code { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.metadata-disclosure:has(.metadata-row-code),
+.metadata-section:has(.metadata-row-code) { grid-column: 1 / -1; }
+.code-viewer-actions { display: inline-flex; align-items: center; gap: 6px; }
+.code-viewer-status { color: var(--ds-ok); font-weight: 600; }
+.code-empty { color: var(--ds-muted); }
+
+/* ---------- Component: contextual AI workspace (Security review) ----------
+ * Full-width tab content: compact composer beside the response. The response
+ * column holds an explicit placeholder so the layout never shows dead space. */
+.analysis-ai-drawer { max-inline-size: none; margin: 0; padding: 0; border: 0; }
+.controlled-ai-guardrail > div:first-child { flex-wrap: wrap; }
+.controlled-ai-status { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; font-size: var(--ds-text-sm); }
+.controlled-ai-status > div { display: flex; gap: 6px; }
+.controlled-ai-status dt { color: var(--ds-muted); font-weight: 600; }
+.controlled-ai-status dd { margin: 0; font-weight: 650; }
+.controlled-ai-notice { margin: 0; padding: 8px 12px; border-left: 3px solid var(--ds-warn); border-radius: 4px; background: var(--ds-warn-soft); font-size: var(--ds-text-md); }
+.controlled-ai-workspace {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: var(--ds-space-4);
+  align-items: start;
+}
+.controlled-ai-composer { min-width: 0; }
+.controlled-ai-form { gap: var(--ds-space-3); padding: var(--ds-space-4); }
+.controlled-ai-form .hint-text { margin: 0; font-size: var(--ds-text-xs); }
+.controlled-ai-question { display: grid; gap: var(--ds-space-3); }
+.security-console .controlled-ai-form button[type="submit"] { justify-self: stretch; border-color: var(--ds-accent); background: var(--ds-accent); color: #fff; }
+.security-console .controlled-ai-form button[type="submit"]:disabled { border-color: var(--ds-line-strong); background: #eef2f5; color: #6a7a8a; }
+.controlled-ai-output { display: grid; gap: var(--ds-space-3); min-width: 0; }
+.controlled-ai-placeholder {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  padding: var(--ds-space-6);
+  border: 1px dashed var(--ds-line-strong);
+  border-radius: var(--ds-radius);
+  background: var(--ds-surface-2);
+  color: var(--ds-muted);
+  font-size: var(--ds-text-md);
+  text-align: center;
+}
+.controlled-ai-placeholder p { max-width: 46ch; margin: 0; }
+.controlled-ai-loading::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 8px; border-radius: 50%; background: var(--ds-accent); animation: ds-pulse 1.2s ease-in-out infinite; }
+@keyframes ds-pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .controlled-ai-loading::before { animation: none; } }
+@media (max-width: 900px) {
+  .controlled-ai-workspace { grid-template-columns: minmax(0, 1fr); }
+  .controlled-ai-placeholder { min-height: 96px; }
+}
+
+/* ---------- Component: IAM mapping editor (Cloud security > MCP permissions) ---------- */
+.iam-editor-head { margin-bottom: var(--ds-space-4); }
+.iam-editor-head h3 { margin-bottom: 4px; }
+.iam-lede { max-width: 78ch; margin: 0; color: var(--ds-muted); font-size: var(--ds-text-md); }
+.iam-editor .contract-editor { display: grid; gap: var(--ds-space-4); }
+.iam-source-bar {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--ds-space-3) var(--ds-space-6);
+  padding: var(--ds-space-3) var(--ds-space-4); border: 1px solid var(--ds-line); border-radius: var(--ds-radius); background: var(--ds-surface-2);
+}
+.iam-server-field { flex: 1 1 240px; max-width: 360px; }
+.iam-facts { display: flex; flex-wrap: wrap; gap: var(--ds-space-2) var(--ds-space-6); margin: 0; }
+.iam-facts > div { display: grid; gap: 2px; }
+.iam-facts dt { color: var(--ds-muted); font-size: var(--ds-text-xs); font-weight: 600; }
+.iam-facts dd { margin: 0; font-size: 1.05rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.iam-fact-warn { color: var(--ds-warn); }
+.iam-fact-ok { color: var(--ds-ok); }
+.iam-contract-note { margin: 0 0 var(--ds-space-3); }
+.cloud-mapping-editor { display: grid; gap: var(--ds-space-4); }
+.cloud-mapping-editor > h4 { margin: 0; }
+.iam-fieldset { display: grid; gap: var(--ds-space-3); min-width: 0; margin: 0; padding: var(--ds-space-4); border: 1px solid var(--ds-line); border-radius: var(--ds-radius); background: var(--ds-surface); }
+.iam-fieldset > legend { padding: 0 6px; color: var(--ds-ink); font-size: var(--ds-text-md); font-weight: 700; }
+.iam-grid,
+.iam-entry-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr)); gap: var(--ds-space-3) var(--ds-space-4); align-items: start; }
+.iam-entry-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.iam-span-2 { grid-column: 1 / -1; }
+.iam-unmapped { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid #f0d9a8; border-left: 3px solid var(--ds-warn); border-radius: var(--ds-radius-sm); background: var(--ds-warn-soft); font-size: var(--ds-text-md); }
+.iam-unmapped ul { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; padding: 0; list-style: none; }
+.iam-unmapped li { display: inline-flex; align-items: center; gap: 6px; }
+.iam-mapped-ok { margin: 0; padding: 8px 12px; border-left: 3px solid var(--ds-ok); border-radius: var(--ds-radius-sm); background: var(--ds-ok-soft); font-size: var(--ds-text-md); }
+.iam-syntax-help { font-size: var(--ds-text-md); }
+.iam-syntax-help > summary { color: var(--ds-accent); font-weight: 600; }
+.iam-syntax-help p { max-width: 90ch; margin: 8px 0 0; color: var(--ds-muted); }
+.iam-entries { display: grid; gap: var(--ds-space-3); margin: 0; padding: 0; list-style: none; }
+.iam-entry { display: grid; gap: var(--ds-space-3); padding: var(--ds-space-3) var(--ds-space-4) var(--ds-space-4); border: 1px solid var(--ds-line); border-left: 3px solid var(--ds-accent); border-radius: var(--ds-radius); background: var(--ds-surface-2); }
+.iam-entry-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--ds-space-3); }
+.iam-entry-index { align-self: center; min-width: 4.5rem; color: var(--ds-accent-strong); font-size: var(--ds-text-sm); font-weight: 700; }
+.iam-capability-field { flex: 1 1 260px; max-width: 420px; }
+.iam-entry-capability { display: grid; gap: 6px; color: var(--ds-muted); font-size: var(--ds-text-xs); font-weight: 600; }
+.iam-entry-remove { margin-left: auto; }
+.iam-unscoped-note { margin: 0; align-self: center; color: var(--ds-warn); font-size: var(--ds-text-sm); }
+.mono-input { font-family: var(--ds-font-mono); font-size: 0.8rem; }
+.iam-ack { max-width: 80ch; }
+.iam-add { justify-self: start; }
+.iam-save-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--ds-space-3); padding-top: var(--ds-space-2); }
+.iam-save-bar > button { margin-left: auto; }
+.iam-review { display: grid; gap: var(--ds-space-3); padding-top: var(--ds-space-4); border-top: 1px solid var(--ds-line); }
+.iam-review > h4 { margin: 0; }
+.iam-mapping-select { max-width: 520px; }
+.iam-review-card { display: grid; gap: var(--ds-space-3); padding: var(--ds-space-4); border: 1px solid var(--ds-line); border-radius: var(--ds-radius); background: var(--ds-surface); }
+.iam-review-card .field-help { margin: 0; }
+.iam-warning-inline { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ds-warn); }
+.iam-review-entries > summary { font-weight: 650; }
+.iam-review-entries .table-shell { margin-top: var(--ds-space-2); }
+.iam-review-actions { margin: 0; }
+.iam-hash { color: var(--ds-muted); }
+@media (max-width: 640px) {
+  .iam-entry-grid { grid-template-columns: minmax(0, 1fr); }
+  .iam-entry-remove { margin-left: 0; }
+}
+
+/* Density pass: one row for action / scope / ARN on desktop. */
+.iam-entry-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr); }
+@media (max-width: 1180px) { .iam-entry-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .iam-arn { grid-column: 1 / -1; } }
+@media (max-width: 640px) { .iam-entry-grid { grid-template-columns: minmax(0, 1fr); } }
+.iam-entry-remove { color: var(--ds-danger); }
+
+/* ---------- Button scale (shared) ---------- */
+.security-console :is(.secondary-action, .button-row button, .quick-actions button, .tiny-action, .primary-action) {
+  font-size: var(--ds-text-md);
+  line-height: 1.25;
+}
+.security-console .tiny-action { padding: 5px 10px; font-size: var(--ds-text-sm); }
+.security-console .primary-action { min-block-size: var(--console-control-height); padding: 8px 16px; border-radius: var(--ds-radius); font-weight: 700; }
+.security-console .primary-action:disabled { border-color: var(--ds-line-strong); background: #eef2f5; color: #6a7a8a; opacity: 1; }
+.security-console :is(.iam-unmapped, .kv-list, .iam-review-card) code { font-size: 0.8rem; }
+
+/* ---------- Component toolbars ---------- */
+.build-history-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ds-space-2); width: min(760px, 100%); }
+.build-history-filters > input[type="search"] { flex: 2 1 260px; }
+.build-history-filters > select { flex: 1 1 150px; max-width: 200px; }
+.build-history-filters > button { flex: none; }
+.build-findings-filters > label { flex: 1 1 150px; max-width: 200px; }
+.audit-correlation-kind { flex: 0 1 220px; }
+.audit-correlation-bar .field-error { color: var(--ds-danger); font-weight: 600; }
+.management-filters.filter-toolbar > label { flex: 1 1 170px; }
+/* Adapter catalog: trust badge sized to its content, never clipped. */
+.trusted-adapter-catalog table { min-width: 720px; table-layout: auto; }
+.trusted-adapter-catalog td:nth-child(4) { white-space: nowrap; }
+.trusted-adapter-catalog .status-pill { overflow: visible; }
+.audit-json-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); align-items: start; }
+
+/* Field wrapper for controls with linked help (keeps help out of the accessible name). */
+.field { display: grid; gap: 6px; align-content: start; min-width: 0; }
+.field > label { color: var(--ds-ink-2); font-size: var(--ds-text-sm); font-weight: 650; line-height: 1.35; }
+.field > :is(input, select, textarea) { width: 100%; }
+.audit-event-metadata.kv-list { grid-template-columns: minmax(7rem, max-content) minmax(0, 1fr); margin-bottom: var(--ds-space-4); }
+/* Selects size to their options, not to a 1100 px form column. */
+:where(label):has(> select) > select,
+.field > select { max-width: min(100%, 34rem); }
+/* Dashboard priority cards keep one-line actions at tablet widths. */
+.dashboard-priority-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); }
+
+/* Opaque tokens (hashes, ARNs, IDs) may break anywhere so they never widen a grid track. */
+.security-console :is(code, kbd, samp, .mono, .record-id, .hash-value, .digest-value) { overflow-wrap: anywhere; }
+/* Sentence-length status facts read as text, not as shouted single-word statuses. */
+.build-scan-facts .status-panel strong { font-size: 1rem; line-height: 1.3; text-transform: none; letter-spacing: 0; }
+/* Hundreds of findings stay inside a bounded, scrollable region with a sticky header. */
+.build-findings-browser .table-wrap { max-height: min(70vh, 720px); overflow: auto; border: 1px solid var(--ds-line); border-radius: var(--ds-radius); }
+.build-findings-browser .table-wrap thead th { position: sticky; top: 0; z-index: 1; background: #edf3f7; }
+
+/* Narrow screens: metadata rows stack so values (badges, prose) get the full width. */
+@media (max-width: 520px) {
+  .metadata-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}
+/* Revision tables scroll horizontally instead of clipping their column headers. */
+.configuration-versions-table table { min-width: 620px; }
+.configuration-versions-table th { overflow: visible; text-overflow: clip; }
+.history-table table { min-width: 560px; }
+
+/* compact-dl: the label column never starves the value column. */
+.compact-dl div { grid-template-columns: minmax(min(150px, 40%), 0.35fr) minmax(0, 0.65fr); }
+@media (max-width: 520px) { .compact-dl div { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
+/* Grid items that host tables must be allowed to shrink so the table scrolls inside its own region. */
+.iam-editor .contract-editor > *,
+.iam-review,
+.iam-review-card,
+.iam-review-entries,
+.cloud-mapping-editor > *,
+.iam-fieldset > * { min-width: 0; }
+.cloud-history-table td:last-child .tiny-action { white-space: nowrap; }
+/* Select width cap must outrank the console-wide max-width: 100%. */
+.security-console label > select,
+.security-console .field > select { max-width: min(100%, 34rem); }
+
+/* Row actions in tables: compact disclosure, never clipped. */
+.user-row-actions { min-width: 0; }
+.users-table td:last-child { white-space: nowrap; }
+.user-row-actions > summary { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; font-size: var(--ds-text-sm); font-weight: 650; white-space: nowrap; }
+.user-row-actions[open] .button-row { white-space: normal; }
+/* Tabs use the shared control scale. */
+.security-console .tab-list button { font-size: var(--ds-text-md); padding: 7px 12px; }
+/* One select appearance everywhere: the chevron survives component background shorthands. */
+.security-console select:not([multiple]):not([size]) {
+  appearance: none;
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23526477' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+
+.form-grid > button { justify-self: start; align-self: end; }
+

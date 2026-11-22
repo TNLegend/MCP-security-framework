@@ -61,7 +61,7 @@
   border-radius: 6px;
   color: var(--accent, #1858a5);
   font-weight: 675;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   padding: 4px 6px;
   text-align: start;
   text-decoration: underline;
@@ -74,7 +74,7 @@
 
 .page-section .investigation-detail {
   min-inline-size: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .investigation-detail h3:focus-visible { outline-offset: 4px; }
@@ -132,7 +132,7 @@
 .rules-page .summary-card,
 .activity-page .summary-card {
   min-inline-size: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .rules-page .summary-card strong {
@@ -141,5 +141,5 @@
 
 .rules-page :is(.configuration-selection-summary, .configuration-editor, .configuration-section, .structured-editor) {
   min-inline-size: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }

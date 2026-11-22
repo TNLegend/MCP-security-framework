@@ -145,7 +145,7 @@ body { background: var(--console-canvas); }
 .console-location span::after { content: "/"; margin-left: 10px; color: #7b8c9c; }
 .console-location strong { color: var(--console-ink); }
 .console-header .session-actions { flex-wrap: wrap; justify-content: flex-end; }
-.console-header .session-user { padding-right: 8px; overflow-wrap: anywhere; min-width: 0; }
+.console-header .session-user { padding-right: 8px; overflow-wrap: break-word; min-width: 0; }
 .security-console .console-content {
   min-width: 0;
   width: min(100%, 1600px);
@@ -175,7 +175,7 @@ body { background: var(--console-canvas); }
 }
 .security-console .table-shell { max-width: 100%; }
 .security-console .table-shell th { color: #2d455b; background: #edf3f7; }
-.security-console :is(td, dd, .info-cell, .field-error, .empty-state) { overflow-wrap: anywhere; }
+.security-console :is(td, dd, .info-cell, .field-error, .empty-state) { overflow-wrap: break-word; }
 .security-console :is(pre, .table-scroll) { max-width: 100%; }
 .security-console .empty-state {
   border: 1px dashed #bacad6;

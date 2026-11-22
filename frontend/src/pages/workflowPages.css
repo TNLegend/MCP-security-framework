@@ -42,7 +42,7 @@
   text-align: left;
   text-decoration: underline;
   text-underline-offset: .18em;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   cursor: pointer;
 }
 
@@ -60,7 +60,7 @@
   border-inline-start: 3px solid var(--accent, #2365ab);
   background: var(--accent-soft, #edf5fd);
   color: var(--text, #18263b);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 :is(.inventory-page, .tool-review-page, .build-security-page) [role="region"][tabindex="0"] {

@@ -244,7 +244,7 @@
   padding: 12px;
   border: 1px solid var(--console-line, #d4dce6);
   border-radius: 10px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .iam-role h5, .iam-service h6 { margin: 0 0 8px; }
 .iam-role details { margin-block: 8px; }
@@ -265,7 +265,7 @@
   max-width: none;
   max-height: calc(100dvh - 24px);
   overflow: auto;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .iam-evidence-heading, .iam-evidence-metadata {
   display: flex;
@@ -297,9 +297,9 @@
   padding: 4px;
   overflow: auto;
   overscroll-behavior: contain;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .cloud-finding.cloud-finding-row { padding: 0; }
 .cloud-finding-row button { width: 100%; display: grid; gap: 4px; text-align: start; }
 .cloud-finding-row button[aria-pressed="true"] { box-shadow: inset 3px 0 currentColor; }
-.cloud-finding-detail { overflow-wrap: anywhere; }
+.cloud-finding-detail { overflow-wrap: break-word; }

@@ -348,7 +348,7 @@ th {
 
 td {
   color: #1f2937;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 tr:last-child td {
@@ -385,7 +385,7 @@ tr:last-child td {
 .summary-card strong {
   font-size: 1.8rem;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .summary-grid > .summary-card {
@@ -507,14 +507,14 @@ tr:last-child td {
 }
 
 .analysis-tool-table td {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .analysis-tool-table .table-selection {
   display: inline-block;
   max-width: 100%;
   white-space: normal;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   line-height: 1.35;
 }
 
@@ -613,7 +613,7 @@ code {
   border-radius: 6px;
   background: #eef2f7;
   padding: 3px 5px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .metadata-grid {
@@ -665,12 +665,12 @@ code {
 .compact-dl dt {
   color: #506074;
   font-weight: 700;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .compact-dl dd {
   margin: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .metadata-row {
@@ -690,13 +690,13 @@ code {
 .metadata-row dt {
   color: #506074;
   font-weight: 700;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .metadata-row dd {
   min-width: 0;
   margin: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .json-block {
@@ -862,7 +862,7 @@ code {
   justify-content: center;
   text-align: center;
   line-height: 1.35;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   white-space: normal;
 }
 
@@ -1224,7 +1224,7 @@ code {
 .semantic-fact {
   max-width: 100%;
   padding: 3px 7px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   border: 1px solid #c8d3e3;
   border-radius: 5px;
   background: #f7f9fc;
@@ -1371,7 +1371,7 @@ code {
 .adapter-candidates span,
 .adapter-candidates small {
   display: block;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .adapter-candidates small {
@@ -1774,7 +1774,7 @@ code {
 
 .read-only-field strong {
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   border: 1px solid #cbd3df;
   border-radius: 8px;
   background: #f8fafc;
@@ -2148,7 +2148,7 @@ code {
 }
 
 .security-pack-installation-card .compact-dl dd {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .security-pack-package-panel {
@@ -2240,7 +2240,7 @@ code {
 }
 
 .controlled-ai-context strong {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .controlled-ai-form {
@@ -2581,7 +2581,7 @@ code {
 
 .build-selected-path {
   display: block;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   border: 1px solid #d7deea;
   border-radius: 8px;
   background: #fff;
@@ -2633,8 +2633,8 @@ code {
 .build-source-evidence code,
 .build-source-cell,
 .build-resolved-location {
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .build-resolved-location {
@@ -2751,11 +2751,11 @@ code {
 }
 
 .build-governance-summary code {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .build-scan-detail td code {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .build-security-page tbody tr {
@@ -2804,8 +2804,8 @@ code {
 .m4-advisory-panel .m4-source-identity,
 .m4-advisory-panel .m4-event-card,
 .m4-advisory-panel details li {
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .m4-advisory-panel .m4-event-card {
@@ -2865,7 +2865,7 @@ code {
 
 .analysis-risk-drivers li small {
   flex-basis: 100%;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 @media (max-width: 600px) {
@@ -2949,7 +2949,7 @@ code {
   border: 1px solid #d7deea;
   border-radius: 8px;
 }
-.analysis-drift-list li span { overflow-wrap: anywhere; }
+.analysis-drift-list li span { overflow-wrap: break-word; }
 @media (max-width: 700px) {
   .analysis-drift-list li { grid-template-columns: 1fr auto; }
   .analysis-drift-list li span { grid-column: 1 / -1; grid-row: 2; }
@@ -3033,7 +3033,7 @@ code {
 }
 .dashboard-technical-details span {
   display: block;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   margin-top: 5px;
 }
 @media (max-width: 900px) {
@@ -3198,7 +3198,7 @@ label.deny-global-warning.checkbox-field .field-error {
   display: block;
   color: #536176;
   font-size: .76rem;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .audit-technical-details,
 .configuration-technical-details {
@@ -3223,7 +3223,7 @@ label.deny-global-warning.checkbox-field .field-error {
 }
 .audit-changed-fields ul {
   padding-left: 20px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .configuration-selection-summary {
   display: flex;
@@ -3239,7 +3239,7 @@ label.deny-global-warning.checkbox-field .field-error {
   flex-basis: 100%;
 }
 .configuration-technical-details dd {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 /* Browser-verified responsive grid containment: do not widen the whole page for wide tables. */
@@ -3281,7 +3281,7 @@ label.deny-global-warning.checkbox-field .field-error {
   font-size: .81rem;
 }
 .analysis-quick-summary strong {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .analysis-technical-identity {
   margin: 12px 0;
@@ -3369,7 +3369,7 @@ label.deny-global-warning.checkbox-field .field-error {
 }
 .operator-changes li span {
   margin-left: 9px;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   color: #536176;
 }
 .operator-next-step {
@@ -3601,12 +3601,12 @@ label.deny-global-warning.checkbox-field .field-error {
 }
 .contract-onboarding textarea {
   resize: vertical;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .contract-onboarding .inline-metadata dd,
 .contract-onboarding small,
 .contract-onboarding .hint-text {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .contract-toolbar {
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3628,7 +3628,7 @@ label.deny-global-warning.checkbox-field .field-error {
   font-weight: 700;
   color: #344969;
   cursor: pointer;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .contract-binding-metadata dl {
   margin: 10px 0 0;
@@ -3642,7 +3642,7 @@ label.deny-global-warning.checkbox-field .field-error {
 }
 .contract-binding-metadata dd {
   margin: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .contract-scope-row {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3664,7 +3664,7 @@ label.deny-global-warning.checkbox-field .field-error {
   min-width: 0;
   max-width: 100%;
   white-space: normal;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .contract-submit-row > button {
   justify-self: end;
@@ -3755,7 +3755,7 @@ label.deny-global-warning.checkbox-field .field-error {
   background: #edf4ff;
   text-decoration: underline;
 }
-.cloud-task-panel { scroll-margin-top: 18px; overflow-wrap: anywhere; }
+.cloud-task-panel { scroll-margin-top: 18px; overflow-wrap: break-word; }
 .cloud-detail-heading {
   display: flex;
   align-items: center;
@@ -3801,7 +3801,7 @@ label.deny-global-warning.checkbox-field .field-error {
   background: #fff;
 }
 .cloud-exception-review textarea { min-height: 92px; resize: vertical; }
-.cloud-task-panel pre, .cloud-task-panel code { overflow-wrap: anywhere; }
+.cloud-task-panel pre, .cloud-task-panel code { overflow-wrap: break-word; }
 .cloud-task-panel .table-scroll { width: 100%; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
 @media (max-width: 600px) {
   .cloud-section-nav { gap: 6px; }
@@ -3812,7 +3812,7 @@ label.deny-global-warning.checkbox-field .field-error {
 }
 
 /* UX-20: exact IAM finding target */
-.finding-target { margin: 0.25rem 0 0.5rem; font-size: 0.875rem; color: var(--muted, #4a5568); overflow-wrap: anywhere; }
+.finding-target { margin: 0.25rem 0 0.5rem; font-size: 0.875rem; color: var(--muted, #4a5568); overflow-wrap: break-word; }
 .finding-target.legacy { font-style: italic; }
 
 .nested-changes ul { list-style: none; padding: 0; }
@@ -3824,7 +3824,7 @@ label.deny-global-warning.checkbox-field .field-error {
   margin-block: 6px 0;
 }
 .nested-changes dd { margin: 0; }
-.nested-changes code { white-space: normal; overflow-wrap: anywhere; }
+.nested-changes code { white-space: normal; overflow-wrap: break-word; }
 @media (max-width: 480px) {
   .nested-changes dl { grid-template-columns: minmax(0, 1fr); }
 }
@@ -3835,7 +3835,7 @@ label.deny-global-warning.checkbox-field .field-error {
   padding-inline-start: 12px;
   border-inline-start: 2px solid var(--console-line, #d4dce6);
 }
-.controlled-ai-panel code, .controlled-ai-panel .record-link { overflow-wrap: anywhere; }
+.controlled-ai-panel code, .controlled-ai-panel .record-link { overflow-wrap: break-word; }
 
 .security-console :is(.secondary-action, .button-row button, .quick-actions button) {
   min-block-size: var(--console-control-height);
