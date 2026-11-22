@@ -63,6 +63,8 @@ def assist_tool_analysis(
                 "mode": payload.mode,
                 "error_code": exc.code,
                 "fingerprint": tool.current_fingerprint,
+                # UX-14: safe attempt classes only ({provider, outcome}).
+                "attempts": list(getattr(exc, "attempts", ()) or ()),
             },
         )
         db.commit()
@@ -71,6 +73,9 @@ def assist_tool_analysis(
             "controlled_ai_analysis_changed": 409,
             "controlled_ai_rate_limited": 429,
             "controlled_ai_timeout": 504,
+            # A reply arrived but failed validation: distinct from an outage.
+            "controlled_ai_response_invalid": 502,
+            "controlled_ai_not_configured": 503,
         }.get(exc.code, 503)
         if exc.code in {
             "v2_draft_required",

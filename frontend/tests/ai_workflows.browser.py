@@ -40,10 +40,12 @@ def exercise_assistant(page, width):
     ask = assistant.get_by_role("button", name="Explain this result", exact=True)
     expect(ask).to_be_enabled()
     ask.press("Enter")
-    expect(assistant.get_by_role("heading", name="What the framework recorded")).to_be_visible()
+    # Current candidate contract (the old "What the framework recorded" label was replaced before e3dc067).
+    expect(assistant.get_by_role("heading", name="Recorded security facts")).to_be_visible()
     assistant.get_by_text("Supporting evidence and advanced options").click()
     expect(assistant.get_by_text("finding:FIXTURE_RULE")).to_be_visible()
-    expect(assistant.get_by_text("Advisory confidence:", exact=False)).to_contain_text("75%")
+    # UX-14: uncalibrated model confidence is no longer displayed.
+    expect(assistant.get_by_text("Advisory confidence:", exact=False)).to_have_count(0)
     ask.click()
     expect(assistant.get_by_text("The observed scope is incomplete.")).to_be_visible()
     expect(assistant.get_by_text("No evidence references were selected.", exact=False)).to_be_visible()

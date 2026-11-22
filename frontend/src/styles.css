@@ -3092,6 +3092,8 @@ code {
   color: #5c3600;
   font-weight: 700;
 }
+/* UX-23: label and value never touch ("MODEExplain"). */
+.controlled-ai-meta, .controlled-ai-provider { display: inline-flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
 /* UX-19: execution / findings / coverage as three comparable facts. */
 .scan-assessment-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 10px 0 14px; }
 .scan-assessment-summary .scan-fact { border: 1px solid #d7deea; border-radius: 10px; padding: 12px 14px; background: #fff; display: grid; gap: 6px; align-content: start; }

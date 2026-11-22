@@ -201,13 +201,14 @@ export function ControlledAIResult({ result }) {
       <details className="operator-technical-details">
         <summary>Supporting evidence and advanced options</summary>
         <div className="controlled-ai-result-heading">
-          <div><span>Mode</span><strong>{humanize(result.mode)}</strong></div>
+          <div className="controlled-ai-meta"><span>Mode</span>{" "}<strong>{humanize(result.mode)}</strong></div>
           <div className="controlled-ai-provider">
-            <strong>{result.provider}</strong>
+            <strong>{result.provider}</strong>{" "}
             <span>{result.fallback_used ? "Fallback provider" : "Configured provider"}</span>
           </div>
         </div>
-        <p>Advisory confidence: {formatConfidence(result.confidence)}. This score describes the assistance only.</p>
+        {/* UX-14: model confidence is uncalibrated, so it is not displayed. */}
+        <p>AI output is advisory only: it cannot approve tools, change signed contracts, grant permissions or invoke MCP tools.</p>
         <p>Displayed findings are recorded by the framework, not invented by the AI.</p>
         <StringList title={isDraft ? "Related analysis references" : "Framework evidence references selected by AI"} values={result.evidence_refs} />
         <OptionList title="Template options" values={result.template_options} />
@@ -320,10 +321,6 @@ function humanize(value) {
   );
 }
 
-
-function formatConfidence(value) {
-  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "Unavailable";
-}
 
 
 export default ControlledAIAssistant;

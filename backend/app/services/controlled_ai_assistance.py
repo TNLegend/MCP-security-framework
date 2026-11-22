@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from agent.llm_providers.base import LLMProviderError, provider_failure_code
+from agent.llm_providers.base import LLMProviderError
 from agent.llm_providers.gemini_provider import GeminiProvider
 from agent.llm_providers.groq_provider import GroqProvider
 from app.models.control_plane import ControlPlaneConfigRevision
@@ -51,9 +52,45 @@ SENSITIVE_CONTEXT_KEYS = (
     "credential",
 )
 class ControlledAIAssistanceError(Exception):
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, attempts: tuple[dict[str, str], ...] = ()):
         super().__init__(code)
         self.code = code
+        # UX-14: safe per-attempt classes for audit ({provider, outcome}); never
+        # raw provider errors, payloads or credentials.
+        self.attempts = attempts
+
+
+# UX-14: one end-to-end budget for a user request, fallback included.
+DEFAULT_AI_REQUEST_BUDGET_SECONDS = 30.0
+_ATTEMPT_OUTCOMES = frozenset({
+    "schema_invalid", "reference_invalid", "timeout", "rate_limited",
+    "not_configured", "unavailable", "budget_exhausted",
+})
+
+
+def _coerce_confidence(value):
+    """Accept 0..1 numbers, numeric strings and percentages; otherwise None.
+
+    Confidence is uncalibrated and not shown as a security signal, so an
+    unparseable value must not turn an otherwise valid reply into a failure.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        text = value.strip().rstrip("%")
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+        if value.strip().endswith("%"):
+            number /= 100.0
+    else:
+        return None
+    if 1.0 < number <= 100.0:
+        number /= 100.0
+    return number if 0.0 <= number <= 1.0 else None
 
 
 class _AIAdvice(BaseModel):
@@ -63,9 +100,14 @@ class _AIAdvice(BaseModel):
     evidence_refs: tuple[str, ...] = Field(default=(), max_length=32)
     template_ids: tuple[str, ...] = Field(default=(), max_length=8)
     adapter_ids: tuple[str, ...] = Field(default=(), max_length=8)
-    confidence: float = Field(ge=0, le=1)
+    confidence: float | None = Field(default=None, ge=0, le=1)
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def normalize_confidence(cls, value):
+        return _coerce_confidence(value)
 
     @field_validator(
         "evidence_refs",
@@ -144,7 +186,12 @@ def generate_controlled_ai_assistance(
         evidence_refs=evidence_refs,
     )
     prompt = _build_prompt(mode=mode, question=question, context=context)
-    advice, provider, fallback_used = _generate_advice(prompt)
+    advice, provider, fallback_used = _generate_advice(
+        prompt,
+        allowed_evidence=set(evidence_refs),
+        allowed_templates=set(template_by_id),
+        allowed_adapters=set(adapter_by_id),
+    )
 
     unknown_evidence = set(advice.evidence_refs) - set(evidence_refs)
     if unknown_evidence:
@@ -499,8 +546,42 @@ def _build_prompt(*, mode: str, question: str | None, context: dict[str, Any]) -
     )
 
 
-def _generate_advice(prompt: str) -> tuple[_AIAdvice, str, bool]:
+def _final_failure_code(outcomes: list[str]) -> str:
+    """Most precise safe code for the user; order matters."""
+    if not outcomes:
+        return "controlled_ai_not_configured"
+    for outcome, code in (
+        ("rate_limited", "controlled_ai_rate_limited"),
+        ("timeout", "controlled_ai_timeout"),
+        ("budget_exhausted", "controlled_ai_timeout"),
+    ):
+        if outcome in outcomes:
+            return code
+    if all(outcome == "not_configured" for outcome in outcomes):
+        return "controlled_ai_not_configured"
+    if any(outcome in {"schema_invalid", "reference_invalid"} for outcome in outcomes):
+        return "controlled_ai_response_invalid"
+    return "controlled_ai_unavailable"
+
+
+def _generate_advice(
+    prompt: str,
+    *,
+    allowed_evidence: set[str] | None = None,
+    allowed_templates: set[str] | None = None,
+    allowed_adapters: set[str] | None = None,
+    provider_types: dict | None = None,
+    clock=time.monotonic,
+) -> tuple[_AIAdvice, str, bool]:
+    """UX-14: validate each attempt (shape *and* allowed references) before a
+    result is selected, so a malformed primary reply falls through to the
+    fallback; classify failures with safe codes; bound total latency."""
     load_project_environment()
+    try:
+        budget = float(os.getenv("CONTROLLED_AI_REQUEST_BUDGET_SECONDS") or DEFAULT_AI_REQUEST_BUDGET_SECONDS)
+    except ValueError:
+        budget = DEFAULT_AI_REQUEST_BUDGET_SECONDS
+    started = clock()
     primary = (
         os.getenv("CONTROLLED_AI_PROVIDER")
         or os.getenv("SECURITY_PACK_AI_PROVIDER")
@@ -511,25 +592,49 @@ def _generate_advice(prompt: str) -> tuple[_AIAdvice, str, bool]:
         or os.getenv("SECURITY_PACK_AI_FALLBACK_PROVIDER")
         or "groq"
     ).strip().lower()
-    provider_types = {"gemini": GeminiProvider, "groq": GroqProvider}
-    names = [primary]
-    if fallback and fallback != primary:
-        names.append(fallback)
-    failures = []
+    provider_types = provider_types or {"gemini": GeminiProvider, "groq": GroqProvider}
+    names = [primary] + ([fallback] if fallback and fallback != primary else [])
+    attempts: list[dict[str, str]] = []
     for index, name in enumerate(names):
         provider_type = provider_types.get(name)
         if provider_type is None:
             continue
+        remaining = budget - (clock() - started)
+        if remaining <= 1.0:
+            attempts.append({"provider": name, "outcome": "budget_exhausted"})
+            break
         try:
-            raw = provider_type().generate_json(prompt)
-            advice = _AIAdvice.model_validate(raw)
-            return advice, name, index > 0
+            provider = provider_type()
+            if hasattr(provider, "timeout_seconds"):
+                provider.timeout_seconds = min(float(provider.timeout_seconds), remaining)
+            raw = provider.generate_json(prompt)
         except LLMProviderError as exc:
-            failures.append(exc.code)
-        except Exception:
+            message = str(exc).lower()
+            outcome = ("not_configured" if "not configured" in message
+                       else exc.code if exc.code in _ATTEMPT_OUTCOMES else "unavailable")
+            attempts.append({"provider": name, "outcome": outcome})
             continue
+        except Exception:
+            attempts.append({"provider": name, "outcome": "unavailable"})
+            continue
+        try:
+            advice = _AIAdvice.model_validate(raw)
+        except Exception:
+            attempts.append({"provider": name, "outcome": "schema_invalid"})
+            continue
+        if (
+            (allowed_evidence is not None and not set(advice.evidence_refs) <= allowed_evidence)
+            or (allowed_templates is not None and not set(advice.template_ids) <= allowed_templates)
+            or (allowed_adapters is not None and not set(advice.adapter_ids) <= allowed_adapters)
+        ):
+            attempts.append({"provider": name, "outcome": "reference_invalid"})
+            continue
+        return advice, name, index > 0
 
-    raise ControlledAIAssistanceError(f"controlled_ai_{provider_failure_code(failures)}")
+    raise ControlledAIAssistanceError(
+        _final_failure_code([attempt["outcome"] for attempt in attempts]),
+        attempts=tuple(attempts),
+    )
 
 
 def _draft_onboarding_response(

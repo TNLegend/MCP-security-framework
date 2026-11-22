@@ -50,5 +50,14 @@ export function assistantErrorMessage(error) {
   if (code?.startsWith("controlled_ai_unknown_")) {
     return "The provider returned a reference that could not be verified. Review the recorded evidence directly.";
   }
+  // UX-14: a reply that failed validation is not an outage.
+  if (code === "controlled_ai_response_invalid") {
+    return "The AI providers replied, but no reply passed validation (format or evidence references), so none is shown. "
+      + "The recorded evidence above is unaffected. You can retry.";
+  }
+  if (code === "controlled_ai_not_configured") {
+    return "AI assistance is not configured on this server. An administrator must configure a provider privately. "
+      + "Continue with the recorded evidence.";
+  }
   return "AI assistance is unavailable. Continue manually or try again later.";
 }
