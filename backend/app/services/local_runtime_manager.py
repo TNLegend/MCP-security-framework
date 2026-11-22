@@ -458,7 +458,27 @@ class LocalRuntimeManager:
                 and child.terminate_on_shutdown
                 and child.process.poll() is None
             ):
-                child.process.terminate()
+                # npm.cmd is a Windows command wrapper: terminating only the
+                # wrapper leaves its Node/Vite child listening on the GUI port.
+                # Kill the tree while its owned parent is still alive. Only
+                # frontend children started by this manager are eligible.
+                pid = getattr(child.process, "pid", None)
+                if os.name == "nt" and child.component == "frontend" and isinstance(pid, int) and pid > 0:
+                    taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
+                    if taskkill.is_file():
+                        try:
+                            subprocess.run(
+                                [str(taskkill), "/PID", str(pid), "/T", "/F"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=15,
+                                creationflags=subprocess.CREATE_NO_WINDOW,
+                                check=False,
+                            )
+                        except (OSError, subprocess.TimeoutExpired):
+                            # Continue with the normal owned-process fallback.
+                            pass
+                if child.process.poll() is None:
+                    child.process.terminate()
                 try:
                     child.process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
