@@ -588,7 +588,7 @@ function IAMComparisonWorklist({ rows, findingIds, onSelectFinding }) {
   useDialogFocus(Boolean(selected), dialogRef, { focusContainer: true });
 
   return <>
-    <div className="iam-worklist">
+    <div className="iam-worklist" role="region" aria-label="IAM comparison worklist" tabIndex={0}>
       {groupIamComparisons(rows).map((role) => (
         <section key={role.role} className="iam-role">
           <h5>{role.role} ({role.count})</h5>

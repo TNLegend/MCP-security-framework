@@ -679,7 +679,7 @@ def check_ux10(browser, server, shots):
 
 
 
-def check_ux21(browser, server, shots):
+def check_ux21(browser, server, shots, *, width=1440, keyboard=False):
     scan_id = "dddd4444-0000-4000-8000-000000000004"
     role = "arn:aws:iam::123456789012:role/QA/" + "LongSyntheticRole" * 4
     scan = {"id": scan_id, "kind": "IAM_MCP", "status": "COMPLETED",
@@ -718,22 +718,39 @@ def check_ux21(browser, server, shots):
 
     RemediationAPI.read = read
     try:
-        context, page, api, errors = smoke.open_page(browser, server, "ADMIN", 1440)
+        context, page, api, errors = smoke.open_page(browser, server, "ADMIN", width)
         root = page.url.split("?")[0]
         page.goto(root + "?view=cloud&scan=" + scan_id)
-        worklist = page.locator(".iam-worklist")
+        worklist = page.get_by_role("region", name="IAM comparison worklist")
         expect(worklist.get_by_text("Outside the approved mapping (25)", exact=True)).to_be_visible()
         expect(worklist.get_by_text("ssm (25)", exact=True)).to_be_visible()
         expect(worklist.locator(".iam-row")).to_have_count(32)
         selected = worklist.get_by_role("button", name=re.compile(r"ssm:FixtureAction4\b"))
-        selected.click()
+        if keyboard:
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
+            assert worklist.evaluate("(node) => node.scrollWidth <= node.clientWidth"), width
+            worklist.focus()
+            expect(worklist).to_be_focused()
+            selected.focus()
+            page.keyboard.press("Enter")
+        else:
+            selected.click()
         evidence = page.get_by_role("dialog", name="IAM comparison evidence")
         expect(evidence.get_by_role("heading", name="Approved MCP need")).to_be_visible()
         expect(evidence.get_by_role("heading", name="Observed IAM identity-policy statement")).to_be_visible()
         expect(evidence.get_by_text("UNKNOWN", exact=True)).to_be_visible()
         expect(evidence.get_by_text("scp not evaluated", exact=True)).to_be_visible()
         if shots:
-            evidence.screenshot(path=str(shots / "ux21-iam-evidence-1440.png"))
+            evidence.screenshot(path=str(shots / f"ux21-iam-evidence-{width}.png"))
+        if keyboard:
+            expect(evidence).to_be_focused()
+            page.keyboard.press("Escape")
+            expect(evidence).to_have_count(0)
+            expect(selected).to_be_focused()
+            if shots:
+                worklist.screenshot(path=str(shots / f"ux17-iam-worklist-{width}.png"))
+            context.close()
+            return f"{width}px named scroll region, no horizontal overflow and keyboard focus restored"
         evidence.get_by_role("button", name="Request exception for linked finding finding-4").click()
         expect(page.get_by_label("Finding to review")).to_have_value("finding-4")
         assert not errors, errors
@@ -743,7 +760,11 @@ def check_ux21(browser, server, shots):
     return "32 exact rows grouped, observed and approved scope separated, UNKNOWN preserved, exact exception selected"
 
 
-CHECKS = {"UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
+def check_ux17(browser, server, shots):
+    return "; ".join(check_ux21(browser, server, shots, width=width, keyboard=True) for width in (320, 768, 1440))
+
+
+CHECKS = {"UX-17": check_ux17, "UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
           "UX-09": check_ux09, "UX-11": check_ux11, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 
