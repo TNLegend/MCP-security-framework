@@ -101,6 +101,26 @@ function pageUrl(pageId, toolId = null, options = {}) {
   return url;
 }
 
+// UX-16: explicit access boundary; the viewer session never reads the data.
+export function AccessDenied({ pageLabel, onHome }) {
+  const canGoBack = typeof window !== "undefined" && window.history.length > 1;
+  return (
+    <section className="page-section" aria-labelledby="access-denied-title">
+      <div className="section-heading">
+        <h2 id="access-denied-title">Administrator access required</h2>
+      </div>
+      <div className="detail-panel access-denied-panel" role="status">
+        <p>{pageLabel} can only be opened by an administrator. Nothing was read or changed with your session.</p>
+        <p>If you followed a link from an audit or activity record, ask an administrator to open it, or continue with the read-only views.</p>
+        <div className="button-row">
+          {canGoBack && <button className="secondary-action" onClick={() => window.history.back()} type="button">Go back</button>}
+          <button className="console-primary" onClick={onHome} type="button">Return to Home</button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 const navIcons = {
   dashboard: "M3 10.5 12 3l9 7.5V20H3z M9 20v-6h6v6",
   inventory: "M4 4h16v6H4z M4 14h16v6H4z M7 7h.01 M7 17h.01",
@@ -166,8 +186,12 @@ function App() {
   const [viewRefreshToken, setViewRefreshToken] = useState(0);
   const loadDataGeneration = useRef(0);
   const isAdmin = user?.role === "ADMIN";
-  const activePage = requestedPage === "users" && !isAdmin ? "dashboard" : requestedPage;
-  const currentPage = pages.find((page) => page.id === activePage);
+  // UX-16: a protected URL opened by a non-admin shows an explicit access
+  // boundary at the same address instead of silently substituting Home.
+  const accessDenied = Boolean(user) && !isAdmin
+    && Boolean(pages.find((page) => page.id === requestedPage)?.adminOnly);
+  const activePage = accessDenied ? "access-denied" : requestedPage;
+  const currentPage = pages.find((page) => page.id === (accessDenied ? requestedPage : activePage));
   const activeServers = useMemo(
     () => servers.filter((server) => server.status !== "archived"),
     [servers],
@@ -542,6 +566,11 @@ function App() {
       return <Users users={users} loading={loading} onRefresh={loadData} />;
     }
 
+    if (activePage === "access-denied") {
+      return <AccessDenied onHome={() => navigateToPage("dashboard")}
+        pageLabel={pages.find((page) => page.id === requestedPage)?.label || "This page"} />;
+    }
+
     return (
       <Dashboard
         activeRevision={activeRevision}
@@ -616,7 +645,7 @@ function App() {
         type="button"
       >
         <span>{mobileNavOpen ? "Close menu" : "Menu"}</span>
-        <strong>{pages.find((page) => page.id === activePage)?.label || "Home"}</strong>
+        <strong>{currentPage?.label || "Home"}</strong>
       </button>
       <nav id="primary-navigation" className={"app-nav" + (mobileNavOpen ? " mobile-open" : "")}
         aria-label="Main navigation">

@@ -554,7 +554,36 @@ def check_ux09(browser, server, shots):
     return "; ".join(results)
 
 
-CHECKS = {"UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06,
+def check_ux16(browser, server, shots):
+    """UX-16: a VIEWER opening a protected Users link sees an explicit boundary at
+    the same address, a safe return path, and no Users API read."""
+    context, page, api, errors = smoke.open_page(browser, server, "VIEWER", 1440)
+    smoke.navigate(page, "Audit history", 1440)
+    origin = page.url
+    page.goto(page.url.split("?")[0] + "?view=users")
+    expect(page.get_by_role("heading", level=2, name="Administrator access required")).to_be_visible()
+    assert "view=users" in page.url
+    expect(page.get_by_role("main", name="Users")).to_be_visible()
+    assert not any(path == "/control-plane/users" for _, path, _ in api.requests)
+    if shots:
+        page.screenshot(path=str(shots / "ux16-viewer-users-boundary-1440.png"))
+    page.get_by_role("button", name="Go back").click()
+    expect(page.get_by_role("heading", level=2, name="Audit history")).to_be_visible()
+    assert page.url == origin
+    page.goto(page.url.split("?")[0] + "?view=users")
+    page.get_by_role("button", name="Return to Home").click()
+    expect(page.get_by_role("heading", level=2, name="Security overview")).to_be_visible()
+    assert not errors, errors
+    context.close()
+    context, page, api, errors = smoke.open_page(browser, server, "ADMIN", 1440)
+    page.goto(page.url.split("?")[0] + "?view=users")
+    expect(page.get_by_role("heading", level=2, name="Users")).to_be_visible()
+    expect(page.get_by_text("Administrator access required")).to_have_count(0)
+    context.close()
+    return "VIEWER: boundary at ?view=users, no /users read, Go back to origin, Return to Home; ADMIN unaffected"
+
+
+CHECKS = {"UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
           "UX-09": check_ux09, "UX-11": check_ux11, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 

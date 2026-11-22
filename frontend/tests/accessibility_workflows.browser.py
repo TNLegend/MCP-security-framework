@@ -131,7 +131,9 @@ def run(browser, server, role, width):
 
         if role == "VIEWER":
             page.goto(page.url.split("?")[0] + "?view=users")
-            expect(page.get_by_role("main", name="Home")).to_be_visible()
+            # UX-16: the main region keeps the requested page name and states the boundary.
+            expect(page.get_by_role("main", name="Users")).to_be_visible()
+            expect(page.get_by_role("heading", name="Administrator access required")).to_be_visible()
             assert not any(path == "/control-plane/users" for _, path, _ in api.requests)
         page.get_by_role("button", name="Sign out").click()
         expect(page.get_by_role("status")).to_contain_text("You signed out")

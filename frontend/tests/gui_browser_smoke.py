@@ -127,6 +127,14 @@ class MockAPI:
         }
         if path in fixed:
             return fixed[path]
+        if path == CLOUD + "/scans/page":
+            # UX-11 server-paged history: same fixture rows, filtered like the API.
+            env = (query.get("environment_id") or [""])[0]
+            kind = (query.get("kind") or [""])[0]
+            rows = [s for s in SCANS if (not kind or s["kind"] == kind)
+                    and (not env or s["environment_id"] == env or s["kind"] == "IAC_CONFIG")]
+            return {"scope": "PERSISTED_CLOUD_SCANS", "items": rows, "total": len(rows), "offset": 0,
+                    "limit": 25, "returned": len(rows), "has_more": False}
         if path.startswith(CLOUD + "/scans/"):
             scan_id, _, suffix = path.removeprefix(CLOUD + "/scans/").partition("/")
             if suffix == "":
@@ -272,7 +280,7 @@ def main():
                 assert any(params.get("search") == ["read_documents"] for verb, path, params in api.requests if path == "/runtime/logs")
                 api.fail.add("/runtime/logs")
                 page.get_by_role("button", name="Apply", exact=True).click()
-                expect(page.get_by_role("alert")).to_contain_text("Previous results are retained")
+                expect(page.get_by_role("alert")).to_contain_text("may be stale")
                 expect(page.get_by_role("button", name=re.compile(r"^read_documents")).first).to_be_visible()
                 api.fail.remove("/runtime/logs")
                 navigate(page, "Audit history", 1280)
@@ -305,7 +313,9 @@ def main():
                 navigate(page, "Cloud security", 390)
                 expect(page.get_by_role("alert").first).to_be_visible()
                 page.goto(page.url.split("?")[0] + "?view=users")
-                expect(page.get_by_role("heading", name="Security overview")).to_be_visible()
+                # UX-16: explicit access boundary at the same address, not a silent Home.
+                expect(page.get_by_role("heading", name="Administrator access required")).to_be_visible()
+                assert "view=users" in page.url
                 assert all(path != "/control-plane/users" for _, path, _ in api.requests)
                 print("PASS keyboard skip/Escape, Cloud read failure, VIEWER deep-link guard")
             except Exception as exc:
