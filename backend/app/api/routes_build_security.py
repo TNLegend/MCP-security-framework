@@ -575,6 +575,95 @@ def list_build_scans(
     return [_summary(scan) for scan in scans]
 
 
+_FINDING_SEVERITY_RANK = case(
+    (BuildFinding.severity == "CRITICAL", 5),
+    (BuildFinding.severity == "HIGH", 4),
+    (BuildFinding.severity == "MEDIUM", 3),
+    (BuildFinding.severity == "LOW", 2),
+    (BuildFinding.severity == "INFO", 1),
+    else_=0,
+)
+_FINDING_SEVERITIES = {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}
+_FINDING_STATES = {"NEW", "UNCHANGED", "RESOLVED", "REGRESSED"}
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@router.get("/scans/{scan_id}/findings")
+def page_build_scan_findings(
+    scan_id: str,
+    offset: int = Query(default=0, ge=0, le=1_000_000),
+    limit: int = Query(default=50, ge=1, le=200),
+    finding_id: str | None = Query(default=None, max_length=36),
+    severity: str | None = Query(default=None, max_length=16),
+    finding_state: str | None = Query(default=None, max_length=16),
+    scanner_id: str | None = Query(default=None, max_length=64),
+    rule_id: str | None = Query(default=None, max_length=255),
+    path: str | None = Query(default=None, max_length=512),
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    """UX-09: every stored finding is reachable, beyond the 500-row detail cap.
+
+    Stable server ordering (severity, scanner, path, line, then id) and a
+    total computed by the same WHERE clause as the page. Returns exactly the
+    same public finding shape as the detail endpoint, so role disclosure is
+    unchanged (the absolute source binding stays admin-only elsewhere).
+    """
+    scan = db.get(BuildScanRun, scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="build_scan_not_found")
+    filters = [BuildFinding.build_scan_id == scan.id]
+    applied: dict[str, str] = {}
+    if finding_id:
+        filters.append(BuildFinding.id == finding_id.strip())
+        applied["finding_id"] = finding_id.strip()
+    if severity:
+        normalized = severity.strip().upper()
+        if normalized not in _FINDING_SEVERITIES:
+            raise HTTPException(status_code=422, detail="build_finding_severity_invalid")
+        filters.append(BuildFinding.severity == normalized)
+        applied["severity"] = normalized
+    if finding_state:
+        normalized = finding_state.strip().upper()
+        if normalized not in _FINDING_STATES:
+            raise HTTPException(status_code=422, detail="build_finding_state_invalid")
+        filters.append(BuildFinding.finding_state == normalized)
+        applied["finding_state"] = normalized
+    if scanner_id:
+        filters.append(BuildFinding.scanner_id == scanner_id.strip())
+        applied["scanner_id"] = scanner_id.strip()
+    if rule_id:
+        filters.append(BuildFinding.rule_id == rule_id.strip())
+        applied["rule_id"] = rule_id.strip()
+    if path:
+        filters.append(BuildFinding.file_path.like("%" + _escape_like(path.strip()) + "%", escape="\\"))
+        applied["path"] = path.strip()
+    total = int(db.scalar(select(func.count(BuildFinding.id)).where(*filters)) or 0)
+    unfiltered_total = int(db.scalar(
+        select(func.count(BuildFinding.id)).where(BuildFinding.build_scan_id == scan.id)
+    ) or 0)
+    rows = db.scalars(
+        select(BuildFinding).where(*filters)
+        .order_by(_FINDING_SEVERITY_RANK.desc(), BuildFinding.scanner_id.asc(),
+                  BuildFinding.file_path.asc(), BuildFinding.line_start.asc(), BuildFinding.id.asc())
+        .offset(offset).limit(limit)
+    ).all()
+    return {
+        "scope": "PERSISTED_SCAN_FINDINGS",
+        "items": [BuildFindingPublic.model_validate(row).model_dump(mode="json") for row in rows],
+        "total": total,
+        "unfiltered_total": unfiltered_total,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(rows),
+        "has_more": offset + len(rows) < total,
+        "filters": applied,
+    }
+
+
 @router.get(
     "/scans/{scan_id}",
     response_model=BuildScanDetailPublic,

@@ -385,7 +385,80 @@ def check_ux19(browser, server, shots):
     return f"31/58/0 x2: execution/findings/coverage separate, severity 4/14/25/15, findings before governance (mobile heading at {mobile_y}px), failed run = Coverage unavailable"
 
 
-CHECKS = {"UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-19": check_ux19}
+def check_ux09(browser, server, shots):
+    """UX-09: a finding beyond row 500 is reachable by exact ID and by paging, for both roles."""
+    from urllib.parse import unquote
+    build = "/control-plane/build-security"
+    scan = {"id": "build-scan-501", "target_type": "LOCAL_DIRECTORY", "display_name": "synthetic-501",
+            "status": "COMPLETED", "created_at": smoke.STAMP, "source_fingerprint": "f" * 64}
+    findings = [{"id": f"finding-{i:04d}", "build_scan_id": scan["id"], "scanner_run_id": "run-1",
+                 "scanner_id": "semgrep" if i % 2 else "trivy", "rule_id": f"rule.{i % 5}", "category": "code",
+                 "severity": "LOW" if i < 500 else "INFO", "confidence": "HIGH", "finding_state": "NEW",
+                 "fingerprint": "f" * 64, "title": f"Synthetic finding {i}", "file_path": f"src/m_{i:04d}.py",
+                 "line_start": 1, "references": [], "safe_metadata": {}, "created_at": smoke.STAMP}
+                for i in range(501)]
+    detail = {"scan": scan, "scanner_runs": [{"id": "run-1", "scanner_id": "semgrep", "status": "COMPLETED",
+                                               "required": True, "finding_count": 251},
+                                              {"id": "run-2", "scanner_id": "trivy", "status": "COMPLETED",
+                                               "required": True, "finding_count": 250}],
+              "findings": findings[:500], "finding_total": 501, "findings_truncated": True, "assessment": None}
+    original = RemediationAPI.read
+
+    def read(self, path, query):
+        if path == build + "/scans":
+            return [scan]
+        if path == build + f"/scans/{scan['id']}":
+            return detail
+        if path == build + f"/scans/{scan['id']}/findings":
+            q = {k: unquote(v[0]) for k, v in query.items()}
+            rows = [f for f in findings
+                    if (not q.get("finding_id") or f["id"] == q["finding_id"])
+                    and (not q.get("severity") or f["severity"] == q["severity"])
+                    and (not q.get("path") or q["path"] in f["file_path"])]
+            offset, limit = int(q.get("offset", 0)), int(q.get("limit", 50))
+            page = rows[offset:offset + limit]
+            return {"scope": "PERSISTED_SCAN_FINDINGS", "items": page, "total": len(rows), "unfiltered_total": 501,
+                    "offset": offset, "limit": limit, "returned": len(page), "has_more": offset + len(page) < len(rows),
+                    "filters": {}}
+        return original(self, path, query)
+
+    RemediationAPI.read = read
+    results = []
+    try:
+        for role in ("ADMIN", "VIEWER"):
+            context, page, api, errors = smoke.open_page(browser, server, role, 1440)
+            smoke.navigate(page, "Code scans", 1440)
+            page.get_by_role("region", name="Build scan history table").get_by_role("button", name="synthetic-501").click()
+            browser_region = page.get_by_role("region", name="Build findings")
+            rng = page.get_by_test_id("build-findings-range")
+            expect(rng).to_have_text("Showing 1–50 of 501 stored.")
+            page.get_by_label("Finding ID").fill("finding-0500")
+            page.get_by_role("button", name="Apply", exact=True).first.click()
+            expect(rng).to_have_text("Showing 1–1 of 1 · filtered from 501 stored.")
+            expect(browser_region.locator('[data-finding-id="finding-0500"]')).to_contain_text("src/m_0500.py")
+            page.get_by_role("button", name="Clear", exact=True).first.click()
+            page.get_by_label("Severity").select_option("INFO")
+            page.get_by_role("button", name="Apply", exact=True).first.click()
+            expect(rng).to_have_text("Showing 1–1 of 1 · filtered from 501 stored.")
+            page.get_by_role("button", name="Clear", exact=True).first.click()
+            for _ in range(10):
+                page.locator(".build-findings-browser").get_by_role("button", name="Next").click()
+            expect(rng).to_have_text("Showing 501–501 of 501 stored.")
+            expect(browser_region.locator('[data-finding-id="finding-0500"]')).to_be_visible()
+            if role == "VIEWER":
+                expect(browser_region.get_by_role("link", name="Open source at scanned revision")).to_have_count(0)
+            if shots and role == "ADMIN":
+                page.locator(".build-findings-browser").screenshot(path=str(shots / "ux09-build-findings-501-1440.png"))
+            assert not errors, errors
+            context.close()
+            results.append(role + ": row 501 by exact ID, by INFO filter and by paging")
+    finally:
+        RemediationAPI.read = original
+    return "; ".join(results)
+
+
+CHECKS = {"UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06,
+          "UX-09": check_ux09, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 
 

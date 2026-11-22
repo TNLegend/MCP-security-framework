@@ -422,6 +422,17 @@ export async function fetchBuildScans(filters = {}) {
   return request(`/control-plane/build-security/scans${suffix}`);
 }
 
+// UX-09: server-paged, filterable Build findings beyond the detail cap.
+export async function fetchBuildScanFindings(scanId, params = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && String(value) !== "") query.set(key, String(value));
+  }
+  return request(
+    `/control-plane/build-security/scans/${encodeURIComponent(scanId)}/findings?${query.toString()}`,
+  );
+}
+
 export async function fetchBuildScan(scanId) {
   return request(
     `/control-plane/build-security/scans/${encodeURIComponent(scanId)}`,

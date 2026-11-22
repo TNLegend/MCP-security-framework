@@ -9,6 +9,7 @@ import {
   configureBuildSourceBinding,
   pickBuildLocalDirectory,
   fetchBuildScan,
+  fetchBuildScanFindings,
   fetchBuildScanners,
   fetchBuildScans,
   fetchBuildScanSources,
@@ -1116,7 +1117,6 @@ function InventorySourceContext({ server, binding, loading }) {
 }
 
 function BuildScanDetail({ detail, isAdmin, loading, source }) {
-  const findingPagination = usePagination(detail?.findings || [], detail?.scan?.id || "");
   if (loading) {
     return <section className="detail-panel"><p className="workflow-progress" role="status">Loading Build scan evidence…</p></section>;
   }
@@ -1235,14 +1235,105 @@ function BuildScanDetail({ detail, isAdmin, loading, source }) {
         ))}
       </div>
 
+      <BuildFindingsBrowser detail={detail} isAdmin={isAdmin} source={source} />
+    </section>
+  );
+}
+
+// UX-09: every stored finding is reachable with server paging and exact
+// filters; totals come from the same query as the rows.
+const FINDINGS_PAGE_SIZE = 50;
+const EMPTY_FINDING_FILTERS = { finding_id: "", severity: "", finding_state: "", scanner_id: "", rule_id: "", path: "" };
+
+export function findingsRangeText(page) {
+  if (!page) return "";
+  if (!page.total) return "No findings match" + (page.unfiltered_total ? " these filters (" + page.unfiltered_total + " stored)." : ".");
+  const from = page.offset + 1;
+  const to = page.offset + page.returned;
+  const filtered = page.total !== page.unfiltered_total ? " · filtered from " + page.unfiltered_total + " stored" : " stored";
+  return "Showing " + from + "–" + to + " of " + page.total + filtered + ".";
+}
+
+export function BuildFindingsBrowser({ detail, isAdmin, source, load = fetchBuildScanFindings }) {
+  const scanId = detail?.scan?.id;
+  const scanners = [...new Set((detail?.scanner_runs || []).map((run) => run.scanner_id))];
+  const [draft, setDraft] = useState(EMPTY_FINDING_FILTERS);
+  const [applied, setApplied] = useState(EMPTY_FINDING_FILTERS);
+  const [offset, setOffset] = useState(0);
+  const [state, setState] = useState({ status: "idle", page: null, error: "" });
+  const generation = useRef(0);
+
+  useEffect(() => {
+    setDraft(EMPTY_FINDING_FILTERS);
+    setApplied(EMPTY_FINDING_FILTERS);
+    setOffset(0);
+    setState({ status: "idle", page: null, error: "" });
+  }, [scanId]);
+
+  useEffect(() => {
+    if (!scanId) return undefined;
+    const current = ++generation.current;
+    setState((previous) => ({ ...previous, status: "loading", error: "" }));
+    const params = Object.fromEntries(Object.entries(applied).filter(([, value]) => String(value).trim()));
+    load(scanId, { ...params, offset, limit: FINDINGS_PAGE_SIZE })
+      .then((page) => {
+        if (current === generation.current) setState({ status: "ready", page, error: "" });
+      })
+      .catch((err) => {
+        if (current === generation.current) {
+          setState((previous) => ({ status: "error", page: previous.page,
+            error: "Findings could not be loaded: " + safeErrorMessage(err) }));
+        }
+      });
+    return () => { generation.current += 1; };
+  }, [scanId, applied, offset]);
+
+  const page = state.page;
+  const items = page?.items || [];
+  function update(field, value) {
+    setDraft((current) => ({ ...current, [field]: value }));
+  }
+  return (
+    <section aria-labelledby="build-findings-title" className="build-findings-browser">
       <div className="operations-section-heading build-findings-heading">
-        <h4>Normalized findings</h4>
-        <small>
-          {detail.finding_total} total
-          {detail.findings_truncated ? " · first 500 shown" : ""}
+        <h4 id="build-findings-title">Normalized findings</h4>
+        <small role="status" data-testid="build-findings-range">
+          {state.status === "loading" && !page ? "Loading findings…" : findingsRangeText(page)}
         </small>
       </div>
-      <div className="table-wrap">
+      <form className="filter-bar build-findings-filters" onSubmit={(event) => {
+        event.preventDefault();
+        setOffset(0);
+        setApplied({ ...draft });
+      }}>
+        <label>Finding ID<input maxLength={36} onChange={(e) => update("finding_id", e.target.value)} value={draft.finding_id} /></label>
+        <label>Severity
+          <select onChange={(e) => update("severity", e.target.value)} value={draft.severity}>
+            <option value="">All</option>
+            {["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"].map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        <label>Lifecycle
+          <select onChange={(e) => update("finding_state", e.target.value)} value={draft.finding_state}>
+            <option value="">All</option>
+            {["NEW", "UNCHANGED", "REGRESSED", "RESOLVED"].map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        <label>Scanner
+          <select onChange={(e) => update("scanner_id", e.target.value)} value={draft.scanner_id}>
+            <option value="">All</option>
+            {scanners.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        <label>Rule<input maxLength={255} onChange={(e) => update("rule_id", e.target.value)} value={draft.rule_id} /></label>
+        <label>Path contains<input maxLength={512} onChange={(e) => update("path", e.target.value)} value={draft.path} /></label>
+        <div className="button-row">
+          <button disabled={state.status === "loading"} type="submit">Apply</button>
+          <button disabled={state.status === "loading"} onClick={() => { setDraft(EMPTY_FINDING_FILTERS); setOffset(0); setApplied(EMPTY_FINDING_FILTERS); }} type="button">Clear</button>
+        </div>
+      </form>
+      {state.error && <p className="error-text" role="alert">{state.error}{page ? " The rows below are from the previous read." : ""}</p>}
+      <div aria-busy={state.status === "loading"} aria-label="Build findings" className="table-wrap" role="region" tabIndex={0}>
         <table>
           <thead>
             <tr>
@@ -1255,14 +1346,15 @@ function BuildScanDetail({ detail, isAdmin, loading, source }) {
             </tr>
           </thead>
           <tbody>
-            {findingPagination.pageItems.map((finding) => (
-              <tr key={finding.id}>
+            {items.map((finding) => (
+              <tr data-finding-id={finding.id} key={finding.id}>
                 <td><StatusBadge value={finding.finding_state} /></td>
                 <td><SeverityBadge value={finding.severity} /></td>
                 <td>{finding.scanner_id}</td>
                 <td>
                   <strong>{finding.vulnerability_id || finding.rule_id}</strong>
                   <small className="build-finding-title">{finding.title}</small>
+                  <small className="build-finding-id">ID <code>{finding.id}</code></small>
                 </td>
                 <td>
                   {finding.package_name && (
@@ -1279,12 +1371,8 @@ function BuildScanDetail({ detail, isAdmin, loading, source }) {
                         {resolvedFindingLocation(source, detail.scan, finding)}
                       </small>
                       {isAdmin && gitFindingHref(source, detail.scan, finding) && (
-                        <a
-                          className="tiny-action build-source-link"
-                          href={gitFindingHref(source, detail.scan, finding)}
-                          rel="noreferrer"
-                          target="_blank"
-                        >
+                        <a className="tiny-action build-source-link" href={gitFindingHref(source, detail.scan, finding)}
+                          rel="noreferrer" target="_blank">
                           Open source at scanned revision
                         </a>
                       )}
@@ -1294,19 +1382,17 @@ function BuildScanDetail({ detail, isAdmin, loading, source }) {
                 <td>{finding.remediation || "-"}</td>
               </tr>
             ))}
-            {detail.findings.length === 0 && (
-              <tr><td colSpan="6">No normalized findings for this scan.</td></tr>
+            {state.status !== "loading" && page && items.length === 0 && (
+              <tr><td colSpan="6">{page.unfiltered_total ? "No stored findings match these filters." : "No normalized findings for this scan."}</td></tr>
             )}
           </tbody>
         </table>
       </div>
-      <Pagination
-        label="Build findings"
-        onPageChange={findingPagination.setPage}
-        page={findingPagination.page}
-        pageCount={findingPagination.pageCount}
-        total={findingPagination.total}
-      />
+      <div className="pagination-bar">
+        <button disabled={state.status === "loading" || offset === 0} onClick={() => setOffset(Math.max(0, offset - FINDINGS_PAGE_SIZE))} type="button">Previous</button>
+        <span>{page?.total ? "Page " + (Math.floor(offset / FINDINGS_PAGE_SIZE) + 1) + " of " + Math.ceil(page.total / FINDINGS_PAGE_SIZE) : ""}</span>
+        <button disabled={state.status === "loading" || !page?.has_more} onClick={() => setOffset(offset + FINDINGS_PAGE_SIZE)} type="button">Next</button>
+      </div>
     </section>
   );
 }
