@@ -354,13 +354,77 @@ export function localDateTimeToIso(value, now = new Date()) {
   return { iso: date.toISOString() };
 }
 
+// UX-02: an untouched emergency form never names a scope or a justification.
+// Global scope is reachable only by an explicit selection plus acknowledgement.
+export function emptyEmergencyDenyForm(now = new Date()) {
+  return {
+    target_type: "",
+    target_value: "",
+    target_secondary_value: "",
+    reason: "",
+    expires_at: futureLocalDateTime(60 * 60 * 1000, now),
+    global_acknowledged: false,
+  };
+}
+
+export const EMERGENCY_BLAST_RADIUS = {
+  global: "Every governed MCP call from every agent, session and server is denied until expiry or revocation.",
+  agent_id: "Every governed MCP call made by this agent identity is denied, on all servers.",
+  framework_session_id: "Every governed MCP call in this framework session is denied, on all servers.",
+  server_ref: "Every governed call to every tool on this MCP server is denied, for all agents.",
+  server_tool: "Every governed call to this one tool on this MCP server is denied, for all agents.",
+};
+
+export function describeEmergencyDuration(expiresIso, now = new Date()) {
+  const end = new Date(expiresIso);
+  if (!expiresIso || Number.isNaN(end.getTime())) return "Unknown";
+  const minutes = Math.max(0, Math.round((end.getTime() - now.getTime()) / 60000));
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const rest = minutes % 60;
+  const parts = [];
+  if (days) parts.push(days + (days === 1 ? " day" : " days"));
+  if (hours) parts.push(hours + " h");
+  if (rest || parts.length === 0) parts.push(rest + " min");
+  return parts.join(" ");
+}
+
+export function describeEmergencyExpiry(expiresIso, timeZone) {
+  const end = new Date(expiresIso);
+  if (!expiresIso || Number.isNaN(end.getTime())) return { local: "Unknown", timeZone: "" };
+  let zone = timeZone;
+  try {
+    zone = zone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    zone = "UTC";
+  }
+  let local;
+  try {
+    local = new Intl.DateTimeFormat(undefined, {
+      year: "numeric", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+      timeZone: zone, timeZoneName: "short",
+    }).format(end);
+  } catch {
+    local = end.toISOString();
+  }
+  return { local, timeZone: zone, utc: end.toISOString() };
+}
+
 export function validateEmergencyDeny(form, now = new Date()) {
   const errors = {};
   const targetType = form.target_type;
-  if (!["global", "agent_id", "framework_session_id", "server_ref", "server_tool"].includes(targetType)) {
+  if (!targetType) {
+    errors.target_type = "Choose a restriction scope.";
+  } else if (!["global", "agent_id", "framework_session_id", "server_ref", "server_tool"].includes(targetType)) {
     errors.target_type = "Target type is invalid.";
   }
-  if (targetType === "global") {
+  if (!targetType) {
+    // No scope-specific checks until a scope is chosen.
+  } else if (targetType === "global") {
+    if (!form.global_acknowledged) {
+      errors.global_acknowledged = "Confirm that you intend to block every governed MCP call.";
+    }
     if (String(form.target_value || "").trim()) {
       errors.target_value = "Global deny must not contain a target value.";
     }

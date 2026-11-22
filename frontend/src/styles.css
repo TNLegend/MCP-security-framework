@@ -3084,6 +3084,22 @@ code {
   color: #5c3600;
   font-weight: 700;
 }
+/* UX-02: explicit global acknowledgement sits inside the warning block. */
+label.deny-global-warning.checkbox-field {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 4px 10px;
+  cursor: pointer;
+}
+label.deny-global-warning.checkbox-field input {
+  width: 20px;
+  height: 20px;
+  margin: 2px 0 0;
+}
+label.deny-global-warning.checkbox-field .field-error {
+  grid-column: 2;
+}
 .user-row-actions {
   min-width: 170px;
 }

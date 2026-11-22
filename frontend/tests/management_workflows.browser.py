@@ -45,13 +45,26 @@ class ManagementAPI(smoke.MockAPI):
             body = json.loads(route.request.post_data)
             assert body["target_type"] == "global"
             self.mutations.append((method, path, body))
-            record = {**body, "id": "block-global", "created_at": smoke.STAMP}
+            assert "global_acknowledged" not in body, "UI-only acknowledgement must not reach the API"
+            assert body["reason"] != "Emergency deny from Control Center"
+            self.mutations.append((method, path, body))
+            record = {**body, "id": "block-global", "created_at": smoke.STAMP,
+                      "state": "ACTIVE", "runtime_event_count": 0}
             self.blocks = [*self.blocks, record]
             route.fulfill(status=201, json=record)
-        elif path.startswith(DENIES + "/") and method == "DELETE":
-            self.mutations.append((method, path, None))
-            self.blocks = [item for item in self.blocks if not path.endswith("/" + item["id"])]
-            route.fulfill(status=200, json={})
+        elif path.startswith(DENIES + "/") and path.endswith("/revoke") and method == "POST":
+            # EM-01 contract: logical revocation keeps the record for audit linkage.
+            body = json.loads(route.request.post_data)
+            assert len(body["justification"].strip()) >= 8
+            self.mutations.append((method, path, body))
+            deny_id = path.removeprefix(DENIES + "/").removesuffix("/revoke")
+            self.blocks = [
+                {**item, "state": "REVOKED", "revoked_at": smoke.STAMP, "revoked_by": "admin",
+                 "revocation_justification": body["justification"]}
+                if item["id"] == deny_id else item
+                for item in self.blocks
+            ]
+            route.fulfill(status=200, json=next(item for item in self.blocks if item["id"] == deny_id))
         else:
             super().route(route)
 
@@ -78,18 +91,36 @@ def emergency(page, api):
     page.get_by_label("Filter by scope").select_option("server_tool")
     expect(page.get_by_text("No block records match this scope.")).to_be_visible()
     page.get_by_label("Filter by scope").select_option("")
+    confirm = page.get_by_role("dialog", name="Confirm emergency block")
+    # UX-02: an untouched form never opens a confirmation, by click or Enter.
     page.get_by_role("button", name="Review block").click()
-    expect(page.get_by_role("dialog", name="Confirm emergency block")).to_contain_text("All governed MCP calls")
-    page.get_by_role("button", name="Cancel", exact=True).click()
+    expect(confirm).to_have_count(0)
+    expect(page.get_by_text("Choose a restriction scope.")).to_be_visible()
+    page.get_by_label("Incident reason").press("Enter")
+    expect(confirm).to_have_count(0)
+    page.get_by_label("Restriction scope").select_option("global")
+    page.get_by_label("Incident reason").fill("Synthetic incident 42 containment")
+    page.get_by_role("button", name="Review block").click()
+    expect(confirm).to_have_count(0)  # global needs explicit acknowledgement
+    page.get_by_label("I intend to block every governed MCP call", exact=False).check()
+    page.get_by_role("button", name="Review block").click()
+    expect(confirm).to_contain_text("All governed MCP calls")
+    expect(confirm).to_contain_text("Known impact")
+    expect(confirm).to_contain_text("Duration")
+    page.keyboard.press("Enter")  # dialog container has focus; Enter must not activate
+    page.keyboard.press("Escape")
+    expect(confirm).to_have_count(0)
     assert not any(path == DENIES for _, path, _ in api.mutations)
     page.get_by_role("button", name="Review block").click()
     page.get_by_role("button", name="Activate block").click()
-    expect(page.get_by_text("Emergency Deny created.")).to_be_visible()
+    expect(page.get_by_text("Emergency block activated", exact=False)).to_contain_text("block-global")
     page.get_by_label("Filter by scope").select_option("global")
-    page.once("dialog", lambda dialog: dialog.accept())
     page.get_by_role("button", name="Revoke", exact=True).click()
-    expect(page.get_by_text("Emergency Deny revoked.")).to_be_visible()
-    expect(page.get_by_text("No block records match this scope.")).to_be_visible()
+    page.get_by_label("Justification (required)").fill("Synthetic incident 42 resolved")
+    page.get_by_role("button", name="Revoke block").click()
+    expect(page.get_by_text("Emergency block revoked", exact=False)).to_be_visible()
+    expect(page.get_by_role("cell", name="Revoked", exact=False).first).to_be_visible()
+    assert any(path.endswith("/block-global/revoke") for _, path, _ in api.mutations)
 
 
 def rules(page, api):

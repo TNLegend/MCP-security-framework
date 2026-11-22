@@ -4,9 +4,13 @@ import { createEmergencyDeny, fetchEmergencyDenyRuntimeEvents, revokeEmergencyDe
 import { Pagination, usePagination } from "../components/Pagination";
 import { useDialogFocus } from "../utils/useDialogFocus";
 import {
+  EMERGENCY_BLAST_RADIUS,
   LIMITS,
   clearFieldError,
+  describeEmergencyDuration,
+  describeEmergencyExpiry,
   emergencyDenyPayload,
+  emptyEmergencyDenyForm,
   futureLocalDateTime,
   validateEmergencyDeny,
 } from "../utils/validation";
@@ -61,13 +65,7 @@ export function validateRevocationJustification(text) {
 }
 
 function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefresh }) {
-  const [form, setForm] = useState({
-    target_type: "global",
-    target_value: "",
-    target_secondary_value: "",
-    reason: "Emergency deny from Control Center",
-    expires_at: futureLocalDateTime(),
-  });
+  const [form, setForm] = useState(() => emptyEmergencyDenyForm());
   const [scopeFilter, setScopeFilter] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
   const [message, setMessage] = useState("");
@@ -78,7 +76,9 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
   const [linkedEvents, setLinkedEvents] = useState({});
   const mutationLockRef = useRef(false);
   const modalRef = useRef(null);
-  useDialogFocus(Boolean(pendingCreate || pendingRevoke), modalRef);
+  // UX-02: focus the dialog itself, never the destructive button, so Enter
+  // immediately after "Review block" cannot activate a restriction.
+  useDialogFocus(Boolean(pendingCreate || pendingRevoke), modalRef, { focusContainer: true });
   useEffect(() => {
     if (!pendingCreate && !pendingRevoke) return undefined;
     function handleEscape(event) {
@@ -107,7 +107,7 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
       return;
     }
     const { payload } = emergencyDenyPayload(form);
-    setPendingCreate({ payload, identity: JSON.stringify(payload) });
+    setPendingCreate({ payload, identity: JSON.stringify(payload), reviewedAt: new Date() });
   }
 
   async function confirmCreate() {
@@ -123,10 +123,12 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
     setBusy(true);
     setError("");
     try {
-      await createEmergencyDeny(current);
-      setMessage("Emergency Deny created.");
+      const created = await createEmergencyDeny(current);
+      setMessage("Emergency block activated: " + describedTarget(current)
+        + (created?.id ? " · record " + created.id : "") + ".");
       setPendingCreate(null);
       setFieldErrors({});
+      setForm(emptyEmergencyDenyForm());
       await onRefresh?.();
     } catch (err) {
       setError(err.message || "Emergency Deny creation failed");
@@ -213,7 +215,7 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
         <a href="#emergency-block-records">Block records</a>
       </nav>
       {isAdmin && (
-        <form className="action-panel form-grid" id="new-emergency-block" onSubmit={submit}>
+        <form className="action-panel form-grid" id="new-emergency-block" noValidate onSubmit={submit}>
           <div className="wide-field">
             <h3>Create a temporary block</h3>
             <p className="hint-text">Choose the scope and expiry. You can review the details before applying the block.</p>
@@ -221,6 +223,8 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
           <label>
             Restriction scope
             <select
+              aria-describedby="deny-scope-error deny-scope-impact"
+              aria-invalid={Boolean(fieldErrors.target_type)}
               onChange={(event) => {
                 setPendingCreate(null);
                 setForm({
@@ -228,33 +232,52 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
                   target_type: event.target.value,
                   target_value: "",
                   target_secondary_value: "",
+                  global_acknowledged: false,
                 });
                 setFieldErrors((current) =>
                   clearFieldError(
                     clearFieldError(
-                      clearFieldError(current, "target_type"),
-                      "target_value",
+                      clearFieldError(
+                        clearFieldError(current, "target_type"),
+                        "target_value",
+                      ),
+                      "target_secondary_value",
                     ),
-                    "target_secondary_value",
+                    "global_acknowledged",
                   ),
                 );
               }}
+              required
               value={form.target_type}
             >
+              <option value="">Choose a scope…</option>
               {TARGET_TYPES.map((target) => (
                 <option key={target} value={target}>
                   {TARGET_LABELS[target] || target}
                 </option>
               ))}
             </select>
+            <FieldError id="deny-scope-error" message={fieldErrors.target_type} />
           </label>
-          {form.target_type === "global" && (
-            <p className="deny-global-warning wide-field" role="alert">
-              Global scope: this restriction affects all governed MCP calls until expiry or revocation.
-              Review this choice carefully.
+          {form.target_type && (
+            <p className="hint-text wide-field" id="deny-scope-impact">
+              {EMERGENCY_BLAST_RADIUS[form.target_type]}
             </p>
           )}
-          {form.target_type !== "global" && (
+          {form.target_type === "global" && (
+            <label className="deny-global-warning wide-field checkbox-field">
+              <input
+                aria-describedby="deny-global-ack-error"
+                aria-invalid={Boolean(fieldErrors.global_acknowledged)}
+                checked={Boolean(form.global_acknowledged)}
+                onChange={(event) => updateField("global_acknowledged", event.target.checked)}
+                type="checkbox"
+              />
+              I intend to block every governed MCP call, for all agents and servers, until expiry or revocation.
+              <FieldError id="deny-global-ack-error" message={fieldErrors.global_acknowledged} />
+            </label>
+          )}
+          {form.target_type && form.target_type !== "global" && (
             <label>
               Target value
               <input
@@ -301,8 +324,9 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
             <FieldError id="deny-expiry-error" message={fieldErrors.expires_at} />
           </label>
           <label className="wide-field">
-            Reason
+            Incident reason
             <input
+              placeholder="What happened and why this block is needed"
               aria-describedby="deny-reason-error"
               aria-invalid={Boolean(fieldErrors.reason)}
               maxLength={LIMITS.emergencyReasonMax}
@@ -330,8 +354,20 @@ function EmergencyDeny({ denies = [], isAdmin = false, loading = false, onRefres
             </p>
             <dl className="compact-dl">
               <div><dt>Exact target</dt><dd>{describedTarget(pendingCreate.payload)}</dd></div>
-              <div><dt>Expiry</dt><dd>{formatDate(pendingCreate.payload.expires_at)}</dd></div>
-              <div><dt>Reason</dt><dd>{pendingCreate.payload.reason}</dd></div>
+              <div><dt>Known impact</dt><dd>{EMERGENCY_BLAST_RADIUS[pendingCreate.payload.target_type]}</dd></div>
+              <div>
+                <dt>Expires</dt>
+                <dd>
+                  {describeEmergencyExpiry(pendingCreate.payload.expires_at).local}
+                  {" "}({describeEmergencyExpiry(pendingCreate.payload.expires_at).timeZone})
+                  <br /><small>UTC {pendingCreate.payload.expires_at}</small>
+                </dd>
+              </div>
+              <div>
+                <dt>Duration</dt>
+                <dd>{describeEmergencyDuration(pendingCreate.payload.expires_at, pendingCreate.reviewedAt)} from review</dd>
+              </div>
+              <div><dt>Incident reason</dt><dd>{pendingCreate.payload.reason}</dd></div>
             </dl>
             {pendingCreate.payload.target_type === "global" && (
               <p className="deny-global-warning" role="alert">
