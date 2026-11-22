@@ -8,7 +8,7 @@ import {
 import "./management.css";
 
 
-function Operations({ initialOperationId = null, isAdmin = false, loading = false, onNavigate, onRefresh, summary }) {
+function Operations({ initialOperationId = null, initialSection = null, isAdmin = false, loading = false, onNavigate, onRefresh, summary }) {
   const [reason, setReason] = useState("Apply bounded runtime log retention maintenance.");
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -42,6 +42,14 @@ function Operations({ initialOperationId = null, isAdmin = false, loading = fals
       });
     return () => { cancelled = true; };
   }, [initialOperationId]);
+
+  // UX-04: a Home "unresolved operations" link opens this exact list.
+  useEffect(() => {
+    if (initialSection !== "unresolved" || initialOperationId) return;
+    void inspectUnresolvedCases().then(() => {
+      document.getElementById("storage-diagnostics")?.scrollIntoView({ block: "start" });
+    });
+  }, [initialSection, initialOperationId]);
 
   async function inspectUnresolvedCases() {
     setCaseReconciliation(null);

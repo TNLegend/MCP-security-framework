@@ -36,6 +36,7 @@ import AccountPasswordPanel from "./components/accountpasswordpanel.jsx";
 import { LIMITS, clearFieldError, validateLogin } from "./utils/validation";
 import { parseOAuthReturn, oauthReturnDescription } from "./utils/oauthreturn.js";
 import { operationFromQuery } from "./utils/operationNavigation.js";
+import { normalizeOutcomeState } from "./utils/toolQueues.js";
 
 const pages = [
   { id: "dashboard", label: "Home", group: "Home" },
@@ -71,7 +72,18 @@ function toolFromLocation() {
   return new URLSearchParams(window.location.search).get("tool");
 }
 
-function pageUrl(pageId, toolId = null) {
+// UX-04: exact landing state for queue links (shareable, survives reload/Back).
+function entryOptionsFromLocation() {
+  const params = new URLSearchParams(window.location.search);
+  const view = pageFromLocation();
+  return {
+    queue: view === "analysis" ? params.get("queue") : null,
+    section: view === "operations" ? params.get("section") : null,
+    outcome: view === "runtime" ? normalizeOutcomeState(params.get("outcome")) : null,
+  };
+}
+
+function pageUrl(pageId, toolId = null, options = {}) {
   const url = new URL(window.location.href);
   if (pageId === "dashboard") url.searchParams.delete("view");
   else url.searchParams.set("view", pageId);
@@ -79,6 +91,12 @@ function pageUrl(pageId, toolId = null) {
   else url.searchParams.delete("tool");
   // A normal navigation must not accidentally keep a previous investigation.
   url.searchParams.delete("operation_id");
+  for (const key of ["queue", "section", "outcome"]) url.searchParams.delete(key);
+  if (pageId === "analysis" && options.queue) url.searchParams.set("queue", options.queue);
+  if (pageId === "operations" && options.section) url.searchParams.set("section", options.section);
+  if (pageId === "runtime" && normalizeOutcomeState(options.outcome)) {
+    url.searchParams.set("outcome", options.outcome);
+  }
   url.hash = "";
   return url;
 }
@@ -113,6 +131,7 @@ function App() {
   const mobileNavButtonRef = useRef(null);
   const [analysisEntryToolId, setAnalysisEntryToolId] = useState(toolFromLocation);
   const [operationEntryId, setOperationEntryId] = useState(() => operationFromQuery(window.location.search));
+  const [entryOptions, setEntryOptions] = useState(() => entryOptionsFromLocation());
   const mainRef = useRef(null);
   const focusMainOnRender = useRef(false);
   const [user, setUser] = useState(null);
@@ -170,11 +189,16 @@ function App() {
     [activeToolIds, toolAnalyses],
   );
 
-  function navigateToPage(pageId, toolId = null) {
+  function navigateToPage(pageId, toolId = null, options = {}) {
     focusMainOnRender.current = true;
     setMobileNavOpen(false);
     const requestedTool = pageId === "analysis" && toolId !== null ? String(toolId) : null;
-    const url = pageUrl(pageId, requestedTool);
+    const url = pageUrl(pageId, requestedTool, options);
+    setEntryOptions({
+      queue: pageId === "analysis" ? options.queue || null : null,
+      section: pageId === "operations" ? options.section || null : null,
+      outcome: pageId === "runtime" ? normalizeOutcomeState(options.outcome) : null,
+    });
     if (url.href !== window.location.href) {
       window.history.pushState(null, "", url);
       window.scrollTo({ top: 0, behavior: "instant" });
@@ -385,6 +409,7 @@ function App() {
       setActivePage(pageFromLocation());
       setAnalysisEntryToolId(toolFromLocation());
       setOperationEntryId(operationFromQuery(window.location.search));
+      setEntryOptions(entryOptionsFromLocation());
       setMobileNavOpen(false);
       setAccountOpen(false);
     }
@@ -454,6 +479,7 @@ function App() {
         <ToolAnalysis
           analyses={activeToolAnalyses}
           requestedToolId={analysisEntryToolId}
+          requestedQueue={entryOptions.queue}
           isAdmin={isAdmin}
           loading={loading}
           onRefresh={loadData}
@@ -488,13 +514,17 @@ function App() {
     }
 
     if (activePage === "runtime") {
-      return <RuntimeLogs initialPage={runtimeLogPage} loading={loading} servers={activeServers} tools={activeTools} onNavigate={navigateToPage} refreshToken={viewRefreshToken} />;
+      return <RuntimeLogs key={"runtime-" + (entryOptions.outcome || "all")}
+        initialPage={runtimeLogPage} loading={loading} servers={activeServers} tools={activeTools}
+        initialFilters={entryOptions.outcome ? { outcome_state: entryOptions.outcome } : null}
+        onNavigate={navigateToPage} refreshToken={viewRefreshToken} />;
     }
 
     if (activePage === "operations") {
       return (
         <Operations
           initialOperationId={operationEntryId}
+          initialSection={entryOptions.section}
           isAdmin={isAdmin}
           loading={loading}
           onRefresh={loadData}

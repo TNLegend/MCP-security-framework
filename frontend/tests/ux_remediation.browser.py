@@ -15,12 +15,17 @@ import gui_browser_smoke as smoke
 RUNTIME = "/runtime/logs"
 
 
-def runtime_event(event_id, decision="BLOCK", tool="read_documents"):
-    return {**smoke.EVENT, "id": event_id, "decision": decision, "tool_name": tool,
+BUCKETS = ("sent_uncertain", "response_withheld", "execution_recorded", "confirmed_not_sent", "legacy_or_unclassified")
+
+
+def runtime_event(event_id, decision="BLOCK", tool="read_documents", bucket="confirmed_not_sent"):
+    return {**smoke.EVENT, "id": event_id, "decision": decision, "tool_name": tool, "bucket": bucket,
             "operation_id": f"00000000-0000-4000-8000-{event_id:012d}"}
 
 
 class RemediationAPI(smoke.MockAPI):
+    tools_override = None
+
     def __init__(self, role):
         super().__init__(role)
         self.runtime_rows = [runtime_event(1)]
@@ -28,10 +33,17 @@ class RemediationAPI(smoke.MockAPI):
     def read(self, path, query):
         if path == RUNTIME:
             decision = (query.get("decision") or [""])[0]
-            rows = [row for row in self.runtime_rows if not decision or row["decision"] == decision]
+            outcome = (query.get("outcome_state") or [""])[0]
+            rows = [row for row in self.runtime_rows
+                    if (not decision or row["decision"] == decision) and (not outcome or row["bucket"] == outcome)]
             return {"items": rows, "next_cursor": None, "has_more": False,
-                    "summary": {"total": len(rows), "allowed": 0, "blocked": len(rows),
-                                "executed": 0, "skipped": len(rows), "errors": 0}}
+                    "summary": {"total": len(rows),
+                                "allowed": sum(r["decision"] == "ALLOW" for r in rows),
+                                "blocked": sum(r["decision"] == "BLOCK" for r in rows),
+                                "executed": 0, "skipped": 0, "errors": 0,
+                                "outcome_states": {b: sum(r["bucket"] == b for r in rows) for b in BUCKETS}}}
+        if path == "/tools" and self.tools_override is not None:
+            return self.tools_override
         return super().read(path, query)
 
     def runtime_reads(self):
@@ -136,7 +148,65 @@ def check_ux06(browser, server, shots):
     return "no-baseline fixture reads 'No approved baseline'; bound comparison reads 'No drift against baseline cccccccccccc'"
 
 
-CHECKS = {"UX-03": check_ux03, "UX-06": check_ux06}
+def check_ux04(browser, server, shots):
+    """UX-04: policy allows and uncertain outcomes are counted separately and each
+    priority card opens its exact filtered destination (stable across reload)."""
+    tools = [{**smoke.TOOL, "id": i, "name": name, "analysis_status": state}
+             for i, (name, state) in enumerate([("review_a", "REVIEW_REQUIRED"), ("stale_b", "STALE"),
+                                                ("blocked_c", "BLOCKED"), ("approved_d", "APPROVED")], start=1)]
+    RemediationAPI.tools_override = tools
+    try:
+        context, page, api, errors = smoke.open_page(browser, server, "ADMIN", 1440)
+        # ALLOW followed by uncertain dispatch: counts as a policy allow AND an
+        # uncertain outcome, never as execution recorded.
+        api.runtime_rows = [runtime_event(1, decision="ALLOW", bucket="sent_uncertain"),
+                            runtime_event(2, decision="BLOCK", bucket="confirmed_not_sent")]
+        page.get_by_role("banner").get_by_role("button", name="Refresh", exact=True).click()
+        cards = page.get_by_role("region", name="What needs attention")
+        review_card = cards.locator('[data-queue="REVIEW"]')
+        expect(review_card.locator("strong")).to_have_text("2")  # REVIEW_REQUIRED + STALE
+        expect(cards.locator('[data-queue="BLOCKED"] strong')).to_have_text("1")
+        expect(cards.locator('[data-queue="sent_uncertain"] strong')).to_have_text("1")
+        page.get_by_text("MCP inventory and decision counts").click()
+        stats = page.locator(".stats-grid")
+        expect(stats.locator(".stat-card", has_text="Recorded policy allows")).to_contain_text("1")
+        expect(stats.locator(".stat-card", has_text="Outcome uncertain after send")).to_contain_text("1")
+        expect(stats.locator(".stat-card", has_text="Execution recorded")).to_contain_text("0")
+        expect(page.get_by_text("Allowed outcome events")).to_have_count(0)
+        if shots:
+            cards.screenshot(path=str(shots / "ux04-home-priority-1440.png"))
+
+        cards.get_by_role("button", name="Open blocked tools").click()
+        expect(page.get_by_role("heading", level=2, name="Security review")).to_be_visible()
+        assert "queue=BLOCKED" in page.url, page.url
+        expect(page.get_by_label("Analysis status")).to_have_value("BLOCKED")
+        expect(page.get_by_text("1 displayed / 4 total")).to_be_visible()
+        page.reload()
+        expect(page.get_by_label("Analysis status")).to_have_value("BLOCKED")
+
+        smoke.navigate(page, "Home", 1440)
+        page.get_by_role("region", name="What needs attention").get_by_role("button", name="Open review queue").click()
+        expect(page.get_by_label("Analysis status")).to_have_value("REVIEW")
+        expect(page.get_by_text("2 displayed / 4 total")).to_be_visible()
+
+        smoke.navigate(page, "Home", 1440)
+        page.get_by_role("region", name="What needs attention").get_by_role("button", name="Review uncertain outcomes").click()
+        expect(page.get_by_role("heading", level=2, name="Tool activity")).to_be_visible()
+        assert "outcome=sent_uncertain" in page.url, page.url
+        expect(page.get_by_label("Outcome")).to_have_value("sent_uncertain")
+        expect(page.locator(".runtime-section tbody tr")).to_have_count(1)
+        assert any(q.get("outcome_state") == ["sent_uncertain"] for q in api.runtime_reads())
+        page.go_back()
+        expect(page.get_by_role("heading", level=2, name="Security overview")).to_be_visible()
+        assert not errors, errors
+        context.close()
+    finally:
+        RemediationAPI.tools_override = None
+    return "ALLOW+uncertain counted as 1 allow and 1 uncertain, 0 execution; REVIEW=2 incl. STALE, BLOCKED=1, uncertain=1 each equal their landing list; queue survives reload"
+
+
+CHECKS = {"UX-02": None, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06}
+CHECKS = {key: value for key, value in CHECKS.items() if value}
 
 
 def main():

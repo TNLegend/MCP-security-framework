@@ -5,6 +5,7 @@ import SecurityExplanation from "../components/securityexplanation.jsx";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchRuntimeLogs, fetchRuntimeOperationEvents, fetchRuntimeOperationReconciliation } from "../api/client";
+import { RUNTIME_OUTCOME_LABELS } from "../utils/toolQueues.js";
 
 const PAGE_SIZE = 20;
 const ERROR_STATUSES = new Set([
@@ -33,6 +34,7 @@ const EMPTY_FILTERS = {
   from: "",
   to: "",
   search: "",
+  outcome_state: "",
 };
 
 export function runtimeServerLabel(log, servers = []) {
@@ -67,10 +69,10 @@ export function refreshStatusText({ loadedAt, refreshFailed, cursorReset, format
 
 function RuntimeLogs({
   initialPage = EMPTY_PAGE, loading = false, servers = [], tools = [],
-  onNavigate = null, refreshToken = 0,
+  onNavigate = null, refreshToken = 0, initialFilters = null,
 }) {
   const [page, setPage] = useState(normalizePage(initialPage));
-  const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
+  const [draftFilters, setDraftFilters] = useState(() => ({ ...EMPTY_FILTERS, ...(initialFilters || {}) }));
   const [activeFilters, setActiveFilters] = useState({});
   const [cursorStack, setCursorStack] = useState([null]);
   const [pageLoading, setPageLoading] = useState(false);
@@ -98,7 +100,7 @@ function RuntimeLogs({
   }, [initialPage]);
 
   useEffect(() => {
-    void loadPage({}, [null]);
+    void loadPage(normalizedFilters(initialFilters || {}), [null]);
     return () => { requestGeneration.current += 1; };
   }, []);
 
@@ -230,6 +232,14 @@ function RuntimeLogs({
           setFilters={setDraftFilters}
           value={draftFilters.decision}
         />
+        <FilterSelect
+          label="Outcome"
+          labels={RUNTIME_OUTCOME_LABELS}
+          name="outcome_state"
+          options={Object.keys(RUNTIME_OUTCOME_LABELS)}
+          setFilters={setDraftFilters}
+          value={draftFilters.outcome_state}
+        />
         <FilterInput label="Tool" name="tool_name" setFilters={setDraftFilters} value={draftFilters.tool_name} />
         <FilterInput className="runtime-search-field" label="Search" name="search" setFilters={setDraftFilters} value={draftFilters.search} />
         <details className="runtime-advanced-filters">
@@ -318,13 +328,13 @@ function FilterInput({ className = "", label, name, setFilters, type = "text", v
   );
 }
 
-function FilterSelect({ label, name, options, setFilters, value }) {
+function FilterSelect({ label, labels = null, name, options, setFilters, value }) {
   return (
     <label>
       {label}
       <select onChange={(event) => updateFilter(setFilters, name, event.target.value)} value={value}>
         <option value="">All</option>
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        {options.map((option) => <option key={option} value={option}>{labels?.[option] || option}</option>)}
       </select>
     </label>
   );

@@ -1,4 +1,6 @@
 import { formatServerTime } from "../utils/serverTime.js";
+import { toolInQueue } from "../utils/toolQueues.js";
+
 function StatCard({ label, value, tone = "" }) {
   return (
     <div className={`stat-card ${tone}`}>
@@ -30,12 +32,10 @@ function Dashboard({
       ["APPROVED", "ADMIN_ALLOWED"].includes(tool.analysis_status) &&
       tool.approved_fingerprint_match,
   );
-  const reviewTools = tools.filter((tool) =>
-    ["PENDING_ANALYSIS", "QUARANTINED", "REVIEW_REQUIRED", "ANALYSIS_FAILED"].includes(
-      tool.analysis_status,
-    ),
-  );
-  const blockedTools = tools.filter((tool) => tool.analysis_status === "BLOCKED");
+  // UX-04: the same queue predicates as the Security review filter, so each
+  // Home count equals the list it opens.
+  const reviewTools = tools.filter((tool) => toolInQueue(tool, "REVIEW"));
+  const blockedTools = tools.filter((tool) => toolInQueue(tool, "BLOCKED"));
   // EM-01: the backend state is authoritative (a revoked deny is not active).
   const activeDenies = emergencyDenies.filter((deny) => deny.state === "ACTIVE");
   // A pre-execution audit intent and its completion are two events, but
@@ -44,6 +44,10 @@ function Dashboard({
   // events, not over the first 20 table rows loaded for convenience.
   const recordedAllows = runtimeSummary?.allowed;
   const recordedBlocks = runtimeSummary?.blocked;
+  // Disjoint outcome buckets from the same server query; never derived here.
+  const outcomeStates = runtimeSummary?.outcome_states || null;
+  const uncertainOutcomes = outcomeStates ? outcomeStates.sent_uncertain ?? 0 : null;
+  const executionRecorded = outcomeStates ? outcomeStates.execution_recorded ?? 0 : null;
 
   function count(source, value) {
     return readStates[source] === "ready" ? value : "—";
@@ -51,6 +55,11 @@ function Dashboard({
 
   function unavailableMessage(source) {
     return readStates[source] === "unavailable" ? "The latest data is unavailable." : null;
+  }
+
+  function readAt(source) {
+    if (readStates[source] !== "ready" || !readTimestamps[source]) return "not yet read";
+    return "read " + formatDate(readTimestamps[source]);
   }
 
   function lastResponse(source) {
@@ -85,26 +94,41 @@ function Dashboard({
           <p>Actions based on the latest recorded results</p>
         </div>
         <div className="dashboard-priority-grid">
-          <article className="dashboard-priority-card" data-tone="attention">
+          <article className="dashboard-priority-card" data-tone="attention" data-queue="REVIEW">
             <span>Tools to review</span>
             <strong>{count("tools", reviewTools.length)}</strong>
-            <p>{unavailableMessage("tools") || "Pending, quarantined or failed tool reviews."}</p>
-            <button type="button" className="secondary-action" onClick={() => onNavigate("analysis")}>
-              Review tools
+            <p>{unavailableMessage("tools") || "Pending, stale, quarantined or failed analyses awaiting review."}</p>
+            <small className="priority-population">Current inventory · {readAt("tools")}</small>
+            <button type="button" className="secondary-action" onClick={() => onNavigate("analysis", null, { queue: "REVIEW" })}>
+              Open review queue
             </button>
           </article>
-          <article className="dashboard-priority-card" data-tone="restricted">
+          <article className="dashboard-priority-card" data-tone="restricted" data-queue="BLOCKED">
             <span>Tools marked blocked</span>
             <strong>{count("tools", blockedTools.length)}</strong>
-            <p>{unavailableMessage("tools") || "Open a tool to see why it was blocked."}</p>
-            <button type="button" className="secondary-action" onClick={() => onNavigate("analysis")}>
-              See analysis
+            <p>{unavailableMessage("tools") || "Each has a recorded block decision with its reason."}</p>
+            <small className="priority-population">Current inventory · {readAt("tools")}</small>
+            <button type="button" className="secondary-action" onClick={() => onNavigate("analysis", null, { queue: "BLOCKED" })}>
+              Open blocked tools
+            </button>
+          </article>
+          <article className="dashboard-priority-card" data-tone="attention" data-queue="sent_uncertain">
+            <span>Outcome uncertain after send</span>
+            <strong>{count("runtimeLogs", uncertainOutcomes ?? "—")}</strong>
+            <p>{unavailableMessage("runtimeLogs") || (outcomeStates
+              ? "Sent to the MCP server, result not confirmed. Reconcile before any retry."
+              : "This backend does not report outcome states; nothing is inferred.")}</p>
+            <small className="priority-population">All retained outcome events · {readAt("runtimeLogs")}</small>
+            <button type="button" className="secondary-action" disabled={!outcomeStates}
+              onClick={() => onNavigate("runtime", null, { outcome: "sent_uncertain" })}>
+              Review uncertain outcomes
             </button>
           </article>
           <article className="dashboard-priority-card" data-tone="neutral">
             <span>Active emergency restrictions</span>
             <strong>{count("emergencyDenies", activeDenies.length)}</strong>
             <p>{unavailableMessage("emergencyDenies") || "Restrictions currently in effect."}</p>
+            <small className="priority-population">Server-computed state · {readAt("emergencyDenies")}</small>
             <button type="button" className="secondary-action" onClick={() => onNavigate("emergency")}>
               See restrictions
             </button>
@@ -149,11 +173,13 @@ function Dashboard({
         <StatCard label="Reviews approved" value={count("tools", approvedTools.length)} tone="stat-good" />
         <StatCard label="Tools requiring review" value={count("tools", reviewTools.length)} tone="stat-warn" />
         <StatCard label="Blocked tools" value={count("tools", blockedTools.length)} tone="stat-danger" />
-        <StatCard label="Allowed outcome events (all retained)" value={count("runtimeLogs", recordedAllows ?? "—")} tone="stat-good" />
-        <StatCard label="Blocked outcome events (all retained)" value={count("runtimeLogs", recordedBlocks ?? "—")} tone="stat-danger" />
+        <StatCard label="Recorded policy allows (OPA or Proxy decision)" value={count("runtimeLogs", recordedAllows ?? "—")} />
+        <StatCard label="Recorded policy blocks (OPA or Proxy decision)" value={count("runtimeLogs", recordedBlocks ?? "—")} tone="stat-danger" />
+        <StatCard label="Outcome uncertain after send" value={count("runtimeLogs", uncertainOutcomes ?? "—")} tone="stat-warn" />
+        <StatCard label="Execution recorded" value={count("runtimeLogs", executionRecorded ?? "—")} />
         <StatCard label="Active emergency blocks" value={count("emergencyDenies", activeDenies.length)} tone="stat-warn" />
       </div>
-      <p className="hint-text">These Runtime counts come from the backend over all retained outcome events; they are not limited to the latest 20 rows. Intent-only events and deleted history are excluded. They are not a live security posture score.</p>
+      <p className="hint-text">Runtime counts are computed by the backend over all retained outcome events, not the latest 20 rows; intents and deleted history are excluded. A policy allow is a decision, not a successful call: an allowed call can still be withheld, fail or have an uncertain outcome, so allows and uncertain outcomes are counted separately.</p>
       <p className="hint-text" role="note">Inventory: {lastResponse("tools") || "current response unavailable"}. Runtime outcome summary: {lastResponse("runtimeLogs") || "current response unavailable"}. Emergency restrictions: {lastResponse("emergencyDenies") || "current response unavailable"}. These are API receipt times, not measurement times from the upstream services.</p>
       </details>
 

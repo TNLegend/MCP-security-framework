@@ -59,9 +59,16 @@ test("DB-01/HOME-02: each ready source carries a successful response timestamp a
     assert.match(html, />Tools requiring review<\/span><strong>1<\/strong>/);
     assert.match(html, />Blocked tools<\/span><strong>1<\/strong>/);
     assert.match(html, />Active emergency blocks<\/span><strong>1<\/strong>/);
-    assert.match(html, />Allowed outcome events \(all retained\)<\/span><strong>4<\/strong>/);
-    assert.match(html, />Blocked outcome events \(all retained\)<\/span><strong>3<\/strong>/);
+    // UX-04: policy decisions are labelled as decisions, not outcomes.
+    assert.match(html, />Recorded policy allows \(OPA or Proxy decision\)<\/span><strong>4<\/strong>/);
+    assert.match(html, />Recorded policy blocks \(OPA or Proxy decision\)<\/span><strong>3<\/strong>/);
+    assert.doesNotMatch(html, /Allowed outcome events/);
+    // Without backend outcome states nothing is inferred and the link is disabled.
+    assert.match(html, />Outcome uncertain after send<\/span><strong>—<\/strong>/);
+    assert.match(html, /disabled="">Review uncertain outcomes/);
     assert.equal((html.match(/Response received:/g) || []).length, 8);
+    // Each priority card names its population and the time it was read.
+    assert.equal((html.match(/class="priority-population">[^<]+ · read /g) || []).length, 4);
     assert.equal((html.match(/Checked by server:/g) || []).length, 4);
     assert.match(html, /API receipt times, not measurement times/);
   });

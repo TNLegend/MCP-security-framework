@@ -56,6 +56,7 @@ def list_runtime_logs(
     from_time: datetime | None = Query(default=None, alias="from"),
     to_time: datetime | None = Query(default=None, alias="to"),
     search: str | None = Query(default=None, max_length=255),
+    outcome_state: str | None = Query(default=None, max_length=40),
     _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
     db: Session = Depends(get_db),
 ) -> RuntimeCallPage:
@@ -69,6 +70,20 @@ def list_runtime_logs(
         to_time=to_time,
         search=search,
     )
+    if outcome_state is not None:
+        # UX-04: let a Home count land on exactly the rows it counted. The
+        # same disjoint bucket expression feeds the summary below, and intents
+        # are excluded so the page population equals the summary population.
+        if outcome_state not in RUNTIME_OUTCOME_BUCKETS:
+            raise HTTPException(status_code=422, detail="runtime_outcome_state_invalid")
+        filters = [
+            *filters,
+            runtime_outcome_bucket_expression() == outcome_state,
+            or_(
+                RuntimeCall.execution_status.is_(None),
+                RuntimeCall.execution_status != "authorized_pending_execution",
+            ),
+        ]
     cursor_id = _decode_runtime_log_cursor(cursor) if cursor else None
     page_filters = list(filters)
     if cursor_id is not None:

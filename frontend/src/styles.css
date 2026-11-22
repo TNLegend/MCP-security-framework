@@ -2976,8 +2976,16 @@ code {
 }
 .dashboard-priority-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+}
+/* UX-04: each priority number names its population and read time. */
+.dashboard-priority-card .priority-population {
+  display: block;
+  color: #4a5568;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  margin: -2px 0 8px;
 }
 .dashboard-priority-card {
   min-width: 0;

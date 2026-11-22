@@ -8,11 +8,13 @@ import { Pagination, usePagination } from "../components/Pagination";
 import ToolContractOnboarding from "../components/ToolContractOnboarding";
 import { useDialogFocus } from "../utils/useDialogFocus";
 import { driftChangeDescription, driftComparisonState, isCurrentAnalysis, nextAnalysisAction, riskLedgerMatchesRecord } from "../utils/analysisPresentation";
+import { normalizeToolQueue, toolInQueue } from "../utils/toolQueues.js";
 import { validateToolJustification } from "../utils/validation";
 
 function ToolAnalysis({
   analyses = [],
   requestedToolId = null,
+  requestedQueue = null,
   isAdmin = false,
   loading = false,
   onRefresh,
@@ -33,16 +35,15 @@ function ToolAnalysis({
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("overview");
   const [toolSearch, setToolSearch] = useState("");
-  const [toolStateFilter, setToolStateFilter] = useState("ALL");
+  const [toolStateFilter, setToolStateFilter] = useState(() => normalizeToolQueue(requestedQueue));
+  // UX-04: a Home queue link lands on the exact filter it counted.
+  useEffect(() => {
+    if (requestedQueue) setToolStateFilter(normalizeToolQueue(requestedQueue));
+  }, [requestedQueue]);
   const serverLookup = useMemo(() => new Map(servers.map((server) => [server.id, server])), [servers]);
   const filteredTools = useMemo(() => tools.filter((tool) => {
     const query = toolSearch.trim().toLowerCase();
-    const state = String(tool.analysis_status || "").toUpperCase();
-    if (toolStateFilter === "REVIEW" &&
-      !["REVIEW_REQUIRED", "PENDING_ANALYSIS", "QUARANTINED", "ANALYSIS_FAILED", "STALE"].includes(state)) return false;
-    if (toolStateFilter === "BLOCKED" && state !== "BLOCKED") return false;
-    if (toolStateFilter === "APPROVED" &&
-      !["APPROVED", "ADMIN_ALLOWED"].includes(state)) return false;
+    if (!toolInQueue(tool, toolStateFilter)) return false;
     if (!query) return true;
     const server = serverLookup.get(tool.server_id);
     return [tool.title, tool.name, server?.name, server?.server_info_title]
