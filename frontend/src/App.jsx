@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  cancelControlPlaneReads,
   fetchActiveConfigRevision,
   fetchAllToolAnalyses,
   fetchAuditEvents,
@@ -53,6 +54,17 @@ const pages = [
   { id: "users", label: "Users", group: "Settings", adminOnly: true },
 ];
 const navigationGroups = ["Home", "Tools", "Security", "Monitoring", "Settings"];
+const routeReads = {
+  dashboard: ["health", "runtimeStatus", "servers", "tools", "runtimeLogs", "activeRevision", "emergencyDenies", "audit"],
+  inventory: ["servers", "tools", "runtimeStatus"],
+  analysis: ["servers", "tools", "analyses"],
+  config: ["revisions", "activeRevision", "policies"],
+  build: ["servers", "revisions", "activeRevision"],
+  runtime: ["servers", "tools"],
+  operations: ["operations"],
+  emergency: ["emergencyDenies"],
+  users: ["users"],
+};
 const SESSION_EXPIRED_NOTICE = "Your session expired or was revoked. Sign in again.";
 
 const EMPTY_RUNTIME_LOG_PAGE = {
@@ -218,6 +230,10 @@ function App() {
   );
 
   function navigateToPage(pageId, toolId = null, options = {}) {
+    if (pageId !== requestedPage) {
+      loadDataGeneration.current += 1;
+      cancelControlPlaneReads();
+    }
     focusMainOnRender.current = true;
     setMobileNavOpen(false);
     const requestedTool = pageId === "analysis" && toolId !== null ? String(toolId) : null;
@@ -332,7 +348,7 @@ function App() {
     }
   }
 
-  async function loadData() {
+  async function loadData({ verifySession = true } = {}) {
     const generation = loadDataGeneration.current + 1;
     loadDataGeneration.current = generation;
     setLoading(true);
@@ -340,7 +356,7 @@ function App() {
     try {
       let refreshedUser = null;
       try {
-        refreshedUser = await fetchControlPlaneMe();
+        refreshedUser = verifySession ? await fetchControlPlaneMe() : user;
       } catch (err) {
         if (generation !== loadDataGeneration.current) {
           return;
@@ -354,6 +370,14 @@ function App() {
       }
       if (generation !== loadDataGeneration.current) {
         return;
+      }
+      if (user && refreshedUser?.id !== user.id) {
+        endSession({ notice: "The signed-in account changed. Sign in again to continue." });
+        return;
+      }
+      if (user?.role !== refreshedUser?.role) {
+        cancelControlPlaneReads();
+        setUsers([]);
       }
       setUser((previous) =>
         sameControlPlaneUser(previous, refreshedUser) ? previous : refreshedUser,
@@ -379,7 +403,9 @@ function App() {
         setUsers([]);
       }
 
-      const entries = Object.entries(requests);
+      const scope = entryOptions.record != null ? [] : routeReads[activePage] || [];
+      const entries = scope.filter((key) => Object.hasOwn(requests, key))
+        .map((key) => [key, requests[key]]);
       // Display each completed read as it arrives. Slow/failed unrelated services
       // must not keep the inventory or security review behind a global spinner.
       // The generation fence prevents an older refresh from replacing newer data.
@@ -416,7 +442,7 @@ function App() {
         failed.push(label);
       });
 
-      setDashboardRefreshedAt(new Date());
+      if (activePage === "dashboard") setDashboardRefreshedAt(new Date());
       if (unauthorized) {
         endSession({ error: SESSION_EXPIRED_NOTICE });
       } else if (failed.length > 0) {
@@ -453,10 +479,8 @@ function App() {
   }
 
   useEffect(() => {
-    if (user) {
-      loadData();
-    }
-  }, [user?.id]);
+    if (user) void loadData({ verifySession: false });
+  }, [user?.id, user?.role, activePage, entryOptions.record]);
 
   useEffect(() => {
     if (!user) return undefined;
@@ -478,7 +502,7 @@ function App() {
     if (entryOptions.record !== null && entryOptions.record !== undefined && recordType) {
       const recordId = entryOptions.record.toLowerCase();
       return <ExactSecurityRecord key={recordType + ":" + recordId} view={requestedPage}
-        type={recordType} id={recordId} isAdmin={isAdmin} />;
+        type={recordType} id={recordId} isAdmin={isAdmin} refreshToken={viewRefreshToken} />;
     }
     if (activePage === "inventory") {
       return (
@@ -503,13 +527,14 @@ function App() {
           isAdmin={isAdmin}
           onRefresh={loadData}
           revisions={configRevisions}
+          refreshToken={viewRefreshToken}
           servers={activeServers}
         />
       );
     }
 
     if (activePage === "cloud") {
-      return <CloudSecurity isAdmin={isAdmin} />;
+      return <CloudSecurity isAdmin={isAdmin} refreshToken={viewRefreshToken} />;
     }
 
     if (activePage === "analysis") {
@@ -573,7 +598,7 @@ function App() {
     }
 
     if (activePage === "audit") {
-      return <Audit events={auditEvents} loading={loading} />;
+      return <Audit events={auditEvents} loading={loading} refreshToken={viewRefreshToken} />;
     }
 
     if (activePage === "users" && isAdmin) {
@@ -609,6 +634,7 @@ function App() {
     activePage,
     requestedPage,
     entryOptions,
+    viewRefreshToken,
     analysisEntryToolId,
     operationEntryId,
     readStates,

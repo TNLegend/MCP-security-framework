@@ -892,7 +892,35 @@ def check_ux12(browser, server, shots):
     return "exact and missing revision URLs survive reload/Back and viewer user link makes no request"
 
 
-CHECKS = {"UX-12": check_ux12, "UX-22": check_ux22, "UX-08": check_ux08, "UX-17": check_ux17, "UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
+
+def check_ux18(browser, server, shots):
+    context, page, api, errors = smoke.open_page(browser, server, "ADMIN", 1440)
+    root = page.url.split("?")[0]
+    api.requests.clear()
+    page.goto(root + "?view=runtime")
+    expect(page.get_by_role("heading", name="Tool activity", exact=True)).to_be_visible()
+    expect(page.locator(".console-header").get_by_role("button", name="Refresh", exact=True)).to_be_enabled()
+    expect(page.get_by_role("button", name=re.compile("read_documents")).first).to_be_visible()
+    reads = [path for method, path, _ in api.requests if method == "GET"]
+    assert reads.count("/runtime/logs") == 1, reads
+    assert "/control-plane/users" not in reads and "/control-plane/audit/events" not in reads, reads
+    assert "/control-plane/config/revisions" not in reads, reads
+    api.requests.clear()
+    smoke.navigate(page, "Cloud security", 1440)
+    expect(page.get_by_role("heading", name="AWS connections")).to_be_visible()
+    expect(page.get_by_label("AWS environment", exact=False).first).to_be_visible()
+    reads = [path for method, path, _ in api.requests if method == "GET"]
+    assert not any("/advanced/scanner" in path or "/iac/scanners" in path or "/iam-mappings" in path for path in reads), reads
+    page.get_by_role("button", name="Advanced AWS checks").click()
+    expect(page.get_by_role("heading", name="Advanced AWS audit with Prowler")).to_be_visible()
+    expect(page.get_by_text("Prowler: Ready", exact=False)).to_be_visible()
+    assert any(path.endswith("/advanced/scanner") for _, path, _ in api.requests)
+    assert not errors, errors
+    context.close()
+    return "runtime loads its own result once; Cloud scanner and mapping requests wait for their task"
+
+
+CHECKS = {"UX-18": check_ux18, "UX-12": check_ux12, "UX-22": check_ux22, "UX-08": check_ux08, "UX-17": check_ux17, "UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
           "UX-09": check_ux09, "UX-11": check_ux11, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 

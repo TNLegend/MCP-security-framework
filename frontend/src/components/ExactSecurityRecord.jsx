@@ -9,7 +9,7 @@ const labels = {
   control_plane_user: ["User", "Users"],
 };
 
-export default function ExactSecurityRecord({ view, type, id, isAdmin }) {
+export default function ExactSecurityRecord({ view, type, id, isAdmin, refreshToken }) {
   const [state, setState] = useState({ loading: true });
   const restricted = type === "control_plane_user" && !isAdmin;
   const invalid = !auditTargetLink(type, id);
@@ -17,13 +17,14 @@ export default function ExactSecurityRecord({ view, type, id, isAdmin }) {
   useEffect(() => {
     if (restricted || invalid) return undefined;
     let current = true;
+    setState({ loading: true });
     fetchExactAuditTarget(type, id).then((record) => {
       if (current) setState(record?.type === type && record.id === id ? { record } : {});
     }).catch((error) => {
       if (current) setState({ retry: ![403, 404].includes(error.status) });
     });
     return () => { current = false; };
-  }, [id, type, restricted, invalid]);
+  }, [id, type, restricted, invalid, refreshToken]);
 
   return <section className="page-section">
     <div className="section-heading"><h2>{label}</h2></div>

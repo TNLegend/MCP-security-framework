@@ -819,7 +819,7 @@ function CloudFindingResource({ finding, resources }) {
   return <p>Resource: <CloudResourceLabel resource={resource} /></p>;
 }
 
-export default function CloudSecurity({ isAdmin = false }) {
+export default function CloudSecurity({ isAdmin = false, refreshToken = 0 }) {
   const [activeTask, setActiveTask] = useState("cloud-environments");
   const [historyKind, setHistoryKind] = useState(() => readCloudLocation().kind || "ALL");
   const [historyRefresh, setHistoryRefresh] = useState(0);
@@ -934,13 +934,18 @@ export default function CloudSecurity({ isAdmin = false }) {
   }
 
   function refreshScannerAvailability() {
-    setIacStatusError(false);
-    setProwlerStatusError(false);
-    fetchIaCScannerAvailability().then(setIacStatus).catch(() => setIacStatusError(true));
-    fetchProwlerAvailability().then(setProwlerStatus).catch(() => setProwlerStatusError(true));
+    if (activeTask === "cloud-iac") {
+      setIacStatusError(false);
+      fetchIaCScannerAvailability().then(setIacStatus).catch(() => setIacStatusError(true));
+    }
+    if (activeTask === "cloud-advanced") {
+      setProwlerStatusError(false);
+      fetchProwlerAvailability().then(setProwlerStatus).catch(() => setProwlerStatusError(true));
+    }
   }
 
-  useEffect(() => { refresh(); refreshScannerAvailability(); }, []);
+  useEffect(() => { refresh(); }, [refreshToken]);
+  useEffect(() => { refreshScannerAvailability(); }, [activeTask, refreshToken]);
 
   // UX-11: reopen the exact scan from the address on load and on Back/Forward.
   useEffect(() => {
@@ -969,9 +974,10 @@ export default function CloudSecurity({ isAdmin = false }) {
       setError("MCP server list could not be loaded. Use Refresh to retry.");
     }
   }
-  useEffect(() => { loadRegisteredServers(); }, []);
+  useEffect(() => { if (activeTask === "cloud-iam") loadRegisteredServers(); }, [activeTask, refreshToken]);
   useEffect(() => {
     environmentScope.current = selected;
+    if (activeTask !== "cloud-iam") return undefined;
     setMappingListError("");
     if (!selected) { setIamMappings([]); setIamMappingId(""); return; }
     let cancelled = false;
@@ -988,9 +994,10 @@ export default function CloudSecurity({ isAdmin = false }) {
       }
     });
     return () => { cancelled = true; };
-  }, [selected]);
+  }, [selected, activeTask, refreshToken]);
 
   useEffect(() => {
+    if (activeTask !== "cloud-iam") return undefined;
     if (!selected || !mcpServerId) {
       setMappingContext(null); setMappingContextKey(""); setMappingRows([]); return;
     }
@@ -1017,7 +1024,7 @@ export default function CloudSecurity({ isAdmin = false }) {
       }
     });
     return () => { cancelled = true; };
-  }, [selected, mcpServerId]);
+  }, [selected, mcpServerId, activeTask, refreshToken]);
 
   async function reloadIAMMappings(environmentId = selected) {
     try {
@@ -1496,7 +1503,7 @@ export default function CloudSecurity({ isAdmin = false }) {
           <h2>Cloud security</h2>
           <p>Connect AWS, run read-only audits and review cloud permission evidence.</p>
         </div>
-        <button className="secondary-action" disabled={busy || loading} onClick={() => { refresh(); loadRegisteredServers(); refreshScannerAvailability(); }} type="button">
+        <button className="secondary-action" disabled={busy || loading} onClick={() => { refresh(); if (activeTask === "cloud-iam") loadRegisteredServers(); refreshScannerAvailability(); }} type="button">
           {loading ? "Refreshing…" : "Refresh cloud data"}
         </button>
       </header>
@@ -2148,8 +2155,8 @@ export default function CloudSecurity({ isAdmin = false }) {
           </label>
         </div>
         {running > 0 && <p role="status">{running} queued or running. This list updates automatically.</p>}
-        <CloudHistoryBrowser environmentId={selected} kind={historyKind} onOpen={showScan}
-          refreshToken={historyRefresh} />
+        {activeTask === "cloud-scans" && <CloudHistoryBrowser environmentId={selected} kind={historyKind}
+          onOpen={showScan} refreshToken={historyRefresh} />}
       </section>
 
       <section id="cloud-detail" className="detail-panel cloud-task-panel" hidden={activeTask !== "cloud-detail"}>

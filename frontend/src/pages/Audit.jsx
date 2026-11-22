@@ -9,7 +9,7 @@ import { auditTargetLink } from "../utils/operationNavigation.js";
 const PAGE_SIZE = 20;
 
 const EMPTY_EVENTS = [];
-function Audit({ events = EMPTY_EVENTS, loading = false }) {
+function Audit({ events = EMPTY_EVENTS, loading = false, refreshToken = 0 }) {
   const [query, setQuery] = useState("");
   const [selectedEventId, setSelectedEventId] = useState(null);
   const [page, setPage] = useState(1);
@@ -68,7 +68,7 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [page, query, retryCount, events]);
+  }, [page, query, retryCount, events, refreshToken]);
 
   useEffect(() => {
     if (!loadedRemotePage.current && !query && page === 1 && events.length > 0) {

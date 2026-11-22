@@ -51,6 +51,7 @@ export function buildDraftGatePreview(mode, status, scannersComplete) {
 
 function BuildSecurity({
   activeRevision = null,
+  refreshToken = 0,
   isAdmin = false,
   onRefresh = null,
   revisions = [],
@@ -251,7 +252,7 @@ function BuildSecurity({
       buildDataRequest.current += 1;
       detailRequest.current += 1;
     };
-  }, [isAdmin]);
+  }, [isAdmin, refreshToken]);
 
   useEffect(() => {
     if (draftRevisions.length === 0) {

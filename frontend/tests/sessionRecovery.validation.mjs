@@ -28,7 +28,7 @@ test("only a response for the current session can report expiry", async (t) => {
     const oldRead = fetchControlPlaneMe();
     await loginControlPlane("fixture-user", "fixture-password");
     finishOldRead(rejectSession());
-    await assert.rejects(oldRead, { status: 401 });
+    await assert.rejects(oldRead, { code: "request_cancelled" });
     assert.equal(expiryEvents, 0);
 
     await assert.rejects(changeOwnPassword("wrong-password", "fixture-password"), { status: 401 });

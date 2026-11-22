@@ -35,6 +35,7 @@ const OPAQUE_ERROR_CODE = /^[A-Za-z][A-Za-z0-9_:-]{2,99}$/;
 
 let csrfToken = "";
 let sessionGeneration = 0;
+const inFlightReads = new Map();
 
 export const SESSION_EXPIRED_EVENT = "mcp-control-plane-session-expired";
 const SESSION_ERROR_CODES = new Set(["Not authenticated", "Invalid session", "Invalid user"]);
@@ -49,7 +50,13 @@ export class ApiError extends Error {
   }
 }
 
+export function cancelControlPlaneReads() {
+  for (const { controller } of inFlightReads.values()) controller.abort("superseded");
+  inFlightReads.clear();
+}
+
 export function setCsrfToken(value) {
+  cancelControlPlaneReads();
   csrfToken = value || "";
   sessionGeneration += 1;
 }
@@ -65,7 +72,24 @@ export function hasControlPlaneSession() {
   return Boolean(csrfFromCookie());
 }
 
-async function request(path, options = {}) {
+function request(path, options = {}) {
+  const method = options.method || "GET";
+  if (method !== "GET" || options.headers || options.body) return performRequest(path, options);
+  const key = JSON.stringify([sessionGeneration, method, path, options.timeoutMs ?? REQUEST_TIMEOUT_MS]);
+  const active = inFlightReads.get(key);
+  if (active) return active.promise;
+
+  const controller = new AbortController();
+  const promise = performRequest(path, options, controller);
+  inFlightReads.set(key, { promise, controller });
+  const forget = () => {
+    if (inFlightReads.get(key)?.promise === promise) inFlightReads.delete(key);
+  };
+  promise.then(forget, forget);
+  return promise;
+}
+
+async function performRequest(path, options, controller = new AbortController()) {
   const generation = sessionGeneration;
   const { timeoutMs = REQUEST_TIMEOUT_MS, ...requestOptions } = options;
   const headers = { ...(requestOptions.headers || {}) };
@@ -78,7 +102,6 @@ async function request(path, options = {}) {
     headers["Content-Type"] = "application/json";
   }
 
-  const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -106,6 +129,9 @@ async function request(path, options = {}) {
     if (controller.signal.aborted) throw new ApiError("Request timed out.", { code: "request_timeout", status: 0 });
     return text ? JSON.parse(text) : null;
   } catch (err) {
+    if (controller.signal.reason === "superseded") {
+      throw new ApiError("Read superseded.", { code: "request_cancelled" });
+    }
     if (controller.signal.aborted || err?.name === "AbortError") {
       throw new ApiError("Request timed out. Please retry.", {
         code: "request_timeout",
