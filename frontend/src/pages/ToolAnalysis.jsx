@@ -861,30 +861,8 @@ export function FindingsView({ error, findings, citedId }) {
   return (
     <div className="finding-list">
       {findingPagination.pageItems.map((finding, index) => (
-        <article className="finding-card" key={finding.id || `${finding.code}-${index}`}
-          tabIndex={String(finding.id) === citedId ? -1 : undefined}
-          data-finding-id={finding.id}
-          ref={String(finding.id) === citedId ? citedRef : null}>
-          <div className="finding-heading">
-            <div><strong>{friendlyFindingTitle(finding)}</strong></div>
-            <Badge value={finding.severity} />
-          </div>
-          <p className="hint-text" role="note">
-            <strong>Decision impact:</strong>{" "}
-            {findingImpactLabel(finding)}
-          </p>
-          <p>{finding.summary || finding.message || finding.evidence?.summary || "No summary provided."}</p>
-          {finding.recommendation && <div className="finding-recommendation"><strong>Recommendation</strong><span>{finding.recommendation}</span></div>}
-          <details className="operator-technical-details">
-            <summary>Finding evidence</summary>
-            <dl className="inline-metadata">
-              <div><dt>Code</dt><dd>{finding.code || "-"}</dd></div>
-              <div><dt>Source</dt><dd>{finding.source || "-"}</dd></div>
-              <div><dt>Exact source location</dt><dd>{findingEvidenceLocation(finding) || "Not recorded in this finding"}</dd></div>
-              <div><dt>Confidence</dt><dd>{formatConfidence(finding.confidence)}</dd></div>
-            </dl>
-          </details>
-        </article>
+        <FindingCard key={finding.id || `${finding.code}-${index}`}
+          finding={finding} citedId={citedId} focusRef={citedRef} />
       ))}
       <Pagination
         label="Analysis findings"
@@ -894,6 +872,35 @@ export function FindingsView({ error, findings, citedId }) {
         total={findingPagination.total}
       />
     </div>
+  );
+}
+
+export function FindingCard({ finding, citedId = null, focusRef = null }) {
+  return (
+    <article className="finding-card"
+      tabIndex={String(finding.id) === citedId ? -1 : undefined}
+      data-finding-id={finding.id}
+      ref={String(finding.id) === citedId ? focusRef : null}>
+      <div className="finding-heading">
+        <div><strong>{friendlyFindingTitle(finding)}</strong></div>
+        <Badge value={finding.severity} />
+      </div>
+      <p className="hint-text" role="note">
+        <strong>Decision impact:</strong>{" "}
+        {findingImpactLabel(finding)}
+      </p>
+      <p>{finding.summary || finding.message || finding.evidence?.summary || "No summary provided."}</p>
+      {finding.recommendation && <div className="finding-recommendation"><strong>Recommendation</strong><span>{finding.recommendation}</span></div>}
+      <details className="operator-technical-details">
+        <summary>Finding evidence</summary>
+        <dl className="inline-metadata">
+          <div><dt>Code</dt><dd>{finding.code || "-"}</dd></div>
+          <div><dt>Source</dt><dd>{finding.source || "-"}</dd></div>
+          <div><dt>Exact source location</dt><dd>{findingEvidenceLocation(finding) || "Not recorded in this finding"}</dd></div>
+          <div><dt>Confidence</dt><dd>{formatConfidence(finding.confidence)}</dd></div>
+        </dl>
+      </details>
+    </article>
   );
 }
 

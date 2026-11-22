@@ -12,7 +12,7 @@ test("TA-03: the finding card retains safe catalogue titles and exact, evidenced
   });
   try {
     const { friendlyFindingTitle: title, findingEvidenceLocation: location,
-            findingImpactLabel, FindingsView } =
+            findingImpactLabel, FindingCard } =
       await server.ssrLoadModule("/src/pages/ToolAnalysis.jsx");
 
     const long = "An actual suspicious finding: " + "a".repeat(800);
@@ -41,12 +41,13 @@ test("TA-03: the finding card retains safe catalogue titles and exact, evidenced
     ]) {
       assert.equal(location({ evidence: bad }), null);
     }
-    const visible = renderToStaticMarkup(React.createElement(FindingsView, {
-      findings: [candidate, {
+    const visible = renderToStaticMarkup(React.createElement(React.Fragment, null,
+      React.createElement(FindingCard, { finding: candidate }),
+      React.createElement(FindingCard, { finding: {
         id: 2, code: "OTHER_RISK", title: "<script>alert('hi')</script>",
         evidence: {}, source: "M7", severity: "LOW",
-      }], error: null,
-    }));
+      } }),
+    ));
     assert.match(visible, /Exact source location/);
     assert.match(visible, /description \(characters 21/);
     assert.match(visible, /Not recorded in this finding/);
