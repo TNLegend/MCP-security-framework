@@ -49,7 +49,9 @@ function AdapterGuidancePanel({ guidance, isAdmin, tool }) {
       <div className="adapter-guidance-heading">
         <div>
           <strong>Adapter compatibility</strong>
-          <span className="status-pill">{guidance.status.replaceAll("_", " ")}</span>
+          <span className="status-pill">{typeof guidance.status === "string"
+            ? guidance.status.replaceAll("_", " ")
+            : "Status unavailable"}</span>
         </div>
         <span>
           {guidance.generic_declarative_available
@@ -59,13 +61,13 @@ function AdapterGuidancePanel({ guidance, isAdmin, tool }) {
       </div>
 
       <ul className="adapter-guidance-reasons">
-        {guidance.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+        {(guidance.reasons || []).map((reason) => <li key={reason}>{reason}</li>)}
       </ul>
 
-      {guidance.closest_adapters.length > 0 ? (
+      {(guidance.closest_adapters || []).length > 0 ? (
         <div className="adapter-candidates">
           <strong>Closest trusted adapters</strong>
-          {guidance.closest_adapters.map((adapter) => (
+          {(guidance.closest_adapters || []).map((adapter) => (
             <div key={adapter.adapter_id}>
               <span>{adapter.display_name}</span>
               <small>{adapter.family} / {adapter.adapter_id} / {adapter.implementation_version}</small>
@@ -84,7 +86,7 @@ function AdapterGuidancePanel({ guidance, isAdmin, tool }) {
           <label>
             Starter
             <select disabled={busy} onChange={(event) => setStarterId(event.target.value)} value={starterId}>
-              {guidance.starters.map((starter) => (
+              {(guidance.starters || []).map((starter) => (
                 <option key={starter.starter_id} value={starter.starter_id}>{starter.title}</option>
               ))}
             </select>

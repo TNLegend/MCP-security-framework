@@ -508,3 +508,14 @@ form .button-row > button[type="submit"]:not(.danger-action, .secondary-action, 
   .trusted-adapter-catalog tbody td { display: grid; grid-template-columns: 6.5rem minmax(0, 1fr); gap: 12px; padding: 4px 0; border: 0; white-space: normal; }
   .trusted-adapter-catalog tbody td::before { content: attr(data-label); color: var(--ds-muted); font-size: var(--ds-text-xs); font-weight: 650; align-self: start; padding-top: 2px; }
 }
+
+/* History tables scroll inside their section; the section may shrink. */
+.history-sections, .history-sections > section, .analysis-workspace, .analysis-workspace .tab-content > * { min-width: 0; }
+/* Stacked adapter rows: give the value column room; long trust labels wrap between words. */
+@container (max-width: 680px) {
+  .trusted-adapter-catalog tbody td { grid-template-columns: minmax(4.5rem, 28%) minmax(0, 1fr); }
+  .trusted-adapter-catalog .status-pill { white-space: normal; overflow: visible; text-align: left; }
+}
+
+.build-security-page :is(.build-target-form, .build-inventory-flow) select { max-width: min(100%, 34rem); }
+
