@@ -4,7 +4,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
-test("AI review: meaningful prose appears before deterministic security facts, never raw JSON", async () => {
+test("UX-13: recorded facts precede server-grounded claim output and provider prose stays hidden", async () => {
   const server = await createServer({
     configFile: false,
     plugins: [(await import("@vitejs/plugin-react")).default()],
@@ -22,6 +22,7 @@ test("AI review: meaningful prose appears before deterministic security facts, n
       ai_explanation:
         "The current tool has a HIGH finding about broad permissions. " +
         "The report supports further review, but it does not prove actual remote behavior.",
+      grounded_claims: [{ type: "RECORDED_FINDING", evidence_ref: "finding:17", label: "Recorded finding", value: "HIGH at exact record 17" }],
       risk_factors: ["HIGH finding TOOL_SCOPE_RISK: broader permission requested"],
       recommended_action: "HUMAN_REVIEW",
       rationale: "Open the finding and review its evidence.",
@@ -32,15 +33,16 @@ test("AI review: meaningful prose appears before deterministic security facts, n
     const render = (result) =>
       renderToStaticMarkup(React.createElement(ControlledAIResult, { result }));
     const visible = render(base);
-    const explanation = visible.indexOf("The current tool has a HIGH finding");
+    const explanation = visible.indexOf("HIGH at exact record 17");
     const recorded = visible.indexOf("Recorded state: human review required.");
-    assert.ok(explanation >= 0 && recorded > explanation);
+    assert.ok(recorded >= 0 && explanation > recorded);
+    assert.doesNotMatch(visible, /The current tool has a HIGH finding/);
     assert.match(visible, /Evidence behind this result/);
-    assert.match(visible, /not an authorization/);
+    assert.match(visible, /cannot approve tools/);
     assert.doesNotMatch(visible, /<pre|\{\s*"risk_factors"/);
 
-    const noProse = render({ ...base, ai_explanation: null });
-    assert.match(noProse, /AI did not provide a specific explanation/);
+    const noClaims = render({ ...base, grounded_claims: [] });
+    assert.match(noClaims, /No supported AI claims/);
 
     const proposed = render({
       ...base, draft_kind: "TEMPLATE_MAPPING",

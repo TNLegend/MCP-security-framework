@@ -50,6 +50,15 @@ class ControlledAIOptionPublic(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ControlledAIClaimPublic(BaseModel):
+    type: str
+    label: str
+    value: str
+    evidence_ref: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ControlledAIAssistancePublic(BaseModel):
     mode: ControlledAIMode
     provider: Literal["gemini", "groq"]
@@ -59,8 +68,9 @@ class ControlledAIAssistancePublic(BaseModel):
     analysis_id: int
     analysis_context_hash: str | None = Field(default=None, max_length=64)
     summary: str = Field(min_length=1, max_length=2500)
-    # Generated prose is advisory only, never a framework disposition.
+    # Compatibility field. Unverified provider prose is not returned by the service.
     ai_explanation: str | None = Field(default=None, max_length=1800)
+    grounded_claims: tuple[ControlledAIClaimPublic, ...] = Field(default=(), max_length=12)
     risk_factors: tuple[str, ...] = Field(default=(), max_length=12)
     recommended_action: ControlledAIRecommendedAction
     rationale: str = Field(min_length=1, max_length=2500)

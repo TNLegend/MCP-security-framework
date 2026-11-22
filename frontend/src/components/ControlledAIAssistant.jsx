@@ -175,15 +175,6 @@ export function ControlledAIResult({ result }) {
     <div className="controlled-ai-result">
       <h4>{isDraft ? "AI-generated onboarding proposal" : "AI-assisted review"}</h4>
       <section className="controlled-ai-section">
-        <h5>{isDraft ? "What the AI proposed" : "AI interpretation of recorded evidence"}</h5>
-        {result.ai_explanation ? (
-          <>
-            <p>{result.ai_explanation}</p>
-            <p className="hint-text">AI-generated explanation. Verify it against the recorded security findings; it is not an authorization.</p>
-          </>
-        ) : (
-          <p className="hint-text">The AI did not provide a specific explanation. The recorded findings below remain the source of truth.</p>
-        )}
         <h5>Recorded security facts</h5>
         <p>{result.summary}</p>
         <StringList title="Evidence behind this result" values={result.risk_factors} />
@@ -193,6 +184,17 @@ export function ControlledAIResult({ result }) {
         <p><strong>{ACTIONS[result.recommended_action] || "Review the recorded analysis"}</strong></p>
         <p>{result.rationale}</p>
       </section>
+      {!isDraft && <section className="controlled-ai-section" aria-label="Grounded AI evidence">
+        <h5>AI-selected evidence</h5>
+        {result.grounded_claims?.length > 0 ? <ul>
+          {result.grounded_claims.map((claim) => (
+            <li key={claim.type + ":" + claim.evidence_ref}>
+              <strong>{claim.label}</strong>{" · "}{claim.value}{" "}
+              <code>{claim.evidence_ref}</code>
+            </li>
+          ))}
+        </ul> : <p className="hint-text">No supported AI claims were returned. Use the recorded evidence above.</p>}
+      </section>}
       <StringList title={isDraft ? "Proposal uncertainties" : "What remains unknown"} values={result.uncertainties} />
       {!result.evidence_refs?.length && (
         <p className="hint-text">No evidence references were selected. Review the findings and recorded analysis directly.</p>

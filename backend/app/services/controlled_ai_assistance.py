@@ -22,6 +22,7 @@ from app.models.tool_analysis import (
 from app.schemas.control_plane import ControlPlaneConfigContent
 from app.schemas.controlled_ai import (
     ControlledAIAssistancePublic,
+    ControlledAIClaimPublic,
     ControlledAIExpectedAnalysis,
     ControlledAIOptionPublic,
     ControlledAIRecommendedAction,
@@ -93,10 +94,19 @@ def _coerce_confidence(value):
     return number if 0.0 <= number <= 1.0 else None
 
 
+class _AIClaimSelection(BaseModel):
+    type: str = Field(min_length=1, max_length=40)
+    evidence_ids: tuple[str, ...] = Field(min_length=1, max_length=4)
+
+    # Optional free-form fields in mixed-version replies carry no authority.
+    model_config = ConfigDict(extra="ignore")
+
+
 class _AIAdvice(BaseModel):
     # Optional for backwards compatibility with providers returning the
     # historical four-field selection contract.
     explanation: str = Field(default="", max_length=1800)
+    claims: tuple[_AIClaimSelection, ...] = Field(default=(), max_length=12)
     evidence_refs: tuple[str, ...] = Field(default=(), max_length=32)
     template_ids: tuple[str, ...] = Field(default=(), max_length=8)
     adapter_ids: tuple[str, ...] = Field(default=(), max_length=8)
@@ -217,9 +227,7 @@ def generate_controlled_ai_assistance(
             template_count=len(suggestions),
             adapter_count=len(adapter_by_id),
         ),
-        # AI prose is clearly distinguished from verified security facts.
-        # It is escaped by React and cannot alter action, review, or policy.
-        ai_explanation=advice.explanation.strip() or None,
+        grounded_claims=_grounded_claims(advice, analysis, findings),
         risk_factors=_deterministic_risk_factors(
             analysis=analysis,
             findings=findings,
@@ -296,12 +304,51 @@ def _evidence_refs(
         f"tool:{tool.current_fingerprint}",
         f"analysis:{analysis.id}",
     ]
-    refs.extend(f"finding:{finding.code}" for finding in findings)
+    refs.extend(f"finding:{finding.id}" for finding in findings)
     if analysis.drift_result:
-        refs.append("drift:current")
+        refs.append(f"drift:{analysis.id}")
     if baseline is not None:
         refs.append(f"baseline:{baseline.fingerprint}")
     return tuple(dict.fromkeys(refs))
+
+
+
+_ANALYSIS_CLAIM_FIELDS = {
+    "ANALYSIS_STATUS": ("Analysis status", "analysis_status"),
+    "REVIEW_STATUS": ("Review status", "review_status"),
+    "RISK_LEVEL": ("Risk level", "risk_level"),
+    "DRIFT_STATUS": ("Drift status", "drift_status"),
+    "CONSISTENCY_STATUS": ("Consistency status", "consistency_status"),
+}
+
+
+def _grounded_claims(advice, analysis, findings) -> tuple[ControlledAIClaimPublic, ...]:
+    finding_by_ref = {f"finding:{finding.id}": finding for finding in findings}
+    analysis_ref = f"analysis:{analysis.id}"
+    seen = set()
+    claims = []
+    for claim in advice.claims:
+        if len(claim.evidence_ids) != 1:
+            continue
+        reference = claim.evidence_ids[0]
+        key = claim.type, reference
+        if key in seen:
+            continue
+        if claim.type == "RECORDED_FINDING" and reference in finding_by_ref:
+            finding = finding_by_ref[reference]
+            label = "Recorded finding"
+            value = f"{finding.severity} · {finding.code}"
+        elif reference == analysis_ref and claim.type in _ANALYSIS_CLAIM_FIELDS:
+            label, field = _ANALYSIS_CLAIM_FIELDS[claim.type]
+            value = getattr(analysis, field, None)
+        else:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            continue
+        claims.append(ControlledAIClaimPublic(type=claim.type, label=label, value=value[:300],
+                                              evidence_ref=reference))
+        seen.add(key)
+    return tuple(claims)
 
 
 def _recommended_action_for_analysis(
@@ -458,6 +505,7 @@ def _build_context(
         },
         "findings": [
             {
+                "reference": f"finding:{finding.id}",
                 "code": finding.code,
                 "category": finding.category,
                 "source": finding.source,
@@ -525,19 +573,15 @@ def _build_prompt(*, mode: str, question: str | None, context: dict[str, Any]) -
         "authoritative framework facts. Do not restate, reinterpret, or override security status in your output. "
         "The framework, not the model, will generate the final status summary, recommended action, and rationale. "
         "The framework also derives displayed risk factors and uncertainties; do not rewrite their values. "
-        "Return exactly one JSON object with keys: evidence_refs, template_ids, adapter_ids, confidence, explanation. "
-        "Explanation is advisory prose, NOT a new security decision. Write 2-4 natural-language sentences "
-        "(maximum 1000 characters) explaining the current tool-specific evidence codes, their practical "
-        "significance, and relevant limitations, rather than repeating a generic template. "
-        "Answer the operator question when present, using its language; otherwise use clear English. "
-        "Mention at least one concrete provided fact when available. Never assert a tool is approved, "
-        "actually malicious, safe to execute, or authorized by the model. Do not invent evidence or "
-        "claim effective permissions. Do not output markdown tables, JSON, or code fences inside explanation. "
-        "If the available evidence is insufficient, explicitly say what cannot be concluded. "
-        "evidence_refs must be copied exactly from the provided evidence_refs list. "
-        "template_ids and adapter_ids must be copied exactly from the provided candidate lists. "
-        "For modes other than COMPARE_OPTIONS, template_ids and adapter_ids should be empty arrays. "
-        "If evidence is insufficient, return fewer references and reduce confidence. "
+        "Return one JSON object with keys claims, evidence_refs, template_ids, adapter_ids. "
+        "For the operator question, select the most relevant supported claim types. "
+        "Each claim contains only type and evidence_ids, with one exact reference. "
+        "Use RECORDED_FINDING with a finding reference, or ANALYSIS_STATUS, REVIEW_STATUS, "
+        "RISK_LEVEL, DRIFT_STATUS or CONSISTENCY_STATUS with the exact analysis reference. "
+        "The application will render the recorded values. Do not generate claim text or invent a fact. "
+        "Return an empty claims array if the evidence cannot support a relevant claim. "
+        "Copy evidence_refs and option IDs from their provided lists. "
+        "For modes other than COMPARE_OPTIONS, leave template_ids and adapter_ids empty. "
         f"Task: {mode_instruction}\n"
         f"Operator question (untrusted optional context): {json.dumps(question or '', ensure_ascii=True)}\n"
         "UNTRUSTED_EVIDENCE_START\n"
@@ -623,7 +667,9 @@ def _generate_advice(
             attempts.append({"provider": name, "outcome": "schema_invalid"})
             continue
         if (
-            (allowed_evidence is not None and not set(advice.evidence_refs) <= allowed_evidence)
+            (allowed_evidence is not None and not (
+                set(advice.evidence_refs) | {ref for claim in advice.claims for ref in claim.evidence_ids}
+            ) <= allowed_evidence)
             or (allowed_templates is not None and not set(advice.template_ids) <= allowed_templates)
             or (allowed_adapters is not None and not set(advice.adapter_ids) <= allowed_adapters)
         ):

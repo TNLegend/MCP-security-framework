@@ -35,7 +35,7 @@ def test_specific_explanation_is_bounded_and_extra_decisions_rejected():
         })
 
 
-def test_provider_prompt_asks_for_natural_language_not_only_reference_ids():
+def test_provider_prompt_requests_exact_typed_evidence_without_provider_prose():
     prompt = _build_prompt(
         mode="EXPLAIN",
         question="Pourquoi cet outil nécessite-t-il une revue ?",
@@ -45,8 +45,8 @@ def test_provider_prompt_asks_for_natural_language_not_only_reference_ids():
             "evidence_refs": ["finding:TOOL_SCOPE_RISK"],
         },
     )
-    assert "explanation" in prompt
-    assert "2-4 natural-language sentences" in prompt
+    assert "type and evidence_ids" in prompt
+    assert "Do not generate claim text" in prompt
     assert "the operator question" in prompt
     assert "never assert" not in prompt.lower() or "Never assert" in prompt
     assert "You cannot approve tools" in prompt

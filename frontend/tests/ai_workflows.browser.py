@@ -11,7 +11,10 @@ from gui_browser_smoke import DIGEST, navigate, open_page, serve
 def exercise_assistant(page, width):
     submitted = []
     replies = iter((
-        (200, {"evidence_refs": ["finding:FIXTURE_RULE"], "confidence": 0.75}),
+        (200, {"evidence_refs": ["finding:17"], "confidence": 0.75,
+               "ai_explanation": "Unsupported provider permission claim",
+               "grounded_claims": [{"type": "RECORDED_FINDING", "evidence_ref": "finding:17",
+                                     "label": "Recorded finding", "value": "HIGH · Fixture scope"}]}),
         (200, {"uncertainties": ["The observed scope is incomplete."], "evidence_refs": []}),
         (200, {"analysis_context_hash": "b" * 64, "summary": "Unexpected analysis"}),
         (200, {"can_mutate_runtime": True, "summary": "Unexpected authority"}),
@@ -43,7 +46,9 @@ def exercise_assistant(page, width):
     # Current candidate contract (the old "What the framework recorded" label was replaced before e3dc067).
     expect(assistant.get_by_role("heading", name="Recorded security facts")).to_be_visible()
     assistant.get_by_text("Supporting evidence and advanced options").click()
-    expect(assistant.get_by_text("finding:FIXTURE_RULE")).to_be_visible()
+    expect(assistant.get_by_text("finding:17", exact=True).last).to_be_visible()
+    expect(assistant.get_by_text("HIGH · Fixture scope")).to_be_visible()
+    expect(assistant.get_by_text("Unsupported provider permission claim")).to_have_count(0)
     # UX-14: uncalibrated model confidence is no longer displayed.
     expect(assistant.get_by_text("Advisory confidence:", exact=False)).to_have_count(0)
     ask.click()
