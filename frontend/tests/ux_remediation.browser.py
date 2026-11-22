@@ -583,7 +583,32 @@ def check_ux16(browser, server, shots):
     return "VIEWER: boundary at ?view=users, no /users read, Go back to origin, Return to Home; ADMIN unaffected"
 
 
-CHECKS = {"UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
+def check_ux05(browser, server, shots):
+    """UX-05: Inventory states observation approval and the next recorded blocker,
+    never a yes/no call permission; each endpoint has its own copy action;
+    Home Add MCP opens the connect form."""
+    context, page, api, errors = smoke.open_page(browser, server, "ADMIN", 1440)
+    page.get_by_role("region", name="Quick actions").get_by_role("button", name="Add MCP server").click() \
+        if page.get_by_role("region", name="Quick actions").count() else \
+        page.locator(".dashboard-actions").get_by_role("button", name="Add MCP server").click()
+    expect(page.get_by_role("heading", level=2, name="MCP tools")).to_be_visible()
+    assert "action=connect" in page.url
+    expect(page.locator("#inventory-connect")).to_have_attribute("open", "")
+    page.locator("#inventory-servers").get_by_role("button").filter(has_text="Documentation MCP").first.click()
+    expect(page.get_by_role("button", name="Copy upstream endpoint")).to_be_visible()
+    page.locator("#inventory-tools").get_by_text("Read documents", exact=False).first.click()
+    panel = page.get_by_test_id("tool-observation-approval")
+    expect(panel).to_contain_text("Approval for current observation")
+    expect(panel).to_contain_text("A human review decision is required for this observation.")
+    expect(page.get_by_text("Can this tool be called now?")).to_have_count(0)
+    if shots:
+        panel.screenshot(path=str(shots / "ux05-inventory-observation-approval.png"))
+    assert not errors, errors
+    context.close()
+    return "Home Add MCP opens ?view=inventory&action=connect with form open; upstream copy action; observation approval + REVIEW_REQUIRED blocker"
+
+
+CHECKS = {"UX-05": check_ux05, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
           "UX-09": check_ux09, "UX-11": check_ux11, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 

@@ -81,7 +81,7 @@ function Dashboard({
 
       {isAdmin && (
         <div className="dashboard-actions" aria-label="Quick actions">
-          <button className="console-primary" type="button" onClick={() => onNavigate("inventory")}>Add MCP server</button>
+          <button className="console-primary" type="button" onClick={() => onNavigate("inventory", null, { action: "connect" })}>Add MCP server</button>
           <button className="secondary-action" type="button" onClick={() => onNavigate("analysis")}>Review tools</button>
           <button className="secondary-action" type="button" onClick={() => onNavigate("emergency")}>Emergency block</button>
           <button className="secondary-action" type="button" onClick={() => onNavigate("users")}>Manage users</button>

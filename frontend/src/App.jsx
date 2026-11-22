@@ -80,6 +80,7 @@ function entryOptionsFromLocation() {
     queue: view === "analysis" ? params.get("queue") : null,
     section: view === "operations" ? params.get("section") : null,
     outcome: view === "runtime" ? normalizeOutcomeState(params.get("outcome")) : null,
+    action: view === "inventory" && params.get("action") === "connect" ? "connect" : null,
   };
 }
 
@@ -91,7 +92,8 @@ function pageUrl(pageId, toolId = null, options = {}) {
   else url.searchParams.delete("tool");
   // A normal navigation must not accidentally keep a previous investigation.
   url.searchParams.delete("operation_id");
-  for (const key of ["queue", "section", "outcome", "scan", "env", "kind", "task"]) url.searchParams.delete(key);
+  for (const key of ["queue", "section", "outcome", "scan", "env", "kind", "task", "action"]) url.searchParams.delete(key);
+  if (pageId === "inventory" && options.action === "connect") url.searchParams.set("action", "connect");
   if (pageId === "analysis" && options.queue) url.searchParams.set("queue", options.queue);
   if (pageId === "operations" && options.section) url.searchParams.set("section", options.section);
   if (pageId === "runtime" && normalizeOutcomeState(options.outcome)) {
@@ -222,6 +224,7 @@ function App() {
       queue: pageId === "analysis" ? options.queue || null : null,
       section: pageId === "operations" ? options.section || null : null,
       outcome: pageId === "runtime" ? normalizeOutcomeState(options.outcome) : null,
+      action: pageId === "inventory" && options.action === "connect" ? "connect" : null,
     });
     if (url.href !== window.location.href) {
       window.history.pushState(null, "", url);
@@ -472,6 +475,8 @@ function App() {
     if (activePage === "inventory") {
       return (
         <Inventory
+          key={"inventory-" + (entryOptions.action || "list")}
+          requestedAction={entryOptions.action}
           isAdmin={isAdmin}
           servers={servers}
           tools={tools}

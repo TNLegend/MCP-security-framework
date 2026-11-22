@@ -30,6 +30,7 @@ import {
 
 function Inventory({
   isAdmin = false,
+  requestedAction = null,
   onNavigate,
   onRefresh,
   runtimeStatus,
@@ -43,6 +44,17 @@ function Inventory({
   const [toolAnalysisToolId, setToolAnalysisToolId] = useState(null);
   const [toolAnalysisError, setToolAnalysisError] = useState("");
   const [toolAnalysisLoading, setToolAnalysisLoading] = useState(false);
+  // UX-05: Home "Add MCP server" opens the connect form directly.
+  const [connectOpen, setConnectOpen] = useState(requestedAction === "connect");
+  const connectSummaryRef = useRef(null);
+  useEffect(() => {
+    if (requestedAction !== "connect" || !isAdmin) return;
+    setConnectOpen(true);
+    window.requestAnimationFrame(() => {
+      document.getElementById("inventory-connect")?.scrollIntoView({ block: "start" });
+      connectSummaryRef.current?.focus();
+    });
+  }, [requestedAction, isAdmin]);
   const [endpoint, setEndpoint] = useState("http://127.0.0.1:9000/mcp");
   const [authMode, setAuthMode] = useState("NONE");
   const [credentialRef, setCredentialRef] = useState("");
@@ -326,8 +338,9 @@ function Inventory({
       </nav>
 
       {isAdmin && (
-        <details className="operator-technical-details inventory-add-server">
-          <summary>Add or connect an MCP server</summary>
+        <details className="operator-technical-details inventory-add-server" id="inventory-connect"
+          open={connectOpen} onToggle={(event) => setConnectOpen(event.currentTarget.open)}>
+          <summary ref={connectSummaryRef}>Add or connect an MCP server</summary>
           <form className="action-panel inventory-discovery-form" onSubmit={handleDiscover}>
           <label>
             Server address (URL)
@@ -1071,15 +1084,18 @@ function ServerDetailPanel({
 }) {
   const governedEndpoint = buildGovernedEndpoint(gatewayStatus, server.id);
   const [copyMessage, setCopyMessage] = useState("");
-  async function copyGovernedEndpoint() {
+  async function copyText(value, success) {
     setCopyMessage("");
     try {
       if (!navigator.clipboard?.writeText) throw new Error("clipboard_not_available");
-      await navigator.clipboard.writeText(governedEndpoint);
-      setCopyMessage("Governed endpoint copied.");
+      await navigator.clipboard.writeText(value);
+      setCopyMessage(success);
     } catch {
-      setCopyMessage("Copy failed. Select the governed endpoint address and copy it manually.");
+      setCopyMessage("Copy failed. Select the address and copy it manually.");
     }
+  }
+  function copyGovernedEndpoint() {
+    return copyText(governedEndpoint, "Governed endpoint copied.");
   }
   const isOAuth = server.auth_mode === "OAUTH";
   const canDiscover = canManageServer && server.status !== "archived" && (!isOAuth || server.oauth_status === "CONNECTED");
@@ -1128,12 +1144,19 @@ function ServerDetailPanel({
         <div>
           <span>Upstream: direct and unmediated</span>
           <code>{displayValue(server.endpoint)}</code>
+          {server.endpoint && (
+            <button className="tiny-action" onClick={() => copyText(server.endpoint, "Upstream endpoint copied.")} type="button"
+              aria-label="Copy upstream endpoint">
+              Copy
+            </button>
+          )}
         </div>
         <div>
           <span>Governed endpoint: Gateway-mediated</span>
           <code>{governedEndpoint || "Gateway endpoint unavailable"}</code>
           {governedEndpoint && (
             <button
+              aria-label="Copy governed endpoint"
               className="tiny-action"
               onClick={copyGovernedEndpoint}
               type="button"
@@ -1222,6 +1245,25 @@ export function toolCallabilityContext(tool) {
   return "Runtime callability is unknown until current analysis and independent authorization checks are verified.";
 }
 
+// UX-05: the exact recorded blocker for this observation, never a yes/no "callable".
+export function observationBlocker(tool, analysisError = null) {
+  if (analysisError) return "Analysis could not be read; nothing can be concluded about this observation.";
+  const status = tool?.analysis_status;
+  if (!status) return "No analysis recorded for this observation.";
+  if (status === "PENDING_ANALYSIS") return "Analysis has not completed for the current observation.";
+  if (status === "ANALYSIS_FAILED") return "The analyzer failed on the current observation.";
+  if (status === "STALE") return "The recorded analysis is stale for the current observation.";
+  if (status === "BLOCKED") return tool?.status_reason ? "Blocked: " + tool.status_reason : "A recorded block decision applies.";
+  if (status === "QUARANTINED") return tool?.status_reason ? "Quarantined: " + tool.status_reason : "Quarantined pending review.";
+  if (status === "REVIEW_REQUIRED") return "A human review decision is required for this observation.";
+  if (["APPROVED", "ADMIN_ALLOWED"].includes(status)) {
+    return tool?.approved_fingerprint_match === true
+      ? "None recorded at observation level; runtime checks still apply per call."
+      : "The approval does not match the current fingerprint; re-review the changed observation.";
+  }
+  return "Status " + status + " is not recognized; treat the observation as unreviewed.";
+}
+
 function ToolDetailPanel({ tool, analysis, analysisError, analysisLoading, onOpenAnalysis }) {
   const latestAnalysis = analysis?.analyses?.[0] || null;
   const sectionErrors = analysis?.errors || {};
@@ -1237,16 +1279,17 @@ function ToolDetailPanel({ tool, analysis, analysisError, analysisLoading, onOpe
           Open security review
         </button>
       </div>
-      <section className="detail-panel" aria-label="Tool callability and analysis status">
-        <h4>Can this tool be called now?</h4>
-        <p>{toolCallabilityContext(tool)}</p>
-        <p><strong>Recorded analysis:</strong> {displayValue(tool.analysis_status)}.
-          <strong> Fingerprint matches approval:</strong>{" "}
-          {tool.approved_fingerprint_match === true ? "Yes"
-            : tool.approved_fingerprint_match === false ? "No" : "Unknown"}.
-        </p>
-        <p>Only the backend's current signed policy and runtime admission can
-          decide an actual call. Inventory status is not a substitute.</p>
+      <section className="detail-panel" aria-label="Approval for current observation" data-testid="tool-observation-approval">
+        <h4>Approval for current observation</h4>
+        <dl className="compact-dl observation-approval">
+          <div><dt>Recorded analysis</dt><dd>{analysisError ? "Analysis unavailable" : displayValue(tool.analysis_status)}</dd></div>
+          <div><dt>Current fingerprint matches approved observation</dt>
+            <dd>{tool.approved_fingerprint_match === true ? "Yes"
+              : tool.approved_fingerprint_match === false ? "No (mismatch)" : "Unknown"}</dd></div>
+          <div><dt>Next recorded blocker</dt><dd>{observationBlocker(tool, analysisError)}</dd></div>
+        </dl>
+        <p className="hint-text">{toolCallabilityContext(tool)} Runtime permission is decided per call by the signed policy, agent identity, OPA and Proxy admission; this panel never authorizes a call.</p>
+        <button className="tiny-action" onClick={onOpenAnalysis} type="button">Open this tool's review</button>
       </section>
       <div className="metadata-grid">
         <MetadataSection
