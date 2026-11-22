@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, HTTPException, Path
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.models.control_plane import ControlPlaneAuditEvent
+from app.models.control_plane import (
+    ControlPlaneAuditEvent, ControlPlaneConfigRevision, ControlPlaneUser, EmergencyDeny,
+)
+from app.models.mcp_server import MCPServer
 from app.models.runtime_call import RuntimeCall
 from app.models.cloud_security import (
     CloudScanEvent, CloudDeployGovernanceDecision, CloudDeployExceptionEvent,
 )
-from app.services.control_plane_auth import AuthenticatedControlPlaneUser, require_authenticated_user
+from app.services.control_plane_auth import ROLE_ADMIN, AuthenticatedControlPlaneUser, require_authenticated_user
+from app.services.emergency_deny import emergency_deny_state
 
 router = APIRouter(prefix="/control-plane/audit", tags=["Control Plane Audit"])
 
@@ -36,6 +42,47 @@ def _event_public(event: ControlPlaneAuditEvent) -> dict:
         "result": event.result,
         "metadata": event.event_metadata,
     }
+
+
+
+@router.get("/resolve/{target_type}/{target_id}")
+def resolve_audit_target(
+    target_type: Literal["mcp_server", "control_plane_config_revision", "emergency_deny", "control_plane_user"],
+    target_id: str = Path(min_length=1, max_length=36),
+    current: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    """Resolve the exact primary key and return only investigation metadata."""
+    model = {
+        "mcp_server": MCPServer,
+        "control_plane_config_revision": ControlPlaneConfigRevision,
+        "emergency_deny": EmergencyDeny,
+        "control_plane_user": ControlPlaneUser,
+    }[target_type]
+    if target_type == "control_plane_user" and current.user.role != ROLE_ADMIN:
+        raise HTTPException(status_code=404, detail="audit_target_not_available")
+    if target_type == "mcp_server":
+        key = int(target_id) if re.fullmatch(r"[1-9][0-9]{0,9}", target_id) else 0
+        if not 0 < key <= 2147483647:
+            raise HTTPException(status_code=404, detail="audit_target_not_available")
+    else:
+        try:
+            key = str(UUID(target_id))
+        except ValueError:
+            raise HTTPException(status_code=404, detail="audit_target_not_available") from None
+    record = db.get(model, key)
+    if record is None:
+        raise HTTPException(status_code=404, detail="audit_target_not_available")
+
+    if isinstance(record, MCPServer):
+        label, status = record.name, record.status
+    elif isinstance(record, ControlPlaneConfigRevision):
+        label, status = f"Revision #{record.revision_number}", record.status
+    elif isinstance(record, EmergencyDeny):
+        label, status = "Emergency restriction", emergency_deny_state(record, datetime.utcnow())
+    else:
+        label, status = record.username, "Enabled" if record.enabled else "Disabled"
+    return {"type": target_type, "id": str(record.id), "label": label, "status": status}
 
 
 @router.get("/events")

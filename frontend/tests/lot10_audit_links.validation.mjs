@@ -31,7 +31,7 @@ test("AUD-01/OP-01: exact-ID audit links open only read-only operation investiga
 });
 
 
-test("AUD-01/AU-01: only exact current tool and runtime operation IDs become deep links", () => {
+test("UX-12: exact typed IDs become deep links without title or latest fallback", () => {
   assert.equal(auditTargetLink("mcp_tool", 42), "?view=analysis&tool=42");
   assert.equal(auditTargetLink("mcp_tool", "42"), "?view=analysis&tool=42");
   assert.equal(auditTargetLink("runtime_operation", ID),
@@ -40,9 +40,17 @@ test("AUD-01/AU-01: only exact current tool and runtime operation IDs become dee
     ["mcp_tool", 0], ["mcp_tool", "-1"], ["mcp_tool", "0042"],
     ["mcp_tool", "42?view=users"], ["mcp_tool", "../../users"],
     ["mcp_tool", "999999999999999999"], ["mcp_tool", null],
-    ["mcp_server", 42], ["cloud_scan", ID],
-    ["control_plane_config_revision", ID], ["runtime_logs", ID],
+    ["mcp_server", "0042"], ["cloud_scan", "scan-name"],
+    ["control_plane_config_revision", "latest"], ["runtime_logs", ID],
   ]) {
     assert.equal(auditTargetLink(type, id), null, type + " should not imply an exact verified link");
   }
+});
+
+test("record links address the resolved type and primary key", () => {
+  assert.equal(auditTargetLink("mcp_server", 42), "?view=inventory&record=42");
+  assert.equal(auditTargetLink("cloud_scan", ID), "?view=cloud&scan=" + ID);
+  assert.equal(auditTargetLink("control_plane_config_revision", ID), "?view=config&record=" + ID);
+  assert.equal(auditTargetLink("emergency_deny", ID), "?view=emergency&record=" + ID);
+  assert.equal(auditTargetLink("control_plane_user", ID), "?view=users&record=" + ID);
 });

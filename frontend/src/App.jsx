@@ -35,7 +35,8 @@ import Users from "./pages/Users";
 import AccountPasswordPanel from "./components/accountpasswordpanel.jsx";
 import { LIMITS, clearFieldError, validateLogin } from "./utils/validation";
 import { parseOAuthReturn, oauthReturnDescription } from "./utils/oauthreturn.js";
-import { operationFromQuery } from "./utils/operationNavigation.js";
+import { operationFromQuery, recordTypeForView } from "./utils/operationNavigation.js";
+import ExactSecurityRecord from "./components/ExactSecurityRecord";
 import { normalizeOutcomeState } from "./utils/toolQueues.js";
 
 const pages = [
@@ -77,6 +78,7 @@ function entryOptionsFromLocation() {
   const params = new URLSearchParams(window.location.search);
   const view = pageFromLocation();
   return {
+    record: recordTypeForView(view) ? params.get("record") : null,
     queue: view === "analysis" ? params.get("queue") : null,
     section: view === "operations" ? params.get("section") : null,
     outcome: view === "runtime" ? normalizeOutcomeState(params.get("outcome")) : null,
@@ -92,7 +94,7 @@ function pageUrl(pageId, toolId = null, options = {}) {
   else url.searchParams.delete("tool");
   // A normal navigation must not accidentally keep a previous investigation.
   url.searchParams.delete("operation_id");
-  for (const key of ["queue", "section", "outcome", "scan", "env", "kind", "task", "action"]) url.searchParams.delete(key);
+  for (const key of ["queue", "section", "outcome", "scan", "env", "kind", "task", "action", "record"]) url.searchParams.delete(key);
   if (pageId === "inventory" && options.action === "connect") url.searchParams.set("action", "connect");
   if (pageId === "analysis" && options.queue) url.searchParams.set("queue", options.queue);
   if (pageId === "operations" && options.section) url.searchParams.set("section", options.section);
@@ -472,6 +474,12 @@ function App() {
   }, [Boolean(user), activePage, analysisEntryToolId]);
 
   const pageContent = useMemo(() => {
+    const recordType = recordTypeForView(requestedPage);
+    if (entryOptions.record !== null && entryOptions.record !== undefined && recordType) {
+      const recordId = entryOptions.record.toLowerCase();
+      return <ExactSecurityRecord key={recordType + ":" + recordId} view={requestedPage}
+        type={recordType} id={recordId} isAdmin={isAdmin} />;
+    }
     if (activePage === "inventory") {
       return (
         <Inventory
@@ -599,6 +607,8 @@ function App() {
     );
   }, [
     activePage,
+    requestedPage,
+    entryOptions,
     analysisEntryToolId,
     operationEntryId,
     readStates,

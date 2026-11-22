@@ -1,4 +1,5 @@
 import { formatServerTime } from "../utils/serverTime.js";
+import { auditTargetLink } from "../utils/operationNavigation.js";
 import { executionDisplay } from "../utils/runtimePresentation.js";
 import { formatSafeRuntimeEvidence, safeRuntimeText } from "../utils/runtimeRedaction.js";
 import SecurityExplanation from "../components/securityexplanation.jsx";
@@ -437,18 +438,18 @@ function RuntimeLogDetailPanel({ log, detailHeading, onClose, servers = [], tool
             Open matching tool review
           </button>
         )}
-        {log.control_plane_revision_number !== null &&
-          log.control_plane_revision_number !== undefined && onNavigate && (
-          <button type="button" className="secondary-action"
-            onClick={() => onNavigate("config")}>
-            Inspect rules (recorded revision {log.control_plane_revision_number})
-          </button>
+        {auditTargetLink("control_plane_config_revision", log.control_plane_revision_id)
+          ? <a href={auditTargetLink("control_plane_config_revision", log.control_plane_revision_id)}>
+              Inspect recorded revision {log.control_plane_revision_number ?? log.control_plane_revision_id}
+            </a>
+          : log.control_plane_revision_number != null && <a href="?view=config">
+              Browse rules · recorded revision number {log.control_plane_revision_number}
+            </a>}
+        {auditTargetLink("emergency_deny", log.emergency_deny_id) && (
+          <a href={auditTargetLink("emergency_deny", log.emergency_deny_id)}>Inspect recorded emergency restriction</a>
         )}
-        {log.emergency_deny_id && onNavigate && (
-          <button type="button" className="secondary-action"
-            onClick={() => onNavigate("emergency")}>
-            Browse emergency blocks (ID {log.emergency_deny_id})
-          </button>
+        {auditTargetLink("mcp_server", log.server_id) && (
+          <a href={auditTargetLink("mcp_server", log.server_id)}>Inspect recorded MCP server</a>
         )}
       </div>
       <ToolEffectsSummary summary={log.arguments_summary} />

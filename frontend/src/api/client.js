@@ -908,6 +908,10 @@ export async function fetchEmergencyDenyRuntimeEvents(denyId) {
   return request(`/control-plane/emergency-denies/${encodeURIComponent(denyId)}/runtime-events`);
 }
 
+export function fetchExactAuditTarget(type, id) {
+  return request("/control-plane/audit/resolve/" + encodeURIComponent(type) + "/" + encodeURIComponent(id));
+}
+
 export async function fetchAuditEvents() {
   return request("/control-plane/audit/events");
 }

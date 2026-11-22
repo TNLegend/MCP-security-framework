@@ -850,7 +850,49 @@ def check_ux22(browser, server, shots):
     return "400 findings, 20 DOM rows, first finding before governance, resources and events paged"
 
 
-CHECKS = {"UX-22": check_ux22, "UX-08": check_ux08, "UX-17": check_ux17, "UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
+
+def check_ux12(browser, server, shots):
+    revision_id = "abcd4321-0000-4000-8000-000000000012"
+    missing_id = "abcd4321-0000-4000-8000-000000000013"
+    user_id = "abcd4321-0000-4000-8000-000000000014"
+    original = RemediationAPI.read
+
+    def read(self, path, query):
+        if path == "/control-plane/audit/resolve/control_plane_config_revision/" + revision_id:
+            return {"type": "control_plane_config_revision", "id": revision_id, "label": "Revision #12", "status": "PUBLISHED"}
+        return original(self, path, query)
+
+    def route(self, req):
+        if "/api/v1/control-plane/audit/resolve/" in req.request.url and req.request.url.endswith(missing_id):
+            return req.fulfill(status=404, json={"detail": "audit_target_not_available"})
+        return super(RemediationAPI, self).route(req)
+
+    RemediationAPI.read = read
+    RemediationAPI.route = route
+    try:
+        context, page, api, errors = smoke.open_page(browser, server, "VIEWER", 1440)
+        root = page.url.split("?")[0]
+        page.goto(root + "?view=config&record=" + revision_id)
+        expect(page.get_by_role("heading", name="Revision #12")).to_be_visible()
+        page.reload()
+        expect(page.get_by_text(revision_id, exact=True)).to_be_visible()
+        page.goto(root + "?view=config&record=" + missing_id)
+        expect(page.get_by_role("alert").filter(has_text="No other configuration revision was substituted.")).to_be_visible()
+        page.go_back()
+        expect(page.get_by_role("heading", name="Revision #12")).to_be_visible()
+        page.goto(root + "?view=users&record=" + user_id)
+        expect(page.get_by_role("alert").filter(has_text="No other user was substituted.")).to_be_visible()
+        assert not any(path.endswith(user_id) for _, path, _ in api.requests)
+        if shots:
+            page.screenshot(path=str(shots / "ux12-exact-viewer-boundary-1440.png"))
+        context.close()
+    finally:
+        RemediationAPI.read = original
+        del RemediationAPI.route
+    return "exact and missing revision URLs survive reload/Back and viewer user link makes no request"
+
+
+CHECKS = {"UX-12": check_ux12, "UX-22": check_ux22, "UX-08": check_ux08, "UX-17": check_ux17, "UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
           "UX-09": check_ux09, "UX-11": check_ux11, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 

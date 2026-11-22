@@ -232,6 +232,7 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
                 tool_protocol_observation: "analysis",
                 control_plane_config_revision: "config",
                 cloud_scan: "cloud",
+                emergency_deny: "emergency",
                 cloud_environment: "cloud",
                 runtime_operation: "operations",
                 runtime_logs: "operations",
@@ -253,7 +254,9 @@ function Audit({ events = EMPTY_EVENTS, loading = false }) {
                 Use the recorded type and ID to investigate manually.</p>;
             })()}
             {selectedEvent.revision_id && <p>Recorded configuration revision:
-              <code>{selectedEvent.revision_id}</code>. Compare it with the
+              {" "}{auditTargetLink("control_plane_config_revision", selectedEvent.revision_id)
+                ? <a href={auditTargetLink("control_plane_config_revision", selectedEvent.revision_id)}><code>{selectedEvent.revision_id}</code></a>
+                : <code>{selectedEvent.revision_id}</code>}. Compare it with the
               current published revision before taking action.</p>}
           </div>
           <AuditChangedFields before={selectedEvent.before_json} after={selectedEvent.after_json} />

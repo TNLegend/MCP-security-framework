@@ -18,6 +18,17 @@ export function auditOperationLink(targetType, targetId) {
   return id ? "?view=operations&operation_id=" + encodeURIComponent(id) : null;
 }
 
+const exactTargetViews = {
+  mcp_server: "inventory",
+  control_plane_config_revision: "config",
+  emergency_deny: "emergency",
+  control_plane_user: "users",
+};
+
+export function recordTypeForView(view) {
+  return Object.keys(exactTargetViews).find((type) => exactTargetViews[type] === view) || null;
+}
+
 // Only create exact-target links supported by the destination screen's
 // identity guard. Do not substitute a generic module page for a deep link.
 export function auditTargetLink(targetType, targetId) {
@@ -29,5 +40,11 @@ export function auditTargetLink(targetType, targetId) {
       return "?view=analysis&tool=" + encodeURIComponent(id);
     }
   }
-  return null;
+  const view = exactTargetViews[targetType];
+  if (targetType === "mcp_server" && /^[1-9][0-9]{0,9}$/.test(String(targetId)) && Number(targetId) <= 2147483647) {
+    return "?view=inventory&record=" + targetId;
+  }
+  const uuid = normalizeOperationId(targetId);
+  if (uuid && targetType === "cloud_scan") return "?view=cloud&scan=" + uuid;
+  return uuid && view && targetType !== "mcp_server" ? "?view=" + view + "&record=" + uuid : null;
 }
