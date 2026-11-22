@@ -205,7 +205,74 @@ def check_ux04(browser, server, shots):
     return "ALLOW+uncertain counted as 1 allow and 1 uncertain, 0 execution; REVIEW=2 incl. STALE, BLOCKED=1, uncertain=1 each equal their landing list; queue survives reload"
 
 
-CHECKS = {"UX-02": None, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06}
+def check_ux01(browser, server, shots):
+    """UX-01: System health shows loaded builds; a mixed-version stack and an
+    unreachable component are visible and distinct from readiness."""
+    import subprocess
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=Path(__file__).parent, text=True).strip()
+    policy = "d" * 64
+
+    def provenance(api_rev, gateway, opa_digest=policy):
+        gateway_up = gateway != "down"
+        comparisons = [
+            {"key": "gateway_revision_vs_api", "label": "Gateway revision matches API revision",
+             "status": "unreachable" if not gateway_up else ("match" if gateway == api_rev else "mismatch"),
+             "expected": api_rev, "observed": None if not gateway_up else gateway, "uncommitted_changes_at_start": False},
+            {"key": "opa_policy_vs_api_start", "label": "Loaded OPA policies match the bundle the API started with",
+             "status": "match" if opa_digest == policy else "mismatch", "expected": policy, "observed": opa_digest,
+             "uncommitted_changes_at_start": False},
+        ]
+        return {"schema": "mcp.runtime_provenance.v1", "overall": "match", "comparisons": comparisons, "components": {
+            "api": {"reachable": True, "probed_at": smoke.STAMP, "build": {"revision": api_rev, "revision_source": "git_head_at_process_start", "started_at": smoke.STAMP}},
+            "gateway": {"reachable": gateway_up, "probed_at": smoke.STAMP, "build": {"revision": gateway, "revision_source": "git_head_at_process_start", "started_at": smoke.STAMP} if gateway_up else None},
+            "opa": {"reachable": True, "probed_at": smoke.STAMP, "policy_bundle_digest": opa_digest, "policy_module_count": 2}}}
+
+    scenario = {"value": provenance(head, head)}
+    original = RemediationAPI.read
+
+    def read(self, path, query):
+        if path == "/control-plane/local-runtime/provenance":
+            return scenario["value"]
+        return original(self, path, query)
+
+    RemediationAPI.read = read
+    results = []
+    try:
+        context, page, api, errors = smoke.open_page(browser, server, "VIEWER", 1440)
+        smoke.navigate(page, "System health", 1440)
+        panel = page.locator("#build-provenance")
+        overall = panel.locator("[data-provenance-overall]")
+        expect(overall).to_have_attribute("data-provenance-overall", "match")
+        expect(panel.locator('[data-provenance-check="ui_revision_vs_api"]')).to_have_attribute("data-status", "match")
+        results.append("matched stack: match")
+
+        # Deliberate mixed version: an older API and Gateway behind the current UI, changed policy.
+        scenario["value"] = provenance("b" * 40, "c" * 40, opa_digest="e" * 64)
+        panel.get_by_role("button", name="Check again").click()
+        expect(overall).to_have_attribute("data-provenance-overall", "mismatch")
+        expect(overall).to_contain_text("Mixed versions")
+        for key in ("ui_revision_vs_api", "gateway_revision_vs_api", "opa_policy_vs_api_start"):
+            expect(panel.locator(f'[data-provenance-check="{key}"]')).to_have_attribute("data-status", "mismatch")
+        # Readiness is independent: the same page still reports readiness separately.
+        expect(page.locator(".operations-ready")).to_be_visible()
+        if shots:
+            panel.screenshot(path=str(shots / "ux01-provenance-mixed-1440.png"))
+        results.append("mixed stack: 3 mismatches")
+
+        scenario["value"] = provenance(head, "down")
+        panel.get_by_role("button", name="Check again").click()
+        expect(overall).to_have_attribute("data-provenance-overall", "unreachable")
+        expect(panel.locator('[data-provenance-check="gateway_revision_vs_api"]')).to_have_attribute("data-status", "unreachable")
+        expect(panel.get_by_role("row", name="Gateway")).to_contain_text("Unreachable")
+        results.append("stopped gateway: unreachable (not mismatch)")
+        assert not errors, errors
+        context.close()
+    finally:
+        RemediationAPI.read = original
+    return "; ".join(results)
+
+
+CHECKS = {"UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 
 

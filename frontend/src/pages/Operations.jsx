@@ -2,10 +2,111 @@ import { formatServerTime } from "../utils/serverTime.js";
 import { useEffect, useRef, useState } from "react";
 
 import {
-  cleanupRuntimeLogs, fetchUnresolvedRuntimeOperations,
+  cleanupRuntimeLogs, fetchRuntimeProvenance, fetchUnresolvedRuntimeOperations,
   fetchRuntimeOperationReconciliation, safeErrorMessage,
 } from "../api/client";
+import { PROVENANCE_STATUS_LABELS, UI_BUILD, provenanceRows, shortRevision } from "../utils/buildProvenance.js";
 import "./management.css";
+
+// UX-01: which code each component is actually running, probed independently.
+// Readiness above answers "is it up"; this answers "is it the same build".
+export function BuildProvenancePanel({ load = fetchRuntimeProvenance, uiBuild = UI_BUILD }) {
+  const [state, setState] = useState({ status: "loading", data: null, error: "" });
+  const generation = useRef(0);
+
+  async function refresh() {
+    const current = ++generation.current;
+    setState((previous) => ({ ...previous, status: "loading", error: "" }));
+    try {
+      const data = await load();
+      if (current === generation.current) setState({ status: "ready", data, error: "" });
+    } catch (err) {
+      if (current === generation.current) {
+        setState((previous) => ({ status: "error", data: previous.data,
+          error: "Build provenance could not be read: " + safeErrorMessage(err) }));
+      }
+    }
+  }
+
+  useEffect(() => { void refresh(); return () => { generation.current += 1; }; }, []);
+
+  const data = state.data;
+  const { comparisons, overall } = provenanceRows(data, uiBuild);
+  const components = data?.components || {};
+  const rows = [
+    { name: "Control Center UI", build: uiBuild, probedAt: uiBuild?.started_at, reachable: true, note: "Embedded when this UI was built or served" },
+    { name: "API", build: components.api?.build, probedAt: components.api?.probed_at, reachable: Boolean(components.api) },
+    { name: "Gateway", build: components.gateway?.build, probedAt: components.gateway?.probed_at, reachable: components.gateway?.reachable },
+  ];
+  return (
+    <section className="detail-panel" id="build-provenance" aria-labelledby="build-provenance-title">
+      <div className="operations-section-heading">
+        <h3 id="build-provenance-title">Build provenance</h3>
+        <button className="tiny-action" disabled={state.status === "loading"} onClick={refresh} type="button">
+          {state.status === "loading" ? "Checking…" : "Check again"}
+        </button>
+      </div>
+      <p className={"provenance-overall provenance-" + (data ? overall : "unknown")} role="status" data-provenance-overall={data ? overall : "unavailable"}>
+        {!data ? (state.status === "loading" ? "Checking loaded builds…" : "Build provenance is unavailable.")
+          : overall === "match" ? "All probed components report the same build."
+            : overall === "mismatch" ? "Mixed versions: at least one component runs a different build than the API."
+              : overall === "unreachable" ? "At least one component could not be probed; its build is not known."
+                : "At least one component does not report a version; parity cannot be confirmed."}
+      </p>
+      {state.error && <p className="error-text" role="alert">{state.error}{data ? " Showing the previous result." : ""}</p>}
+      <div className="table-shell" role="region" aria-label="Loaded build identities" tabIndex={0}>
+        <table>
+          <thead><tr><th>Component</th><th>Loaded revision</th><th>Source</th><th>Started</th><th>Probed</th></tr></thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.name}>
+                <th scope="row">{row.name}</th>
+                <td><code title={row.build?.revision || ""}>{row.reachable === false ? "Unreachable" : shortRevision(row.build?.revision)}</code>
+                  {row.build?.worktree_dirty && <small className="provenance-dirty"> uncommitted changes at start</small>}</td>
+                <td>{row.reachable === false ? "—" : humanizeSource(row.build?.revision_source)}</td>
+                <td>{row.build?.started_at ? formatServerTime(row.build.started_at) : "—"}</td>
+                <td>{row.probedAt ? formatServerTime(row.probedAt) : "—"}</td>
+              </tr>
+            ))}
+            <tr>
+              <th scope="row">Policy engine (OPA)</th>
+              <td><code>{components.opa?.reachable === false ? "Unreachable" : shortRevision(components.opa?.policy_bundle_digest)}</code>
+                <small> policy digest · {components.opa?.policy_module_count ?? "?"} module(s)</small></td>
+              <td>Loaded policies reported by OPA</td>
+              <td>—</td>
+              <td>{components.opa?.probed_at ? formatServerTime(components.opa.probed_at) : "—"}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <ul className="provenance-checks">
+        {comparisons.map((item) => (
+          <li key={item.key} data-provenance-check={item.key} data-status={item.status}>
+            <span className={"provenance-badge provenance-" + item.status}>{PROVENANCE_STATUS_LABELS[item.status]}</span>
+            {" "}{item.label}
+            {item.status === "mismatch" && (
+              <small> · expected {shortRevision(item.expected)}, observed {shortRevision(item.observed)}</small>
+            )}
+            {item.status === "match" && item.uncommitted_changes_at_start && (
+              <small> · same revision, but uncommitted changes existed at start</small>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="hint-text">Revisions are captured when each process starts; a later checkout on disk does not change them. “Version unknown” means the component did not report one, which is different from being down.</p>
+    </section>
+  );
+}
+
+function humanizeSource(source) {
+  return {
+    release_environment: "Release pipeline",
+    git_head_at_process_start: "Git HEAD at process start",
+    git_head_at_build: "Git HEAD at UI build",
+    git_head_at_dev_server_start: "Git HEAD at dev server start",
+    unknown: "Not reported",
+  }[source] || "Not reported";
+}
 
 
 function Operations({ initialOperationId = null, initialSection = null, isAdmin = false, loading = false, onNavigate, onRefresh, summary }) {
@@ -136,6 +237,7 @@ function Operations({ initialOperationId = null, initialSection = null, isAdmin 
 
       <nav aria-label="System health sections" className="management-jump-links">
         <a href="#service-readiness">Service readiness</a>
+        <a href="#build-provenance">Build provenance</a>
         <a href="#recent-activity">Recent activity</a>
         <a href="#storage-diagnostics">Storage diagnostics</a>
         <a href="#log-retention">Log retention</a>
@@ -157,6 +259,8 @@ function Operations({ initialOperationId = null, initialSection = null, isAdmin 
           ))}
         </div>
       </section>
+
+      <BuildProvenancePanel />
 
       <section className="detail-panel" aria-label="Installation and recovery diagnostics">
         <h3>Installation and recovery checks</h3>

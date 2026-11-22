@@ -552,6 +552,11 @@ export async function fetchM4Semantics(toolId) {
   });
 }
 
+// UX-01: independently probed loaded build identities (API, Gateway, OPA).
+export async function fetchRuntimeProvenance() {
+  return request("/control-plane/local-runtime/provenance");
+}
+
 export async function fetchToolAnalysisBundle(toolId) {
   const bundle = await settleNamedRequests({
     status: () => request(`/tool-analysis/tools/${toolId}/status`),

@@ -238,8 +238,12 @@ class MCPGateway:
         app = FastAPI(title="MCP Security Gateway", docs_url=None, redoc_url=None)
 
         @app.get("/health")
-        async def gateway_health() -> dict[str, str]:
-            return {"status": "ok", "service": "mcp-security-gateway"}
+        async def gateway_health() -> dict:
+            from common.build_identity import get_build_identity
+
+            # UX-01: identity captured at Gateway process start, never re-read.
+            return {"status": "ok", "service": "mcp-security-gateway",
+                    "build": get_build_identity("gateway")}
 
         @app.post("/mcp/{server_id}")
         async def mcp_endpoint(server_id: int, request: Request) -> Response:

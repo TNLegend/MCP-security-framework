@@ -69,6 +69,12 @@ app.include_router(m4_semantics_router, prefix=settings.api_prefix)
 app.include_router(control_plane_audit_router, prefix=settings.api_prefix)
 app.include_router(emergency_deny_router, prefix=settings.api_prefix)
 
+# UX-01: capture the loaded build identity once, after every module is
+# imported, so /health reports what this process runs (not today's disk).
+from common.build_identity import get_build_identity  # noqa: E402
+
+get_build_identity("api")
+
 
 @app.get("/")
 def root():

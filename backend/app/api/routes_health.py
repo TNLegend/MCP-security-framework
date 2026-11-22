@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from common.build_identity import get_build_identity
 from app.db.database import engine, get_db
 from app.services.control_plane_auth import AuthenticatedControlPlaneUser, require_authenticated_user
 from app.services.local_runtime_manager import LocalRuntimeManager
@@ -21,7 +22,21 @@ def health_check():
         "service": settings.app_name,
         "version": settings.app_version,
         "environment": settings.environment,
+        # UX-01: what this process loaded at start; never today's disk HEAD.
+        "build": get_build_identity("api"),
     }
+
+
+@router.get("/control-plane/local-runtime/provenance")
+def local_runtime_provenance(
+    _: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
+):
+    """UX-01: independently probed build identities and their comparison.
+
+    Reachability, a known-but-different revision and an unknown revision are
+    reported as distinct states. Readiness stays a separate endpoint.
+    """
+    return LocalRuntimeManager().provenance(get_build_identity("api"))
 
 
 

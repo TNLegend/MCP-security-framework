@@ -359,6 +359,68 @@ class LocalRuntimeManager:
             managed_by_framework=self._is_owned_component("mcp_lab"),
         )
 
+    def provenance(self, api_identity: dict[str, Any], *, json_fetcher: Callable[[str], Any] | None = None) -> dict[str, Any]:
+        """UX-01: probe each component's *loaded* identity independently.
+
+        API identity is this process's start-time capture. Gateway identity is
+        read from the running Gateway's /health. OPA identity is a content
+        digest of the policy modules the running OPA reports, compared with
+        the policy bundle this API process was started with.
+        """
+        from common.build_identity import policy_bundle_digest
+
+        fetch = json_fetcher or _fetch_json
+
+        def now() -> str:
+            return datetime.now(timezone.utc).isoformat()
+
+        components: dict[str, dict[str, Any]] = {
+            "api": {"component": "api", "reachable": True, "build": api_identity, "probed_at": now()},
+        }
+        try:
+            body = fetch(f"{gateway_base_url()}/health")
+            build = body.get("build") if isinstance(body, dict) else None
+            components["gateway"] = {"component": "gateway", "reachable": True,
+                                     "build": build if isinstance(build, dict) else None,
+                                     "probed_at": now()}
+        except Exception:  # unreachable is a distinct state, never "unknown version"
+            components["gateway"] = {"component": "gateway", "reachable": False, "build": None, "probed_at": now()}
+        try:
+            body = fetch(f"{settings.opa_base_url.rstrip('/')}/v1/policies")
+            modules = [
+                module for module in (body.get("result") or [])
+                if isinstance(module, dict) and not str(module.get("id", "")).endswith("_test.rego")
+            ]
+            components["opa"] = {
+                "component": "opa", "reachable": True,
+                "policy_bundle_digest": policy_bundle_digest(str(m.get("raw", "")) for m in modules),
+                "policy_module_count": len(modules), "probed_at": now(),
+            }
+        except Exception:
+            components["opa"] = {"component": "opa", "reachable": False,
+                                 "policy_bundle_digest": None, "policy_module_count": None, "probed_at": now()}
+
+        gateway_build = components["gateway"].get("build") or {}
+        comparisons = [
+            _provenance_comparison(
+                "gateway_revision_vs_api", "Gateway revision compared with API revision",
+                api_identity.get("revision"), gateway_build.get("revision"),
+                reachable=components["gateway"]["reachable"],
+                dirty=bool(api_identity.get("worktree_dirty") or gateway_build.get("worktree_dirty")),
+            ),
+            _provenance_comparison(
+                "opa_policy_vs_api_start", "Loaded OPA policies compared with the bundle the API started with",
+                api_identity.get("policy_bundle_digest_at_start"),
+                components["opa"].get("policy_bundle_digest"),
+                reachable=components["opa"]["reachable"], dirty=False,
+            ),
+        ]
+        states = {item["status"] for item in comparisons}
+        overall = ("mismatch" if "mismatch" in states else "unreachable" if "unreachable" in states
+                   else "unknown" if "unknown" in states else "match")
+        return {"schema": "mcp.runtime_provenance.v1", "generated_at": now(), "overall": overall,
+                "components": components, "comparisons": comparisons}
+
     def identity_provider_status(self) -> LocalRuntimeComponentStatus:
         endpoint = settings.agent_identity_jwks_url
         if not endpoint or endpoint.startswith("<"):
@@ -618,6 +680,27 @@ def _rotate_process_log(log_path: Path, backup_count: int) -> None:
             target.unlink()
         if source.exists():
             source.replace(target)
+
+
+def _fetch_json(url: str) -> Any:
+    with urlopen(url, timeout=1.0) as response:
+        if not 200 <= response.getcode() < 300:
+            raise OSError("provenance_probe_http_error")
+        return json.loads(response.read(2_000_000))
+
+
+def _provenance_comparison(key: str, label: str, expected: Any, observed: Any, *,
+                           reachable: bool, dirty: bool) -> dict[str, Any]:
+    if not reachable:
+        status = "unreachable"
+    elif not expected or not observed:
+        status = "unknown"
+    elif expected == observed:
+        status = "match"
+    else:
+        status = "mismatch"
+    return {"key": key, "label": label, "status": status, "expected": expected,
+            "observed": observed, "uncommitted_changes_at_start": dirty}
 
 
 def backend_base_url() -> str:
