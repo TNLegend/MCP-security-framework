@@ -519,3 +519,10 @@ form .button-row > button[type="submit"]:not(.danger-action, .secondary-action, 
 
 .build-security-page :is(.build-target-form, .build-inventory-flow) select { max-width: min(100%, 34rem); }
 
+
+@container (max-width: 680px) { .trusted-adapter-catalog .status-pill { white-space: nowrap; padding: 2px 8px; font-size: var(--ds-text-xs); letter-spacing: 0; } }
+
+
+.audit-correlation-bar > .toolbar-actions { margin-left: 0; }
+.audit-correlation-bar > .toolbar-wide { max-width: 440px; }
+
