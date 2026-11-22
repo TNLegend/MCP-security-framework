@@ -2696,6 +2696,16 @@ code {
   color: #64748b;
 }
 
+/* UX-23: cards align to the top and badges keep their intrinsic height,
+   so a short card next to a card with a long error never stretches its badge. */
+.build-scanner-run-list { align-items: start; }
+.build-scanner-run-list article { align-content: start; }
+.build-scanner-run-list article > .badge { justify-self: start; align-self: start; height: auto; }
+.build-scanner-run-list article:target, .build-scanner-run-list article:focus { outline: 2px solid #1d4ed8; outline-offset: 2px; }
+.build-scan-facts { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) { .build-scan-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .build-scan-facts { grid-template-columns: 1fr; } }
+
 .build-findings-heading {
   margin-top: 4px;
 }

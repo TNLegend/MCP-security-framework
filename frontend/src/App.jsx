@@ -491,6 +491,7 @@ function App() {
     if (activePage === "build") {
       return (
         <BuildSecurity
+          activeRevision={activeRevision}
           isAdmin={isAdmin}
           onRefresh={loadData}
           revisions={configRevisions}

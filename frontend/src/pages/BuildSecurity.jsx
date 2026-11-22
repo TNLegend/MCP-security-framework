@@ -50,6 +50,7 @@ export function buildDraftGatePreview(mode, status, scannersComplete) {
 }
 
 function BuildSecurity({
+  activeRevision = null,
   isAdmin = false,
   onRefresh = null,
   revisions = [],
@@ -924,6 +925,7 @@ function BuildSecurity({
           </div>
         )}
         <BuildScanDetail
+          activeRevision={activeRevision}
           detail={selectedScan}
           isAdmin={isAdmin}
           loading={detailLoading}
@@ -1116,7 +1118,58 @@ function InventorySourceContext({ server, binding, loading }) {
   );
 }
 
-function BuildScanDetail({ detail, isAdmin, loading, source }) {
+// UX-10: four independent facts for one Build scan. Each comes from its own
+// record; a draft attachment is never presented as runtime enforcement.
+const GATE_MODE_LABELS = {
+  DISABLED: "Off (no runtime Build gate)",
+  ALLOW_WARN: "Audit only (allows PASS and WARN)",
+  REQUIRE_PASS: "Enforce (requires PASS)",
+};
+
+export function buildScanFacts(detail, activeRevision) {
+  const runs = detail?.scanner_runs || [];
+  const completed = runs.filter((run) => run.status === "COMPLETED");
+  const incomplete = runs.filter((run) => run.status !== "COMPLETED");
+  const requiredIncomplete = incomplete.filter((run) => run.required !== false);
+  const assessment = detail?.assessment || null;
+  const settings = activeRevision?.content?.build_security;
+  const bound = settings?.evidence?.find?.((item) => item.scan_id === detail?.scan?.id) || null;
+  let gate;
+  if (!activeRevision) gate = { label: "Active signed configuration unavailable", detail: "Runtime gate behaviour cannot be stated from this page." };
+  else if (!settings) gate = { label: "Not recorded in the active signed revision", detail: "Revision " + activeRevision.revision_number + " has no Build settings." };
+  else gate = {
+    label: GATE_MODE_LABELS[settings.mode] || settings.mode,
+    detail: (bound ? "This scan is the bound evidence in active signed revision " : "This scan is not bound evidence in active signed revision ")
+      + activeRevision.revision_number + ". A draft attachment alone has no runtime effect.",
+    bound: Boolean(bound),
+  };
+  return {
+    execution: { label: completed.length + " of " + runs.length + " scanner run(s) completed",
+      detail: incomplete.length ? "Not completed: " + incomplete.map((run) => run.scanner_id + " (" + run.status.toLowerCase() + ")").join(", ") + "." : "Every recorded scanner run completed." },
+    coverage: { label: requiredIncomplete.length ? "Required coverage incomplete" : runs.length ? "Required scanners complete" : "No scanner runs recorded",
+      detail: requiredIncomplete.length ? "Missing coverage is not a PASS, even with zero findings." : "Coverage describes the recorded scanners only." },
+    assessment: assessment ? { label: assessment.status + " · " + assessment.critical_count + " critical / " + assessment.high_count + " high",
+      detail: "Policy " + assessment.policy_version + "." } : { label: "No assessment recorded", detail: "" },
+    gate,
+  };
+}
+
+const SEVERITY_REASON = {
+  critical_findings: "CRITICAL", high_findings: "HIGH", medium_findings: "MEDIUM", low_findings: "LOW", info_findings: "INFO",
+};
+
+export function buildReasonTarget(code, detail) {
+  if (SEVERITY_REASON[code]) return { kind: "severity", severity: SEVERITY_REASON[code], label: "Show " + SEVERITY_REASON[code].toLowerCase() + " findings" };
+  if (code === "required_scanner_incomplete") {
+    const run = (detail?.scanner_runs || []).find((item) => item.status !== "COMPLETED" && item.required !== false);
+    return run ? { kind: "scanner", scannerId: run.scanner_id, label: "Open " + run.scanner_id + " run" }
+      : { kind: "unknown", label: "Associated scanner run not identified" };
+  }
+  return { kind: "unknown", label: "No exact record is associated with this code" };
+}
+
+function BuildScanDetail({ activeRevision = null, detail, isAdmin, loading, source }) {
+  const [findingRequest, setFindingRequest] = useState(null);
   if (loading) {
     return <section className="detail-panel"><p className="workflow-progress" role="status">Loading Build scan evidence…</p></section>;
   }
@@ -1174,25 +1227,21 @@ function BuildScanDetail({ detail, isAdmin, loading, source }) {
         </div>
       </div>
 
-      {assessment && (
-        <div className="build-assessment-grid">
-          <article className="status-panel compact-status">
-            <span>Assessment</span>
-            <strong>{assessment.status}</strong>
-            <small>{assessment.summary}</small>
-          </article>
-          <article className="status-panel compact-status">
-            <span>Critical / High</span>
-            <strong>{assessment.critical_count} / {assessment.high_count}</strong>
-            <small>Policy {assessment.policy_version}</small>
-          </article>
-          <article className="status-panel compact-status">
-            <span>Required scanners</span>
-            <strong>{assessment.required_scanners_complete ? "COMPLETE" : "INCOMPLETE"}</strong>
-            <small>{(assessment.reason_codes || []).length ? assessment.reason_codes.length + " recorded assessment reason code(s)" : "No additional reason codes recorded"}</small>
-          </article>
-        </div>
-      )}
+      {(() => {
+        const facts = buildScanFacts(detail, activeRevision);
+        return (
+          <div className="build-assessment-grid build-scan-facts" aria-label="Build scan facts" role="group">
+            {[["Execution", facts.execution, "execution"], ["Coverage", facts.coverage, "coverage"],
+              ["Build assessment", facts.assessment, "assessment"], ["Signed gate", facts.gate, "gate"]].map(([title, fact, key]) => (
+              <article className="status-panel compact-status" data-fact={key} key={key}>
+                <span>{title}</span>
+                <strong>{fact.label}</strong>
+                {fact.detail && <small>{fact.detail}</small>}
+              </article>
+            ))}
+          </div>
+        );
+      })()}
 
       {assessment && <div className="detail-panel" aria-label="Build assessment explanation">
         <h4>Why this Build assessment?</h4>
@@ -1210,16 +1259,22 @@ function BuildScanDetail({ detail, isAdmin, loading, source }) {
           independent runtime checks.</p>
         {(assessment.reason_codes || []).length > 0 && <details>
           <summary>Recorded assessment reasons ({assessment.reason_codes.length})</summary>
-          <ul>{assessment.reason_codes.map((code, index) => <li key={index}>
-            <code>{code}</code> — investigate the associated policy condition
-            using scanner execution and findings below.
-          </li>)}</ul>
+          <ul>{assessment.reason_codes.map((code, index) => {
+            const target = buildReasonTarget(code, detail);
+            return <li key={index} data-reason-code={code}>
+              <code>{code}</code>{" "}
+              {target.kind === "severity" && <button className="tiny-action" type="button"
+                onClick={() => setFindingRequest({ severity: target.severity, nonce: Date.now() })}>{target.label}</button>}
+              {target.kind === "scanner" && <a className="tiny-action" href={"#build-scanner-run-" + target.scannerId}>{target.label}</a>}
+              {target.kind === "unknown" && <span className="hint-text">{target.label}</span>}
+            </li>;
+          })}</ul>
         </details>}
       </div>}
       <h4>Scanner runs</h4>
       <div className="build-scanner-run-list">
         {detail.scanner_runs.map((run) => (
-          <article key={run.id}>
+          <article id={"build-scanner-run-" + run.scanner_id} key={run.id} tabIndex={-1}>
             <strong>{run.scanner_id}</strong>
             <span>{run.scanner_version || "-"}</span>
             <StatusBadge value={run.status} />
@@ -1235,7 +1290,7 @@ function BuildScanDetail({ detail, isAdmin, loading, source }) {
         ))}
       </div>
 
-      <BuildFindingsBrowser detail={detail} isAdmin={isAdmin} source={source} />
+      <BuildFindingsBrowser detail={detail} isAdmin={isAdmin} request={findingRequest} source={source} />
     </section>
   );
 }
@@ -1254,7 +1309,7 @@ export function findingsRangeText(page) {
   return "Showing " + from + "–" + to + " of " + page.total + filtered + ".";
 }
 
-export function BuildFindingsBrowser({ detail, isAdmin, source, load = fetchBuildScanFindings }) {
+export function BuildFindingsBrowser({ detail, isAdmin, source, request = null, load = fetchBuildScanFindings }) {
   const scanId = detail?.scan?.id;
   const scanners = [...new Set((detail?.scanner_runs || []).map((run) => run.scanner_id))];
   const [draft, setDraft] = useState(EMPTY_FINDING_FILTERS);
@@ -1269,6 +1324,16 @@ export function BuildFindingsBrowser({ detail, isAdmin, source, load = fetchBuil
     setOffset(0);
     setState({ status: "idle", page: null, error: "" });
   }, [scanId]);
+
+  // UX-10: an assessment reason opens the matching findings filter.
+  useEffect(() => {
+    if (!request?.severity) return;
+    const next = { ...EMPTY_FINDING_FILTERS, severity: request.severity };
+    setDraft(next);
+    setApplied(next);
+    setOffset(0);
+    document.getElementById("build-findings-title")?.scrollIntoView({ block: "start" });
+  }, [request?.nonce]);
 
   useEffect(() => {
     if (!scanId) return undefined;

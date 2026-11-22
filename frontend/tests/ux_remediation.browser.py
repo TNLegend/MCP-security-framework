@@ -608,7 +608,76 @@ def check_ux05(browser, server, shots):
     return "Home Add MCP opens ?view=inventory&action=connect with form open; upstream copy action; observation approval + REVIEW_REQUIRED blocker"
 
 
-CHECKS = {"UX-05": check_ux05, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
+def check_ux10(browser, server, shots):
+    """UX-10 (+UX-23 badges): execution, coverage, assessment and signed gate are
+    separate; reasons link to the exact scanner run or findings filter; a draft
+    attachment is not presented as enforcement; badges keep intrinsic height."""
+    build = "/control-plane/build-security"
+    scan_id = "11111111-2222-4333-8444-555555555555"
+    scan = {"id": scan_id, "target_type": "LOCAL_DIRECTORY", "display_name": "partial-scan", "status": "FAILED",
+            "created_at": smoke.STAMP, "source_fingerprint": "f" * 64}
+    runs = [{"id": "r1", "scanner_id": "semgrep", "status": "COMPLETED", "required": True, "finding_count": 1},
+            {"id": "r2", "scanner_id": "trivy", "status": "TIMED_OUT", "required": True, "finding_count": 0,
+             "error_code": "scanner_timeout_after_600_seconds_while_reading_a_very_large_dependency_lockfile"}]
+    critical = {"id": "crit-1", "build_scan_id": scan_id, "scanner_run_id": "r1", "scanner_id": "semgrep",
+                "rule_id": "rule.crit", "category": "code", "severity": "CRITICAL", "confidence": "HIGH",
+                "finding_state": "NEW", "fingerprint": "f" * 64, "title": "Critical synthetic", "file_path": "a.py",
+                "line_start": 1, "references": [], "safe_metadata": {}, "created_at": smoke.STAMP}
+    assessment = {"id": "a1", "build_scan_id": scan_id, "status": "ERROR", "policy_version": "build-policy-v1",
+                  "required_scanners_complete": False, "reason_codes": ["required_scanner_incomplete", "critical_findings"],
+                  "summary": "Incomplete.", "critical_count": 1, "high_count": 0, "medium_count": 0, "low_count": 0,
+                  "info_count": 0, "created_at": smoke.STAMP}
+    detail = {"scan": scan, "scanner_runs": runs, "findings": [critical], "finding_total": 1,
+              "findings_truncated": False, "assessment": assessment}
+    active = {"id": "rev", "revision_number": 7, "status": "PUBLISHED", "content_hash": "a" * 64,
+              "content": {"build_security": {"mode": "REQUIRE_PASS", "max_evidence_age_hours": 168, "evidence": []}}}
+    original = RemediationAPI.read
+
+    def read(self, path, query):
+        if path == build + "/scans":
+            return [scan]
+        if path == build + f"/scans/{scan_id}":
+            return detail
+        if path == build + f"/scans/{scan_id}/findings":
+            sev = (query.get("severity") or [""])[0]
+            rows = [critical] if sev in ("", "CRITICAL") else []
+            return {"scope": "PERSISTED_SCAN_FINDINGS", "items": rows, "total": len(rows), "unfiltered_total": 1,
+                    "offset": 0, "limit": 50, "returned": len(rows), "has_more": False, "filters": {}}
+        if path == "/control-plane/config/active":
+            return active
+        return original(self, path, query)
+
+    RemediationAPI.read = read
+    try:
+        context, page, api, errors = smoke.open_page(browser, server, "ADMIN", 1440)
+        smoke.navigate(page, "Code scans", 1440)
+        page.get_by_role("region", name="Build scan history table").get_by_role("button", name="partial-scan").click()
+        facts = page.get_by_role("group", name="Build scan facts")
+        expect(facts.locator('[data-fact="execution"]')).to_contain_text("1 of 2 scanner run(s) completed")
+        expect(facts.locator('[data-fact="execution"]')).to_contain_text("trivy (timed_out)")
+        expect(facts.locator('[data-fact="coverage"]')).to_contain_text("Required coverage incomplete")
+        expect(facts.locator('[data-fact="assessment"]')).to_contain_text("ERROR · 1 critical / 0 high")
+        expect(facts.locator('[data-fact="gate"]')).to_contain_text("Enforce (requires PASS)")
+        expect(facts.locator('[data-fact="gate"]')).to_contain_text("not bound evidence in active signed revision 7")
+        page.get_by_text("Recorded assessment reasons (2)").click()
+        page.get_by_role("link", name="Open trivy run").click()
+        assert page.url.endswith("#build-scanner-run-trivy")
+        page.get_by_role("button", name="Show critical findings").click()
+        expect(page.get_by_label("Severity")).to_have_value("CRITICAL")
+        expect(page.get_by_role("region", name="Build findings").locator('[data-finding-id="crit-1"]')).to_be_visible()
+        heights = page.evaluate("""() => [...document.querySelectorAll('.build-scanner-run-list article > .badge')]
+            .map(b => b.getBoundingClientRect().height)""")
+        assert len(heights) == 2 and max(heights) - min(heights) < 4, heights
+        if shots:
+            page.locator(".build-scan-detail").screenshot(path=str(shots / "ux10-build-scan-facts-1440.png"))
+        assert not errors, errors
+        context.close()
+    finally:
+        RemediationAPI.read = original
+    return f"timed-out trivy + critical semgrep shown separately; signed gate REQUIRE_PASS not bound; reasons link to run and filter; badge heights {heights}"
+
+
+CHECKS = {"UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
           "UX-09": check_ux09, "UX-11": check_ux11, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 
