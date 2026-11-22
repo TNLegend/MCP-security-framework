@@ -6,6 +6,7 @@ services, accounts or provider calls). Each check is named by issue ID.
 Usage: python ux_remediation.browser.py <dist> --chrome <chrome.exe> [--screenshots DIR] [--only UX-03,...]
 """
 import argparse
+import re
 from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
@@ -677,7 +678,72 @@ def check_ux10(browser, server, shots):
     return f"timed-out trivy + critical semgrep shown separately; signed gate REQUIRE_PASS not bound; reasons link to run and filter; badge heights {heights}"
 
 
-CHECKS = {"UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
+
+def check_ux21(browser, server, shots):
+    scan_id = "dddd4444-0000-4000-8000-000000000004"
+    role = "arn:aws:iam::123456789012:role/QA/" + "LongSyntheticRole" * 4
+    scan = {"id": scan_id, "kind": "IAM_MCP", "status": "COMPLETED",
+            "environment_id": "env-qa", "finding_count": 28, "resource_count": 1, "unknown_checks": 4}
+    comparisons = []
+    for index in range(32):
+        outside = index < 25
+        comparisons.append({
+            "id": f"comparison-{index}", "role_arn": role,
+            "status": "OUTSIDE_MCP_MAPPING" if outside else "POTENTIAL_MISSING" if index < 28 else "UNKNOWN",
+            "tool_name": None if outside else "synthetic_tool",
+            "observed_actions": [f"ssm:FixtureAction{index}"] if outside else [],
+            "expected_actions": [] if outside else ["s3:GetObject"],
+            "expected_resource_arn": "*", "identity_permission_status": "IDENTITY_ALLOW_OUTSIDE_MAPPING",
+            "effective_permission_status": "UNKNOWN", "linked_finding_ids": [f"finding-{index}"] if index < 28 else [],
+            "notes": "IAM_ALLOW_ACTION_NOT_IN_MCP_MAPPING",
+            "evidence_summary": {"id": f"evidence-{index}", "summary": {
+                "comparison_id": f"comparison-{index}", "direction": "IAM_POLICY_TO_APPROVED_MCP_NEEDS" if outside else "MCP_NEED_TO_IAM",
+                "action": f"ssm:FixtureAction{index}" if outside else "s3:GetObject", "resource": "*",
+                "policy_statement_index": index, "role_usage_operator_declared": "SHARED",
+                "effective_access_limitations": ["SCP_NOT_EVALUATED"]}}})
+    findings = [{"id": f"finding-{i}", "comparison_id": f"comparison-{i}", "rule_id": "IAM_FIXTURE",
+                 "title": "Synthetic observation", "severity": "MEDIUM"} for i in range(28)]
+    original = RemediationAPI.read
+
+    def read(self, path, query):
+        base = smoke.CLOUD + "/scans/" + scan_id
+        if path == base:
+            return {"scan": scan, "resources": [], "events": [], "evidence": [], "findings": findings,
+                    "collection_coverage": {}}
+        if path == base + "/iam-comparisons/page":
+            return {"items": comparisons, "total": 32, "offset": 0, "limit": 100, "returned": 32, "has_more": False}
+        if path.startswith(base + "/"):
+            return []
+        return original(self, path, query)
+
+    RemediationAPI.read = read
+    try:
+        context, page, api, errors = smoke.open_page(browser, server, "ADMIN", 1440)
+        root = page.url.split("?")[0]
+        page.goto(root + "?view=cloud&scan=" + scan_id)
+        worklist = page.locator(".iam-worklist")
+        expect(worklist.get_by_text("Outside the approved mapping (25)", exact=True)).to_be_visible()
+        expect(worklist.get_by_text("ssm (25)", exact=True)).to_be_visible()
+        expect(worklist.locator(".iam-row")).to_have_count(32)
+        selected = worklist.get_by_role("button", name=re.compile(r"ssm:FixtureAction4\b"))
+        selected.click()
+        evidence = page.get_by_role("dialog", name="IAM comparison evidence")
+        expect(evidence.get_by_role("heading", name="Approved MCP need")).to_be_visible()
+        expect(evidence.get_by_role("heading", name="Observed IAM identity-policy statement")).to_be_visible()
+        expect(evidence.get_by_text("UNKNOWN", exact=True)).to_be_visible()
+        expect(evidence.get_by_text("scp not evaluated", exact=True)).to_be_visible()
+        if shots:
+            evidence.screenshot(path=str(shots / "ux21-iam-evidence-1440.png"))
+        evidence.get_by_role("button", name="Request exception for linked finding finding-4").click()
+        expect(page.get_by_label("Finding to review")).to_have_value("finding-4")
+        assert not errors, errors
+        context.close()
+    finally:
+        RemediationAPI.read = original
+    return "32 exact rows grouped, observed and approved scope separated, UNKNOWN preserved, exact exception selected"
+
+
+CHECKS = {"UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
           "UX-09": check_ux09, "UX-11": check_ux11, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 

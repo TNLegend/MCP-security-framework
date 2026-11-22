@@ -1,6 +1,8 @@
 import { formatServerTime } from "../utils/serverTime.js";
 import { useEffect, useRef, useState } from "react";
 import { validateRecordedPage } from "../utils/recordedPage.js";
+import { groupIamComparisons, iamActionLabel } from "../utils/iamcomparisongroups.js";
+import { useDialogFocus } from "../utils/useDialogFocus.js";
 import "./cloudSecurity.css";
 import {
   manualMappingCoverage, isMappingBoundToCurrentContext, canRequestManualAudit,
@@ -398,17 +400,6 @@ export function cloudError(err) {
   return key ? messages[key] : raw;
 }
 
-function iamAssessmentLabel(value) {
-  const labels = {
-    EXPLICIT_DENY: "Explicit IAM denial",
-    POTENTIAL_EXCESS: "Potentially broader AWS permissions",
-    OUTSIDE_MCP_MAPPING: "IAM grant outside this MCP's approved mapping",
-    POTENTIAL_MISSING: "Possible missing IAM permission",
-    UNKNOWN: "Not fully verified",
-  };
-  return labels[value] || "Not assessed";
-}
-
 function iamAssessmentExplanation(value) {
   const explanations = {
     IAM_IDENTITY_EXPLICIT_DENY:
@@ -515,10 +506,17 @@ export function IAMPolicyEvidence({ item }) {
       <p><strong>Source of comparison:</strong> {reverse
         ? "IAM identity-policy Allow compared against the approved MCP mapping"
         : "Signed MCP capability compared against observed IAM identity-policy statements"}.</p>
-      <p><strong>Approved MCP need:</strong> {reverse
+      <div className="iam-evidence-sides">
+        <section><h5>Approved MCP need</h5>
+        <p>{reverse
         ? "No approved matching MCP need was demonstrated for this observation."
         : <><code>{item.expected_actions.join(", ") || facts.action || "Unresolved"}</code>
             {" on "}<code>{item.expected_resource_arn || facts.resource || "Unresolved"}</code></>}</p>
+        {facts.effect_id && <p>Signed effect: <code>{facts.effect_id}</code></p>}
+        {(item.signed_revision ?? facts.signed_revision) != null &&
+          <p>Signed contract revision: <code>{item.signed_revision ?? facts.signed_revision}</code></p>}
+        </section>
+        <section><h5>Observed IAM identity-policy statement</h5>
       {reverse && <p><strong>IAM statement:</strong> policy statement index
         {Number.isInteger(facts.policy_statement_index) && facts.policy_statement_index >= 0
           ? " " + (facts.policy_statement_index + 1) : " not recorded"};
@@ -538,6 +536,8 @@ export function IAMPolicyEvidence({ item }) {
           {!clause.action_broader && !clause.resource_broader && " This is an exact action/resource match."}
         </li>
       ))}</ul>}
+        </section>
+      </div>
       {matched?.clause_examples_truncated && <p role="note">Only the first
         matching clause examples are shown; the evidence is not exhaustive.</p>}
       {Array.isArray(facts.warning_codes) && facts.warning_codes.length > 0 && (
@@ -569,17 +569,84 @@ export function IAMPolicyEvidence({ item }) {
         comparison. SCPs, permissions boundaries, session policies, resource
         policies and runtime identity use may further restrict access.</p>
       <p><strong>Next action:</strong> Check the specific policy statement and
-        signed mapping. For a shared role, review other consumers before
-        changing AWS permissions. Do not equate a matching Allow with effective access.</p>
+        signed mapping. For a shared role, verify which workloads use it. A matching Allow does not establish effective access.</p>
       <details><summary>Evidence reference</summary>
         <p>Evidence ID: <code>{evidence.id}</code></p>
         <p>Observation SHA-256: <code>{evidence.sha256}</code></p>
         <p>Policy digest: <code>{item.policy_digest || "Not recorded"}</code></p>
+        <p>Approved mapping digest: <code>{facts.approved_mapping_digest || "Not recorded"}</code></p>
+        <p>Signed revision hash: <code>{facts.signed_revision_hash || "Not recorded"}</code></p>
         <p>Recorded at: {formatServerTime(evidence.checked_at)}</p>
       </details>
     </div>
   );
 }
+function IAMComparisonWorklist({ rows, findingIds, onSelectFinding }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const dialogRef = useRef(null);
+  const selected = rows.find((row) => row.id === selectedId);
+  useDialogFocus(Boolean(selected), dialogRef, { focusContainer: true });
+
+  return <>
+    <div className="iam-worklist">
+      {groupIamComparisons(rows).map((role) => (
+        <section key={role.role} className="iam-role">
+          <h5>{role.role} ({role.count})</h5>
+          {role.situations.map((group) => (
+            <details key={group.situation} open>
+              <summary>{group.situation} ({group.count})</summary>
+              {group.services.map((service) => (
+                <section key={service.service} className="iam-service">
+                  <h6>{service.service} ({service.rows.length})</h6>
+                  <ul>{service.rows.map((row) => (
+                    <li key={row.id}>
+                      <button type="button" className="iam-row"
+                        onClick={() => setSelectedId(row.id)}>
+                        <code>{iamActionLabel(row)}</code>
+                        <span>{row.tool_name || "Role grant"} · {row.id.slice(0, 8)}</span>
+                        <span>Inspect evidence</span>
+                      </button>
+                    </li>
+                  ))}</ul>
+                </section>
+              ))}
+            </details>
+          ))}
+        </section>
+      ))}
+    </div>
+    {selected && <div className="modal-backdrop iam-evidence-backdrop">
+      <section ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true"
+        aria-labelledby="iam-evidence-heading" className="modal-panel iam-evidence-drawer"
+        onKeyDown={(event) => { if (event.key === "Escape") setSelectedId(null); }}>
+        <div className="iam-evidence-heading">
+          <div><h4 id="iam-evidence-heading">IAM comparison evidence</h4>
+            <code>{iamActionLabel(selected)}</code></div>
+          <button type="button" onClick={() => setSelectedId(null)}>Close evidence</button>
+        </div>
+        <dl className="iam-evidence-metadata">
+          <div><dt>IAM role</dt><dd><code>{selected.role_arn || "Not verified"}</code></dd></div>
+          <div><dt>Identity-policy observation</dt><dd>{(selected.identity_permission_status || "Not recorded").replaceAll("_", " ").toLowerCase()}</dd></div>
+          <div><dt>Effective access</dt><dd>UNKNOWN</dd></div>
+        </dl>
+        {Array.isArray(selected.evidence_summary?.summary?.effective_access_limitations) &&
+          <ul aria-label="Effective access limitations">
+            {selected.evidence_summary.summary.effective_access_limitations.map((limit, index) =>
+              <li key={index}>{String(limit).replaceAll("_", " ").toLowerCase()}</li>)}
+          </ul>}
+        <IAMPolicyEvidence item={selected} />
+        {onSelectFinding && selected.linked_finding_ids?.filter((id) => findingIds.has(id)).map((id) => (
+          <button key={id} type="button" className="secondary-action"
+            aria-label={"Request exception for linked finding " + id}
+            onClick={() => { setSelectedId(null); onSelectFinding(id); }}>
+            Request exception for linked finding · {id.slice(0, 8)}
+          </button>
+        ))}
+      </section>
+    </div>}
+  </>;
+}
+
 
 const deployFailedChecks = Object.freeze({
   signed_revision_verified: "The published signed revision could not be verified.",
@@ -2342,35 +2409,16 @@ export default function CloudSecurity({ isAdmin = false }) {
                 Load subsequent pages before interpreting the complete stored set.
               </p>}
               {iamPageError && <p role="alert">{iamPageError}</p>}
-              <div className="table-scroll"><table>
-                <thead><tr><th>Direction</th><th>MCP tool</th><th>Action and source</th>
-                  <th>Resource and source</th><th>Assessment</th>
-                  <th>Identity IAM permission</th><th>Effective AWS access</th>
-                  <th>IAM role</th><th>Reason and evidence</th></tr></thead>
-                <tbody>{iamRows.map((item) => <tr key={item.id}>
-                  <td>{item.tool_name ? "MCP need to IAM" : "IAM to MCP needs"}</td>
-                  <td>{item.tool_name || "Role grant"}</td>
-                  <td><small>{item.tool_name ? "Approved MCP action" : "Observed IAM action"}</small>
-                    <code>{item.tool_name
-                      ? item.expected_actions.join(", ") || "Not verified"
-                      : item.observed_actions.join(", ") || "Not verified"}</code></td>
-                  <td><small>{item.tool_name ? "Approved MCP resource" : "Observed IAM policy resource"}</small>
-                    <code>{item.expected_resource_arn || "Not verified"}</code></td>
-                  <td>{iamAssessmentLabel(item.status)}</td>
-                  <td>{(item.identity_permission_status || "Not recorded")
-                    .replaceAll("_", " ").toLowerCase()}</td>
-                  <td>{(item.effective_permission_status || "UNKNOWN")
-                    .replaceAll("_", " ").toLowerCase()}</td>
-                  <td>{item.role_arn ? item.role_arn.split("/").pop() : "Not verified"}</td>
-                  <td>{iamAssessmentExplanation(item.notes)}
-                    {item.signed_revision && <span> Signed contract revision: {item.signed_revision}.</span>}
-                    {item.policy_digest && <span> Policy evidence: <code>{item.policy_digest.slice(0, 16)}...</code></span>}
-                    <details><summary>Why this classification? View compared policy clauses</summary>
-                      <IAMPolicyEvidence item={item} />
-                    </details>
-                  </td>
-                </tr>)}</tbody>
-              </table></div>
+              <IAMComparisonWorklist key={details.scan.id} rows={iamRows}
+                onSelectFinding={isAdmin && ["COMPLETED", "PARTIAL"].includes(details.scan.status)
+                  ? (findingId) => {
+                    setExceptionFinding(findingId);
+                    setExceptionReason("");
+                    window.requestAnimationFrame(() =>
+                      document.getElementById("cloud-exception-request-reason")?.focus());
+                  }
+                  : null}
+                findingIds={new Set(details.findings.map((finding) => finding.id))} />
               {iamPage?.has_more && <button type="button" className="secondary-action"
                 disabled={iamPageLoading} onClick={loadMoreIAMComparisons}>
                 {iamPageLoading ? "Loading more comparisons..." : "Load next 100 comparisons"}
