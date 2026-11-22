@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { fetchAuditEventPage, fetchRelatedSecurityTimeline, safeErrorMessage } from "../api/client";
 import { Pagination } from "../components/Pagination";
 import NestedChanges from "../components/NestedChanges";
+import CodeBlock from "../components/CodeBlock.jsx";
 import { auditTargetLink } from "../utils/operationNavigation.js";
 
 const PAGE_SIZE = 20;
@@ -211,13 +212,13 @@ function Audit({ events = EMPTY_EVENTS, loading = false, refreshToken = 0 }) {
             <h3 id="audit-detail-heading" ref={detailHeading} tabIndex={-1}>{humanizeAction(selectedEvent.action)}</h3>
             <button onClick={closeEvent} type="button">Close details</button>
           </div>
-          <dl className="inline-metadata audit-event-metadata">
+          <dl className="kv-list audit-event-metadata">
             <div><dt>Actor</dt><dd>{selectedEvent.actor_username_snapshot || "system"}</dd></div>
             <div><dt>Time</dt><dd>{formatDate(selectedEvent.timestamp)}</dd></div>
-            <div><dt>Event ID</dt><dd>{selectedEvent.id}</dd></div>
-            <div><dt>Target</dt><dd>{[selectedEvent.target_type, selectedEvent.target_id].filter(Boolean).join(" / ") || "-"}</dd></div>
+            <div><dt>Event ID</dt><dd><code className="record-id">{selectedEvent.id}</code></dd></div>
+            <div><dt>Target</dt><dd>{selectedEvent.target_type || "-"}{selectedEvent.target_id && <> <code className="record-id">{selectedEvent.target_id}</code></>}</dd></div>
             <div><dt>Revision</dt><dd>{selectedEvent.revision_id || "-"}</dd></div>
-            <div><dt>Result</dt><dd>{selectedEvent.result}</dd></div>
+            <div><dt>Result</dt><dd><span className={`badge ${selectedEvent.result === "SUCCESS" ? "badge-success" : selectedEvent.result === "FAILED" ? "badge-danger" : "badge-muted"}`}>{selectedEvent.result}</span></dd></div>
             <div><dt>Source IP</dt><dd>{selectedEvent.source_ip || "-"}</dd></div>
             <div><dt>Reason</dt><dd>{selectedEvent.reason || "-"}</dd></div>
           </dl>
@@ -313,10 +314,8 @@ function RelatedSecurityTimeline() {
   return (
     <section className="detail-panel" aria-label="Related security event timeline">
       <h3>Related security timeline</h3>
-      <p>Correlate recorded events by an exact immutable operation or scan ID.
-        Similar names, timestamps and resource labels are never treated as proof of a connection.</p>
-      <form className="inline-form" onSubmit={show}>
-        <label>Correlation target
+      <form className="filter-toolbar audit-correlation-bar" onSubmit={show} aria-describedby="audit-correlation-help">
+        <label className="audit-correlation-kind">Correlation target
           <select value={kind} onChange={(event) => {
             setKind(event.target.value); resetResponse();
           }}>
@@ -324,17 +323,26 @@ function RelatedSecurityTimeline() {
             <option value="cloud_scan">Cloud audit scan</option>
           </select>
         </label>
-        <label>Recorded UUID
-          <input type="text" value={targetId}
+        <label className="toolbar-wide">Recorded UUID
+          <input type="text" value={targetId} className="mono-input"
+            aria-invalid={targetId && !validId ? "true" : undefined}
+            aria-describedby={targetId && !validId ? "audit-correlation-invalid" : undefined}
             maxLength={36} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
             onChange={(event) => {
               setTargetId(event.target.value.trim().toLowerCase());
               resetResponse();
             }}/>
         </label>
-        <button type="submit" disabled={!validId || busy}>
-          {busy ? "Checking..." : "Show related events"}
-        </button>
+        <div className="toolbar-actions">
+          <button type="submit" className="primary-action" disabled={!validId || busy}>
+            {busy ? "Checking..." : "Show related events"}
+          </button>
+        </div>
+        {targetId && !validId && (
+          <p className="toolbar-note field-error" id="audit-correlation-invalid">Enter the complete recorded UUID (36 characters, 8-4-4-4-12).</p>
+        )}
+        <p className="toolbar-note" id="audit-correlation-help">Matches only an exact immutable operation or scan ID.
+          Similar names, timestamps and resource labels are never treated as proof of a connection.</p>
       </form>
       {error && <p role="alert">{error} No actions were replayed.</p>}
       {result && <div aria-label="Related security records">
@@ -374,7 +382,7 @@ function AuditJson({ title, value }) {
   return (
     <div>
       <h4>{title}</h4>
-      <pre className="json-block">{value ? JSON.stringify(value, null, 2) : "-"}</pre>
+      <CodeBlock value={value} label={title} emptyText="Not recorded" />
     </div>
   );
 }

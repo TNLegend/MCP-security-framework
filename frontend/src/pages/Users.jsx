@@ -303,8 +303,8 @@ function Users({ users = [], loading = false, onRefresh }) {
             <h3 id="user-directory-title">User directory</h3>
             <p role="status">{visibleUsers.length} of {users.length} accounts</p>
           </div>
-          <div className="filter-bar management-filters">
-            <label>
+          <div className="filter-toolbar management-filters" role="search" aria-label="Filter accounts">
+            <label className="toolbar-search">
               Find an account
               <input onChange={(event) => setAccountSearch(event.target.value)} placeholder="Username or display name" type="search" value={accountSearch} />
             </label>
@@ -320,7 +320,7 @@ function Users({ users = [], loading = false, onRefresh }) {
                 <option value="">All statuses</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option>
               </select>
             </label>
-            {(accountSearch || accountRole || accountStatus) && <button onClick={() => { setAccountSearch(""); setAccountRole(""); setAccountStatus(""); }} type="button">Clear filters</button>}
+            {(accountSearch || accountRole || accountStatus) && <div className="toolbar-actions"><button className="secondary-action" onClick={() => { setAccountSearch(""); setAccountRole(""); setAccountStatus(""); }} type="button">Clear filters</button></div>}
           </div>
           <div aria-label="User accounts table" className="table-shell users-table" tabIndex={0}>
         <table>
@@ -347,8 +347,10 @@ function Users({ users = [], loading = false, onRefresh }) {
                 return (
                   <tr key={user.id}>
                     <td>
-                      <strong>{user.username}</strong>
-                      <small>{user.display_name || ""}</small>
+                      <div className="cell-stack">
+                        <strong>{user.username}</strong>
+                        {user.display_name && <small className="cell-secondary">{user.display_name}</small>}
+                      </div>
                     </td>
                     <td>
                       <span className="badge badge-muted">{user.role}</span>

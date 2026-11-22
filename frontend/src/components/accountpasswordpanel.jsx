@@ -58,7 +58,7 @@ export default function AccountPasswordPanel({ onChanged, onClose }) {
         <h2 id="account-password-title">Change your password</h2>
         <p id="account-password-impact">A successful password change signs you out of every session.
           Sign in again with your new password.</p>
-        <form className="form-grid" onSubmit={submit} aria-busy={busy}>
+        <form className="form-stack" onSubmit={submit} aria-busy={busy}>
           <label>Current password
             <input required autoComplete="current-password" type="password"
               value={current} maxLength={4096} disabled={busy}

@@ -258,12 +258,14 @@ function SecurityPackManager({ onComplete, revision }) {
                 <tr key={adapter.adapter_id}>
                   <td>{adapter.family}</td>
                   <td>
-                    <strong>{adapter.display_name}</strong>
-                    <small>{adapter.adapter_id}</small>
+                    <div className="cell-stack">
+                      <strong>{adapter.display_name}</strong>
+                      <small className="cell-secondary record-id">{adapter.adapter_id}</small>
+                    </div>
                   </td>
                   <td>API {adapter.adapter_api_version} / {adapter.implementation_version}</td>
                   <td><span className="status-pill">{adapter.trust_level.replaceAll("_", " ")}</span></td>
-                  <td>{adapter.argument_validation}<small>{adapter.result_validation}</small></td>
+                  <td><div className="cell-stack"><span>{adapter.argument_validation}</span><small className="cell-secondary">{adapter.result_validation}</small></div></td>
                 </tr>
               ))}
             </tbody>

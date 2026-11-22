@@ -18,6 +18,7 @@ import {
 import { useDialogFocus } from "../utils/useDialogFocus";
 import { buildGovernedEndpoint } from "../utils/gateway";
 import { Pagination, usePagination } from "../components/Pagination";
+import CodeBlock from "../components/CodeBlock.jsx";
 import {
   LIMITS,
   clearFieldError,
@@ -975,7 +976,7 @@ function ServerTable({
                   onClick={(event) => { event.stopPropagation(); onSelectServer(server.id); }} type="button">
                   {getServerDisplayName(server)}
                 </button></td>
-                <td><code className="inventory-endpoint-cell">{displayValue(server.endpoint)}</code></td>
+                <td><code className="inventory-endpoint-cell" title={server.endpoint || undefined}>{displayValue(server.endpoint)}</code></td>
                 <td>
                   {isAdmin ? (
                     binding ? (
@@ -1371,11 +1372,13 @@ function MetadataSection({ collapsible = false, title, items }) {
   const content = (
     <dl>
         {items.map(([label, value, type]) => (
-          <div className="metadata-row" key={label}>
+          <div className={"metadata-row" + (type === "json" ? " metadata-row-code" : "")} key={label}>
             <dt>{label}</dt>
             <dd>
               {type === "json" ? (
-                <pre className="json-block">{formatJson(value)}</pre>
+                // Raw protocol payloads are verbose: keep them one click away.
+                <CodeBlock value={value} label={label} emptyText="-"
+                  collapsed={label.startsWith("raw_") ? true : undefined} />
               ) : type === "badge" ? (
                 <Badge value={value} />
               ) : (

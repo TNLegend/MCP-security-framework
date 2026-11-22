@@ -190,7 +190,7 @@ def api_fixture(route, role, state):
 def check_mapping(page, task_nav):
     task_nav.get_by_role("button", name="MCP permissions", exact=True).click()
     page.get_by_label("EC2 instance ID").fill("i-0123456789abcdef0")
-    page.get_by_label("AWS action, for example s3:GetObject").fill("s3:ListBucket")
+    page.get_by_label("AWS action", exact=True).fill("s3:ListBucket")
     page.get_by_label("Signed resource scope").select_option("bucket-a")
     page.get_by_label("Cloud resource ARN template").fill("arn:aws:s3:::${scope}")
     expect(page.get_by_role("button", name="Compare AWS and MCP permissions")).to_have_count(0)

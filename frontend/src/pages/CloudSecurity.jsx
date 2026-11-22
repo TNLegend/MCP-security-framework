@@ -1798,218 +1798,278 @@ export default function CloudSecurity({ isAdmin = false, refreshToken = 0 }) {
           metric="resource_count" label="Advanced AWS audit history" empty="No advanced AWS audits for this environment." />
       </section>
 
-      <section id="cloud-iam" className="detail-panel cloud-task-panel" hidden={activeTask !== "cloud-iam"}>
-        <h3>Review MCP cloud permissions</h3>
-        <p>Choose a registered MCP server, link its verified AWS workload, then
-          describe which cloud permissions each published MCP contract needs.
-          Save a draft, review it and explicitly approve it before scanning.
-          This only reads AWS permissions; it never grants or changes them.</p>
+      <section id="cloud-iam" className="detail-panel cloud-task-panel iam-editor" hidden={activeTask !== "cloud-iam"}>
+        <div className="iam-editor-head">
+          <h3>Review MCP cloud permissions</h3>
+          <p className="iam-lede">Map each signed MCP capability to the AWS actions it needs, then approve the mapping before
+            comparing it with the workload role. Read-only: nothing is granted or changed in AWS.</p>
+        </div>
         <div className="contract-editor">
-          <label>MCP server
-            <select value={mcpServerId} disabled={busy || !mcpServers.length}
-              onChange={(event) => {
-                setMcpServerId(event.target.value);
-                setIamMappingId("");
-                setMappingContextKey("");
-                setApprovalConfirmed(false);
-              }}>
-              {!mcpServers.length && <option value="">No registered MCP servers</option>}
-              {mcpServers.map((server) => <option value={server.id} key={server.id}>
-                {server.name}
-              </option>)}
-            </select>
-          </label>
-          {!current && <p>Choose an AWS environment to review a mapping.</p>}
+          <div className="iam-source-bar">
+            <label className="iam-server-field">MCP server
+              <select value={mcpServerId} disabled={busy || !mcpServers.length}
+                onChange={(event) => {
+                  setMcpServerId(event.target.value);
+                  setIamMappingId("");
+                  setMappingContextKey("");
+                  setApprovalConfirmed(false);
+                }}>
+                {!mcpServers.length && <option value="">No registered MCP servers</option>}
+                {mcpServers.map((server) => <option value={server.id} key={server.id}>
+                  {server.name}
+                </option>)}
+              </select>
+            </label>
+            {contextReady && (() => {
+              const coverage = manualMappingCoverage(mappingContext.effects, mappingRows);
+              const mapped = mappingContext.effects.length - coverage.unmapped.length;
+              return (
+                <dl className="iam-facts" aria-label="Signed MCP contract">
+                  <div><dt>Signed revision</dt><dd>{mappingContext.signed_revision}</dd></div>
+                  <div><dt>Approved capabilities</dt><dd>{mappingContext.effects.length}</dd></div>
+                  {isAdmin && <div><dt>Mapped in draft</dt>
+                    <dd className={coverage.unmapped.length ? "iam-fact-warn" : "iam-fact-ok"}>
+                      {mapped} of {mappingContext.effects.length}</dd></div>}
+                </dl>
+              );
+            })()}
+          </div>
+          {!current && <p className="empty-state">Choose an AWS environment to review a mapping.</p>}
           {selected && mcpServerId && mappingContextKey !== contextKey &&
             <p role="status">Loading signed MCP permissions…</p>}
           {mappingContextKey === contextKey && mappingContextError &&
             <p className="error-banner" role="alert">{mappingContextError}</p>}
           {contextReady && (
             <div>
-              <p>Published signed MCP revision: {mappingContext.signed_revision}.
-                Approved tool capabilities: {mappingContext.effects.length}.
-                Permissions are configured per cloud action; unknown effects are
+              <p className="field-help iam-contract-note">Permissions are configured per cloud action; unknown effects are
                 never silently treated as safe.</p>
               {isAdmin && (
                 <div className="contract-editor cloud-mapping-editor">
                   <h4>Prepare a mapping draft</h4>
-                  <label>Configuration name
-                    <input maxLength={128} value={mappingName}
-                      onChange={(e) => setMappingName(e.target.value)} />
-                  </label>
-                  <label>Cloud hosting type
-                    <select value={identityKind}
-                      onChange={(e) => { setIdentityKind(e.target.value); setIdentityInputs({}); }}>
-                      <option value="EC2">AWS EC2 instance</option>
-                      <option value="ECS">AWS ECS running task</option>
-                      <option value="LAMBDA">AWS Lambda function</option>
-                      <option value="EKS_POD_IDENTITY">AWS EKS Pod Identity</option>
-                    </select>
-                  </label>
-                  <label>AWS region
-                    <select value={identityInputs.region || current?.regions?.[0] || ""}
-                      onChange={(e) => setIdentityInputs((old) => ({ ...old, region: e.target.value }))}>
-                      {(current?.regions || []).map((r) => <option key={r} value={r}>{r}</option>)}
-                    </select>
-                  </label>
-                  {(identityKind === "EC2" ? [
-                    ["instance_id", "EC2 instance ID", "i-0123456789abcdef0"],
-                  ] : identityKind === "ECS" ? [
-                    ["cluster", "ECS cluster name", "cluster-name"],
-                    ["task", "ECS running task ID or ARN", "task-id"],
-                  ] : identityKind === "LAMBDA" ? [
-                    ["function_name", "Lambda function name", "my-function"],
-                  ] : [
-                    ["cluster", "EKS cluster name", "cluster-name"],
-                    ["namespace", "Kubernetes namespace", "default"],
-                    ["service_account", "Kubernetes service account", "my-mcp"],
-                    ["association_id", "EKS Pod Identity association ID", "a-xxxxxxxxxxxxxxxxx"],
-                  ]).map(([field, label, placeholder]) => (
-                    <label key={field}>{label}
-                      <input value={identityInputs[field] || ""} placeholder={placeholder}
-                        onChange={(e) => setIdentityInputs((old) =>
-                          ({ ...old, [field]: e.target.value.trim() }))} />
-                    </label>
-                  ))}
-                  <label>IAM role usage
-                    <select value={roleUsage} onChange={(e) => setRoleUsage(e.target.value)}>
-                      <option value="UNKNOWN">Unknown other consumers</option>
-                      <option value="SHARED">Shared with other workloads</option>
-                      <option value="DEDICATED">Declared dedicated to this MCP</option>
-                    </select>
-                  </label>
-                  <p>Role usage is an administrator declaration, not proof that
-                    no other workloads or maintenance processes use this role.</p>
-                  <label>Expected workload IAM role ARN (recommended)
-                    <input value={identityInputs.expected_role_arn || ""}
-                      placeholder="arn:aws:iam::123456789012:role/MyMcpRole"
-                      maxLength={240}
-                      onChange={(e) => setIdentityInputs((old) =>
-                        ({ ...old, expected_role_arn: e.target.value.trim() }))} />
-                  </label>
-                  <p>An unexpected IAM role change stops the audit when a role ARN
-                    is pinned here. Without a pinned role, the identity binding
-                    remains explicitly incomplete.</p>
-                  <p>Cloud access mappings are reviewed, not inferred from tool names.
-                    Use signed SELF scopes for resource-bound effects. Their
-                    resource templates must include
-                    <code> {"${scope}"} </code>, optionally referring to another
-                    signed scope using <code> {"${scope:scope-id}"} </code>.
-                    Example: <code> {"arn:aws:s3:::bucket-name/path/${scope}"} </code>
-                    or <code> {"arn:aws:dynamodb:eu-west-3:123456789012:table/${scope}"} </code>.
-                  </p>
-                  {mappingRows.map((entry, index) => {
-                    const currentEffect = mappingContext.effects.find((item) =>
-                      item.tool_name === entry.tool_name && item.effect_id === entry.effect_id);
-                    const allowedScopes = mappingContext.scopes.filter((sc) =>
-                      sc.resource_type === currentEffect?.resource_type);
-                    return <div className="detail-panel" key={index}>
-                      <label>Approved MCP tool capability
-                        <select value={entry.tool_name + "|" + entry.effect_id}
-                          onChange={(e) => {
-                            const chosen = mappingContext.effects.find((ef) =>
-                              ef.tool_name + "|" + ef.effect_id === e.target.value);
-                            if (!chosen) return;
-                            setMappingRows((old) => old.map((row, i) => i === index
-                              ? {
-                                ...row, tool_name: chosen.tool_name, effect_id: chosen.effect_id,
-                                scope_id: chosen.resource_type ? "" : null,
-                                resource_template: chosen.resource_type ? "" : "*",
-                                global_resource_acknowledged: false,
-                              }
-                              : row));
-                          }}>
-                          {mappingContext.effects.map((effect) => (
-                            <option key={effect.tool_name + "|" + effect.effect_id}
-                              value={effect.tool_name + "|" + effect.effect_id}>
-                              {effect.tool_name} : {effect.capability}
-                            </option>
-                          ))}
+                  <fieldset className="iam-fieldset">
+                    <legend>Workload identity</legend>
+                    <div className="iam-grid">
+                      <label>Configuration name
+                        <input maxLength={128} value={mappingName}
+                          onChange={(e) => setMappingName(e.target.value)} />
+                      </label>
+                      <label>Cloud hosting type
+                        <select value={identityKind}
+                          onChange={(e) => { setIdentityKind(e.target.value); setIdentityInputs({}); }}>
+                          <option value="EC2">AWS EC2 instance</option>
+                          <option value="ECS">AWS ECS running task</option>
+                          <option value="LAMBDA">AWS Lambda function</option>
+                          <option value="EKS_POD_IDENTITY">AWS EKS Pod Identity</option>
                         </select>
                       </label>
-                      <p>Signed capability: {currentEffect?.capability || "unavailable"}</p>
-                      <label>AWS action, for example s3:GetObject
-                        <input value={entry.action} placeholder="service:Action"
-                          onChange={(e) => updateMappingRow(index, "action", e.target.value)} />
+                      <label>AWS region
+                        <select value={identityInputs.region || current?.regions?.[0] || ""}
+                          onChange={(e) => setIdentityInputs((old) => ({ ...old, region: e.target.value }))}>
+                          {(current?.regions || []).map((r) => <option key={r} value={r}>{r}</option>)}
+                        </select>
                       </label>
-                      {currentEffect?.resource_type ? (
-                        <label>Signed resource scope
-                          <select value={entry.scope_id || ""}
-                            onChange={(e) => updateMappingRow(index, "scope_id", e.target.value)}>
-                            <option value="">Choose an approved scope</option>
-                            {allowedScopes.map((sc) => <option key={sc.scope_id} value={sc.scope_id}>
-                              {sc.scope_id}: {sc.canonical_value}
-                            </option>)}
-                          </select>
+                      {(identityKind === "EC2" ? [
+                        ["instance_id", "EC2 instance ID", "i-0123456789abcdef0"],
+                      ] : identityKind === "ECS" ? [
+                        ["cluster", "ECS cluster name", "cluster-name"],
+                        ["task", "ECS running task ID or ARN", "task-id"],
+                      ] : identityKind === "LAMBDA" ? [
+                        ["function_name", "Lambda function name", "my-function"],
+                      ] : [
+                        ["cluster", "EKS cluster name", "cluster-name"],
+                        ["namespace", "Kubernetes namespace", "default"],
+                        ["service_account", "Kubernetes service account", "my-mcp"],
+                        ["association_id", "EKS Pod Identity association ID", "a-xxxxxxxxxxxxxxxxx"],
+                      ]).map(([field, label, placeholder]) => (
+                        <label key={field}>{label}
+                          <input value={identityInputs[field] || ""} placeholder={placeholder}
+                            onChange={(e) => setIdentityInputs((old) =>
+                              ({ ...old, [field]: e.target.value.trim() }))} />
                         </label>
+                      ))}
+                      <div className="field">
+                        <label htmlFor="iam-role-usage">IAM role usage</label>
+                        <select id="iam-role-usage" value={roleUsage} onChange={(e) => setRoleUsage(e.target.value)}
+                          aria-describedby="iam-role-usage-help">
+                          <option value="UNKNOWN">Unknown other consumers</option>
+                          <option value="SHARED">Shared with other workloads</option>
+                          <option value="DEDICATED">Declared dedicated to this MCP</option>
+                        </select>
+                        <span className="field-help" id="iam-role-usage-help">An administrator declaration, not proof
+                          that no other workload uses this role.</span>
+                      </div>
+                      <div className="field iam-span-2">
+                        <label htmlFor="iam-expected-role">Expected workload IAM role ARN (recommended)</label>
+                        <input id="iam-expected-role" value={identityInputs.expected_role_arn || ""}
+                          placeholder="arn:aws:iam::123456789012:role/MyMcpRole" className="mono-input"
+                          maxLength={240} aria-describedby="iam-role-pin-help"
+                          onChange={(e) => setIdentityInputs((old) =>
+                            ({ ...old, expected_role_arn: e.target.value.trim() }))} />
+                        <span className="field-help" id="iam-role-pin-help">A pinned role stops the audit if the
+                          workload role changes. Without it, the identity binding stays explicitly incomplete.</span>
+                      </div>
+                    </div>
+                  </fieldset>
+
+                  <fieldset className="iam-fieldset">
+                    <legend>AWS actions per signed capability</legend>
+                    {(() => {
+                      const { unmapped } = manualMappingCoverage(mappingContext.effects, mappingRows);
+                      return unmapped.length > 0 ? (
+                        <div className="iam-unmapped" role="note">
+                          <strong>{unmapped.length} signed {unmapped.length === 1 ? "capability is" : "capabilities are"} not mapped yet</strong>
+                          <ul>{unmapped.map((effect) => (
+                            <li key={effect.tool_name + "|" + effect.effect_id}>
+                              <code>{effect.tool_name}</code> <span className="badge badge-muted">{effect.capability}</span>
+                            </li>))}</ul>
+                          <span className="field-help">Unmapped capabilities are reported as UNKNOWN, never as safe.</span>
+                        </div>
                       ) : (
-                        <p role="status">This signed MCP effect does not declare any
-                          resource. An AWS action requiring Resource "*" can be
-                          mapped only with an explicit justification and approval.</p>
-                      )}
-                      <label>Cloud resource ARN template
-                        <input value={entry.resource_template}
-                          placeholder="arn:aws:s3:::bucket-name/path/${scope}"
-                          maxLength={512}
-                          disabled={!currentEffect?.resource_type}
-                          onChange={(e) => updateMappingRow(index, "resource_template", e.target.value)} />
-                      </label>
-                      {!currentEffect?.resource_type && (
-                        <label>
-                          <input type="checkbox"
-                            checked={Boolean(entry.global_resource_acknowledged)}
-                            onChange={(e) => updateMappingRow(index,
-                              "global_resource_acknowledged", e.target.checked)} />
-                          I explicitly approve AWS Resource "*" for this unscoped
-                          signed effect and will document why the IAM action needs it.
+                        <p className="iam-mapped-ok" role="note">Every signed capability has a complete AWS action.</p>
+                      );
+                    })()}
+                    <details className="iam-syntax-help">
+                      <summary>Resource template syntax</summary>
+                      <p>Cloud access mappings are reviewed, not inferred from tool names.
+                        Use signed SELF scopes for resource-bound effects. Their
+                        resource templates must include
+                        <code> {"${scope}"} </code>, optionally referring to another
+                        signed scope using <code> {"${scope:scope-id}"} </code>.
+                        Example: <code> {"arn:aws:s3:::bucket-name/path/${scope}"} </code>
+                        or <code> {"arn:aws:dynamodb:eu-west-3:123456789012:table/${scope}"} </code>.
+                      </p>
+                    </details>
+                    <ol className="iam-entries">
+                    {mappingRows.map((entry, index) => {
+                      const currentEffect = mappingContext.effects.find((item) =>
+                        item.tool_name === entry.tool_name && item.effect_id === entry.effect_id);
+                      const allowedScopes = mappingContext.scopes.filter((sc) =>
+                        sc.resource_type === currentEffect?.resource_type);
+                      const unscoped = !currentEffect?.resource_type;
+                      return <li className="iam-entry" key={index}>
+                        <div className="iam-entry-head">
+                          <span className="iam-entry-index">Action {index + 1}</span>
+                          <label className="iam-capability-field">Approved MCP tool capability
+                            <select value={entry.tool_name + "|" + entry.effect_id}
+                              onChange={(e) => {
+                                const chosen = mappingContext.effects.find((ef) =>
+                                  ef.tool_name + "|" + ef.effect_id === e.target.value);
+                                if (!chosen) return;
+                                setMappingRows((old) => old.map((row, i) => i === index
+                                  ? {
+                                    ...row, tool_name: chosen.tool_name, effect_id: chosen.effect_id,
+                                    scope_id: chosen.resource_type ? "" : null,
+                                    resource_template: chosen.resource_type ? "" : "*",
+                                    global_resource_acknowledged: false,
+                                  }
+                                  : row));
+                              }}>
+                              {mappingContext.effects.map((effect) => (
+                                <option key={effect.tool_name + "|" + effect.effect_id}
+                                  value={effect.tool_name + "|" + effect.effect_id}>
+                                  {effect.tool_name} : {effect.capability}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <span className="iam-entry-capability">Signed capability
+                            <span className="badge badge-muted">{currentEffect?.capability || "unavailable"}</span>
+                          </span>
+                          <button type="button" className="tiny-action iam-entry-remove"
+                            onClick={() => setMappingRows((old) => old.filter((_, i) => i !== index))}>
+                            Remove this action
+                          </button>
+                        </div>
+                        <div className="iam-entry-grid">
+                          <div className="field">
+                            <label htmlFor={"iam-action-" + index}>AWS action</label>
+                            <input id={"iam-action-" + index} value={entry.action} placeholder="service:Action"
+                              className="mono-input" aria-describedby={"iam-action-help-" + index}
+                              onChange={(e) => updateMappingRow(index, "action", e.target.value)} />
+                            <span className="field-help" id={"iam-action-help-" + index}>For example s3:GetObject</span>
+                          </div>
+                          {!unscoped ? (
+                            <label>Signed resource scope
+                              <select value={entry.scope_id || ""}
+                                onChange={(e) => updateMappingRow(index, "scope_id", e.target.value)}>
+                                <option value="">Choose an approved scope</option>
+                                {allowedScopes.map((sc) => <option key={sc.scope_id} value={sc.scope_id}>
+                                  {sc.scope_id}: {sc.canonical_value}
+                                </option>)}
+                              </select>
+                            </label>
+                          ) : (
+                            <p role="status" className="iam-unscoped-note">This signed MCP effect does not declare any
+                              resource. An AWS action requiring Resource "*" can be
+                              mapped only with an explicit justification and approval.</p>
+                          )}
+                          <label className="iam-arn">Cloud resource ARN template
+                            <input value={entry.resource_template} className="mono-input"
+                              placeholder="arn:aws:s3:::bucket-name/path/${scope}"
+                              maxLength={512}
+                              disabled={unscoped}
+                              onChange={(e) => updateMappingRow(index, "resource_template", e.target.value)} />
+                          </label>
+                          {unscoped && (
+                            <label className="iam-span-2 iam-ack">
+                              <input type="checkbox"
+                                checked={Boolean(entry.global_resource_acknowledged)}
+                                onChange={(e) => updateMappingRow(index,
+                                  "global_resource_acknowledged", e.target.checked)} />
+                              I explicitly approve AWS Resource "*" for this unscoped
+                              signed effect and will document why the IAM action needs it.
+                            </label>
+                          )}
+                          <label className="iam-span-2">{unscoped
+                            ? "IAM action justification (required, at least 12 characters)"
+                            : "IAM action justification (optional)"}
+                            <input value={entry.justification || ""}
+                              maxLength={500}
+                              placeholder="Why this signed capability requires the selected IAM action"
+                              onChange={(e) => updateMappingRow(index, "justification", e.target.value)} />
+                          </label>
+                        </div>
+                      </li>;
+                    })}
+                    </ol>
+                    <button type="button" className="secondary-action iam-add"
+                      onClick={() => {
+                        const effect = mappingContext.effects[0];
+                        if (effect) setMappingRows((old) => [...old, {
+                          tool_name: effect.tool_name, effect_id: effect.effect_id,
+                          scope_id: effect.resource_type ? "" : null,
+                          action: "", resource_template: effect.resource_type ? "" : "*",
+                          justification: "", global_resource_acknowledged: false,
+                        }]);
+                      }}>
+                      Add another AWS action
+                    </button>
+                  </fieldset>
+                  <div className="iam-save-bar">
+                    {(() => {
+                      const count = manualMappingCoverage(
+                        mappingContext.effects, mappingRows).unmapped.length;
+                      return count > 0 && (
+                        <label className="iam-ack">
+                          <input type="checkbox" checked={unmappedAcknowledged}
+                            onChange={(e) => setUnmappedAcknowledged(e.target.checked)} />
+                          I acknowledge that {count} signed MCP effect(s) remain
+                          unmapped and must be reported as UNKNOWN.
                         </label>
-                      )}
-                      <label>IAM action justification (optional)
-                        <input value={entry.justification || ""}
-                          maxLength={500}
-                          placeholder="Why this signed capability requires the selected IAM action"
-                          onChange={(e) => updateMappingRow(index, "justification", e.target.value)} />
-                      </label>
-                      <button type="button" className="tiny-action"
-                        onClick={() => setMappingRows((old) => old.filter((_, i) => i !== index))}>
-                        Remove this action
-                      </button>
-                    </div>;
-                  })}
-                  <button type="button" className="secondary-action"
-                    onClick={() => {
-                      const effect = mappingContext.effects[0];
-                      if (effect) setMappingRows((old) => [...old, {
-                        tool_name: effect.tool_name, effect_id: effect.effect_id,
-                        scope_id: effect.resource_type ? "" : null,
-                        action: "", resource_template: effect.resource_type ? "" : "*",
-                        justification: "", global_resource_acknowledged: false,
-                      }]);
-                    }}>
-                    Add another AWS action
-                  </button>
-                  {(() => {
-                    const count = manualMappingCoverage(
-                      mappingContext.effects, mappingRows).unmapped.length;
-                    return count > 0 && (
-                      <label>
-                        <input type="checkbox" checked={unmappedAcknowledged}
-                          onChange={(e) => setUnmappedAcknowledged(e.target.checked)} />
-                        I acknowledge that {count} signed MCP effect(s) remain
-                        unmapped and must be reported as UNKNOWN.
-                      </label>
-                    );
-                  })()}
-                  <button type="button" disabled={busy ||
-                    !manualMappingCoverage(mappingContext.effects,mappingRows).completeRows.length}
-                    onClick={saveMappingDraft}>Save mapping draft</button>
+                      );
+                    })()}
+                    <button type="button" className="primary-action" disabled={busy ||
+                      !manualMappingCoverage(mappingContext.effects,mappingRows).completeRows.length}
+                      onClick={saveMappingDraft}>Save mapping draft</button>
+                  </div>
                 </div>
               )}
             </div>
           )}
           {mappingListError && <p className="error-banner" role="alert">{mappingListError}</p>}
+          <div className="iam-review">
           <h4>Review a saved mapping</h4>
-          <label>Mapping configuration
+          <label className="iam-mapping-select">Mapping configuration
             <select value={iamMappingId} disabled={busy} onChange={(e) => {
               setIamMappingId(e.target.value); setApprovalConfirmed(false);
               const chosen = iamMappings.find((mapping) => mapping.id === e.target.value);
@@ -2034,75 +2094,100 @@ export default function CloudSecurity({ isAdmin = false, refreshToken = 0 }) {
               chosen, current, registered, contextReady && sameServer ? mappingContext : null);
             const currentRevision = contextReady && chosen?.signed_revision === mappingContext?.signed_revision &&
               chosen?.signed_content_hash === mappingContext?.signed_content_hash;
+            const cfg = chosen?.configuration || {};
+            const pinnedRole = cfg.identity?.expected_role_arn;
+            const statusClass = chosen?.status === "APPROVED" ? "badge-success"
+              : chosen?.status === "DRAFT" ? "badge-warning" : "badge-muted";
             return chosen && (
-              <div>
-                <p>Mapping: {chosen.status}. Linked MCP server ID: {chosen.mcp_server_id}.
-                  Hosting: {chosen.configuration?.identity?.kind}. Approved
-                  mapping digest: {chosen.approval_digest?.slice(0, 16) || "Pending approval"}.
-                  New published contract revisions require new mapping approval.</p>
-                <p>Declared role usage: {chosen.configuration?.role_usage || "UNKNOWN"}.
-                  Expected IAM role: {chosen.configuration?.identity?.expected_role_arn || "Not pinned"}.
-                  Unmapped effects acknowledged:
-                  {chosen.configuration?.unmapped_effects_acknowledged ? " yes" : " no"}.</p>
-                <details>
-                  <summary>Review mapping entries ({chosen.configuration?.entries?.length || 0})</summary>
-                  {(chosen.configuration?.entries || []).map((entry, index) => (
-                    <p key={index}><strong>{entry.tool_name} / {entry.effect_id}</strong>:
-                      <code> {entry.action} </code> on
-                      <code> {entry.resource_template} </code>
-                      (signed scope: {entry.scope_id}).
-                      {entry.justification && <span> Reason: {entry.justification}</span>}
-                    </p>
-                  ))}
+              <div className="iam-review-card">
+                <dl className="kv-list iam-review-facts">
+                  <div><dt>Mapping state</dt><dd><span className={"badge " + statusClass}>{chosen.status}</span></dd></div>
+                  <div><dt>Signed revision</dt><dd>{chosen.signed_revision}
+                    {chosen.signed_content_hash && <code className="iam-hash" title={chosen.signed_content_hash}>
+                      {" "}{chosen.signed_content_hash.slice(0, 12)}…</code>}</dd></div>
+                  <div><dt>MCP server</dt><dd>{registered?.name || "Not registered"} <span className="cell-secondary">(ID {chosen.mcp_server_id})</span></dd></div>
+                  <div><dt>Hosting</dt><dd>{cfg.identity?.kind || "Not recorded"}</dd></div>
+                  <div><dt>Expected IAM role</dt><dd>{pinnedRole
+                    ? <code>{pinnedRole}</code>
+                    : <span className="iam-warning-inline"><span className="badge badge-warning">Not pinned</span> Identity binding incomplete: a role change would not stop the audit.</span>}</dd></div>
+                  <div><dt>Declared role usage</dt><dd>{cfg.role_usage || "UNKNOWN"}</dd></div>
+                  <div><dt>Unmapped effects acknowledged</dt><dd>{cfg.unmapped_effects_acknowledged ? "Yes" : "No"}</dd></div>
+                  <div><dt>Approval digest</dt><dd>{chosen.approval_digest
+                    ? <code title={chosen.approval_digest}>{chosen.approval_digest.slice(0, 16)}…</code>
+                    : "Pending approval"}</dd></div>
+                </dl>
+                <p className="field-help">New published contract revisions require new mapping approval.</p>
+                <details className="iam-review-entries" open={(cfg.entries || []).length <= 6}>
+                  <summary>Review mapping entries ({cfg.entries?.length || 0})</summary>
+                  <div className="table-shell">
+                    <table>
+                      <thead><tr><th>Capability</th><th>AWS action</th><th>Resource</th><th>Signed scope</th><th>Justification</th></tr></thead>
+                      <tbody>
+                        {(cfg.entries || []).map((entry, index) => (
+                          <tr key={index}>
+                            <td><div className="cell-stack"><strong>{entry.tool_name}</strong><span className="cell-secondary">{entry.effect_id}</span></div></td>
+                            <td><code>{entry.action}</code></td>
+                            <td><code>{entry.resource_template}</code></td>
+                            <td>{entry.scope_id || "None"}</td>
+                            <td>{entry.justification || <span className="cell-secondary">Not provided</span>}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </details>
                 {mappingContextKey === contextKey && (!validBinding || !currentRevision) && (
-                  <p role="status">This older configuration is not bound to the
+                  <p role="status" className="controlled-ai-notice">This older configuration is not bound to the
                     current AWS account, registered MCP endpoint and signed
                     revision. Create a new reviewed draft before scanning.</p>
                 )}
-                {isAdmin && sameServer && contextReady && (
-                  <button type="button" className="tiny-action"
-                    disabled={busy}
-                    onClick={() => {
-                      const cfg = chosen.configuration || {};
-                      setMappingName(chosen.name + " reviewed");
-                      setIdentityKind(cfg.identity?.kind || "EC2");
-                      setIdentityInputs({ ...(cfg.identity || {}) });
-                      setRoleUsage(cfg.role_usage || "UNKNOWN");
-                      setUnmappedAcknowledged(Boolean(cfg.unmapped_effects_acknowledged));
-                      setMappingRows((cfg.entries || []).map((entry) => ({ ...entry })));
-                      setApprovalConfirmed(false);
-                      setMessage("Configuration copied into the editor. Review all permissions and save a new draft.");
-                    }}>
-                    Copy configuration into new draft
-                  </button>
-                )}
                 {isAdmin && chosen.status === "DRAFT" && validBinding && currentRevision && (
-                  <div>
-                    <label>
+                  <div className="iam-approve">
+                    <label className="iam-ack">
                       <input type="checkbox" checked={approvalConfirmed}
                         onChange={(e) => setApprovalConfirmed(e.target.checked)} />
                       I have reviewed the signed contract, AWS actions, resources and
                       selected workload. Approve this version for read-only scans.
                     </label>
-                    <button type="button" className="secondary-action"
-                      disabled={busy || !approvalConfirmed}
-                      onClick={approveSelectedMapping}>Approve mapping</button>
                   </div>
                 )}
-                {isAdmin && contextReady && sameServer && canRequestManualAudit(chosen,current,registered,mappingContext) && (
-                  <button type="button" className="secondary-action"
-                    disabled={busy || current?.status !== "CONNECTED"}
-                    onClick={() => action(
-                      () => startIAMMCPComparison(current.id, chosen.id),
-                      (result) => "IAM and MCP comparison queued (" + result.id + ").",
-                    )}>
-                    Compare AWS and MCP permissions
-                  </button>
-                )}
+                <div className="button-row iam-review-actions">
+                  {isAdmin && chosen.status === "DRAFT" && validBinding && currentRevision && (
+                    <button type="button" className="primary-action"
+                      disabled={busy || !approvalConfirmed}
+                      onClick={approveSelectedMapping}>Approve mapping</button>
+                  )}
+                  {isAdmin && contextReady && sameServer && canRequestManualAudit(chosen,current,registered,mappingContext) && (
+                    <button type="button" className="primary-action"
+                      disabled={busy || current?.status !== "CONNECTED"}
+                      onClick={() => action(
+                        () => startIAMMCPComparison(current.id, chosen.id),
+                        (result) => "IAM and MCP comparison queued (" + result.id + ").",
+                      )}>
+                      Compare AWS and MCP permissions
+                    </button>
+                  )}
+                  {isAdmin && sameServer && contextReady && (
+                    <button type="button" className="secondary-action"
+                      disabled={busy}
+                      onClick={() => {
+                        setMappingName(chosen.name + " reviewed");
+                        setIdentityKind(cfg.identity?.kind || "EC2");
+                        setIdentityInputs({ ...(cfg.identity || {}) });
+                        setRoleUsage(cfg.role_usage || "UNKNOWN");
+                        setUnmappedAcknowledged(Boolean(cfg.unmapped_effects_acknowledged));
+                        setMappingRows((cfg.entries || []).map((entry) => ({ ...entry })));
+                        setApprovalConfirmed(false);
+                        setMessage("Configuration copied into the editor. Review all permissions and save a new draft.");
+                      }}>
+                      Copy configuration into new draft
+                    </button>
+                  )}
+                </div>
               </div>
             );
           })()}
+          </div>
         </div>
         <h4>Permissions comparison history</h4>
         <CloudScanTable scans={iamScans} loading={loading} onOpen={showScan}

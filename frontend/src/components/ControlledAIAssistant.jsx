@@ -101,23 +101,17 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool, onOpenEvidence, 
     <section className="controlled-ai-panel" aria-label="AI assistance">
       <div className="controlled-ai-guardrail">
         <div><strong>AI assistance</strong><span>Explore the selected tool’s analysis or review possible next steps.</span></div>
+        <dl className="inline-metadata controlled-ai-status">
+          <div><dt>Analysis</dt><dd>{expectedAnalysis ? humanize(currentAnalysis.analysis_status) : "Current analysis unavailable"}</dd></div>
+          <div><dt>Review</dt><dd>{expectedAnalysis ? humanize(currentAnalysis.review_status) : "Unavailable"}</dd></div>
+        </dl>
       </div>
-      <dl className="inline-metadata">
-        <div><dt>Analysis</dt><dd>{expectedAnalysis ? humanize(currentAnalysis.analysis_status) : "Current analysis unavailable"}</dd></div>
-        <div><dt>Review</dt><dd>{expectedAnalysis ? humanize(currentAnalysis.review_status) : "Unavailable"}</dd></div>
-      </dl>
-      {staleBinding && <p role="status">The evidence binding changed. Request an explanation for the current analysis.</p>}
+      {staleBinding && <p role="status" className="controlled-ai-notice">The evidence binding changed. Request an explanation for the current analysis.</p>}
       {bundle?.errors?.findings && (
-        <p role="status">The findings could not be loaded in this view. Check the Findings tab before acting on advice.</p>
+        <p role="status" className="controlled-ai-notice">The findings could not be loaded in this view. Check the Findings tab before acting on advice.</p>
       )}
-      <details className="operator-technical-details">
-        <summary>Technical details</summary>
-        <div className="controlled-ai-context">
-          <div><span>Analysis record</span><strong>{expectedAnalysis?.id ?? "Unavailable"}</strong></div>
-          <div><span>Tool fingerprint</span><strong title={tool?.current_fingerprint || ""}>{shorten(tool?.current_fingerprint)}</strong></div>
-          <div><span>Analysis context hash</span><strong title={expectedAnalysis?.context_hash || ""}>{shorten(expectedAnalysis?.context_hash)}</strong></div>
-        </div>
-      </details>
+      <div className="controlled-ai-workspace">
+      <div className="controlled-ai-composer">
       {!isAdmin && (
         <div className="empty-state compact-empty-state">
           Only an administrator can request an AI explanation.
@@ -160,10 +154,29 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool, onOpenEvidence, 
           )}
         </form>
       )}
+      </div>
 
-      <p className="visually-hidden" role="status">{busy ? "Requesting AI assistance." : result ? "AI assistance is ready." : ""}</p>
-      {error && <div className="error-banner" role="alert">{error}</div>}
-      {result && <ControlledAIResult result={result} evidenceReferences={evidenceReferences} onOpenEvidence={onOpenEvidence} />}
+      <div className="controlled-ai-output">
+        <p className="visually-hidden" role="status">{busy ? "Requesting AI assistance." : result ? "AI assistance is ready." : ""}</p>
+        {error && <div className="error-banner" role="alert">{error}</div>}
+        {result && <ControlledAIResult result={result} evidenceReferences={evidenceReferences} onOpenEvidence={onOpenEvidence} />}
+        {!result && !error && (
+          <div className="controlled-ai-placeholder" aria-hidden={busy ? "true" : undefined}>
+            {busy
+              ? <p className="controlled-ai-loading">Requesting an evidence-bound explanation…</p>
+              : <p>The response appears here with the recorded evidence it cites. It is advisory and never changes a decision.</p>}
+          </div>
+        )}
+      </div>
+      </div>
+      <details className="operator-technical-details">
+        <summary>Technical details</summary>
+        <div className="controlled-ai-context">
+          <div><span>Analysis record</span><strong>{expectedAnalysis?.id ?? "Unavailable"}</strong></div>
+          <div><span>Tool fingerprint</span><strong title={tool?.current_fingerprint || ""}>{shorten(tool?.current_fingerprint)}</strong></div>
+          <div><span>Analysis context hash</span><strong title={expectedAnalysis?.context_hash || ""}>{shorten(expectedAnalysis?.context_hash)}</strong></div>
+        </div>
+      </details>
     </section>
   );
 }

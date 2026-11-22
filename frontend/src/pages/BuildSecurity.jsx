@@ -812,7 +812,7 @@ function BuildSecurity({
             <h3>Build scan history</h3>
             <small>{filteredScans.length} shown · {scans.length} loaded</small>
           </div>
-          <div className="build-history-filters">
+          <div className="build-history-filters" role="search" aria-label="Filter Build scans">
             <input
               aria-label="Search Build scans"
               onChange={(event) => setScanSearch(event.target.value)}
@@ -1367,7 +1367,7 @@ export function BuildFindingsBrowser({ detail, isAdmin, source, request = null, 
           {state.status === "loading" && !page ? "Loading findings…" : findingsRangeText(page)}
         </small>
       </div>
-      <form className="filter-bar build-findings-filters" onSubmit={(event) => {
+      <form className="filter-toolbar build-findings-filters" aria-label="Filter findings" onSubmit={(event) => {
         event.preventDefault();
         setOffset(0);
         setApplied({ ...draft });
@@ -1391,11 +1391,11 @@ export function BuildFindingsBrowser({ detail, isAdmin, source, request = null, 
             {scanners.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </label>
-        <label>Rule<input maxLength={255} onChange={(e) => update("rule_id", e.target.value)} value={draft.rule_id} /></label>
-        <label>Path contains<input maxLength={512} onChange={(e) => update("path", e.target.value)} value={draft.path} /></label>
-        <div className="button-row">
-          <button disabled={state.status === "loading"} type="submit">Apply</button>
-          <button disabled={state.status === "loading"} onClick={() => { setDraft(EMPTY_FINDING_FILTERS); setOffset(0); setApplied(EMPTY_FINDING_FILTERS); }} type="button">Clear</button>
+        <label className="toolbar-search">Rule<input maxLength={255} onChange={(e) => update("rule_id", e.target.value)} value={draft.rule_id} /></label>
+        <label className="toolbar-search">Path contains<input maxLength={512} onChange={(e) => update("path", e.target.value)} value={draft.path} /></label>
+        <div className="toolbar-actions">
+          <button className="primary-action" disabled={state.status === "loading"} type="submit">Apply</button>
+          <button disabled={state.status === "loading"} className="secondary-action" onClick={() => { setDraft(EMPTY_FINDING_FILTERS); setOffset(0); setApplied(EMPTY_FINDING_FILTERS); }} type="button">Clear</button>
         </div>
       </form>
       {state.error && <p className="error-text" role="alert">{state.error}{page ? " The rows below are from the previous read." : ""}</p>}
