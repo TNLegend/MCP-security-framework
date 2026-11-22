@@ -506,6 +506,7 @@ const ANALYSIS_TABS = [
 ];
 
 function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onComplete, onSelectTab, tool }) {
+  const [citedFinding, setCitedFinding] = useState(null);
   function handleTabKeyDown(event) {
     if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
     const tabs = [...event.currentTarget.parentElement.querySelectorAll('[role="tab"]')];
@@ -522,6 +523,25 @@ function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onCompl
   const findings = (bundle?.findings || []).filter(
     (finding) => !latestAnalysis?.id || !finding.analysis_id || finding.analysis_id === latestAnalysis.id,
   );
+  const referenceTargets = new Map();
+  if (latestAnalysis?.id) {
+    referenceTargets.set("analysis:" + latestAnalysis.id, "overview");
+    if (latestAnalysis.drift_result) referenceTargets.set("drift:" + latestAnalysis.id, "overview");
+    if (bundle?.baseline?.fingerprint) referenceTargets.set("baseline:" + bundle.baseline.fingerprint, "raw");
+    if (tool.current_fingerprint) referenceTargets.set("tool:" + tool.current_fingerprint, "overview");
+    for (const finding of findings) {
+      if (finding.id != null && finding.analysis_id === latestAnalysis.id) {
+        referenceTargets.set("finding:" + finding.id, "findings");
+      }
+    }
+  }
+  function openEvidence(reference) {
+    const tab = referenceTargets.get(reference);
+    if (!tab) return;
+    setCitedFinding(tab === "findings" ? { id: reference.slice("finding:".length), analysisId: latestAnalysis.id } : null);
+    onSelectTab(tab);
+    requestAnimationFrame(() => document.getElementById("analysis-evidence-panel")?.focus());
+  }
   return (
     <div className="analysis-workspace">
       <div aria-label="Analysis evidence" className="tab-list" role="tablist">
@@ -554,13 +574,15 @@ function AnalysisWorkspace({ activeTab, bundle, isAdmin, latestAnalysis, onCompl
             tool={tool}
           />
         )}
-        {activeTab === "findings" && <FindingsView error={bundle?.errors?.findings} findings={findings} />}
+        {activeTab === "findings" && <FindingsView error={bundle?.errors?.findings} findings={findings}
+          citedId={citedFinding?.analysisId === latestAnalysis?.id ? citedFinding?.id : null} />}
         {activeTab === "m4-neural" && isAdmin && (
           <M4SemanticsPanel key={String(tool?.id) + ":" + String(tool?.current_fingerprint || "")} latestAnalysis={latestAnalysis} tool={tool} />
         )}
-        {activeTab === "ai" && (
-          <ControlledAIAssistant bundle={bundle} isAdmin={isAdmin} tool={tool} />
-        )}
+        <aside className="analysis-ai-drawer" hidden={activeTab !== "ai"} aria-label="Selected analysis assistant">
+          <ControlledAIAssistant bundle={bundle} isAdmin={isAdmin} tool={tool}
+            evidenceReferences={referenceTargets} onOpenEvidence={openEvidence} />
+        </aside>
         {activeTab === "history" && <AnalysisHistory bundle={bundle} />}
         {activeTab === "contract" && (
           <ToolContractOnboarding isAdmin={isAdmin} onComplete={onComplete} tool={tool} />
@@ -823,14 +845,26 @@ export function findingImpactLabel(finding) {
     "Decision impact not recorded; severity alone does not prove a block.";
 }
 
-export function FindingsView({ error, findings }) {
+export function FindingsView({ error, findings, citedId }) {
   const findingPagination = usePagination(findings, String(findings.length));
+  const citedIndex = citedId == null ? -1 : findings.findIndex((finding) => String(finding.id) === citedId);
+  const citedPage = citedIndex < 0 ? null : Math.floor(citedIndex / findingPagination.pageSize) + 1;
+  const citedRef = useRef(null);
+  useEffect(() => { if (citedPage != null) findingPagination.setPage(citedPage); }, [citedPage, citedId]);
+  useEffect(() => {
+    if (citedId != null && findingPagination.page === citedPage) {
+      citedRef.current?.focus();
+    }
+  }, [citedId, citedPage, findingPagination.page]);
   if (error) return <SectionError error={error} title="Findings" />;
   if (findings.length === 0) return <div className="empty-state">No findings for the latest analysis.</div>;
   return (
     <div className="finding-list">
       {findingPagination.pageItems.map((finding, index) => (
-        <article className="finding-card" key={finding.id || `${finding.code}-${index}`}>
+        <article className="finding-card" key={finding.id || `${finding.code}-${index}`}
+          tabIndex={String(finding.id) === citedId ? -1 : undefined}
+          data-finding-id={finding.id}
+          ref={String(finding.id) === citedId ? citedRef : null}>
           <div className="finding-heading">
             <div><strong>{friendlyFindingTitle(finding)}</strong></div>
             <Badge value={finding.severity} />

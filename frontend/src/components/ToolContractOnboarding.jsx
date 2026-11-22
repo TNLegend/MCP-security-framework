@@ -31,6 +31,7 @@ function ToolContractWorkspace({ isAdmin, onComplete, tool }) {
   const [catalog, setCatalog] = useState(null);
   const [publicationPreview, setPublicationPreview] = useState(null);
   const [suggestions, setSuggestions] = useState([]);
+  const [aiProposal, setAiProposal] = useState(null);
   const [adapterGuidance, setAdapterGuidance] = useState(null);
   const [templateId, setTemplateId] = useState("");
   const [mappings, setMappings] = useState({});
@@ -177,19 +178,28 @@ function ToolContractWorkspace({ isAdmin, onComplete, tool }) {
     setError("");
     setMessage("");
     try {
+      setAiProposal(null);
       const suggestion = await fetchAIToolTemplateSuggestion(tool.id, draftRevisionId);
-      setSuggestions((current) => [suggestion, ...current.filter(
-        (value) => value.template_id !== suggestion.template_id,
-      )]);
-      setTemplateId(suggestion.template_id);
-      setMappings(suggestion.argument_mappings || {});
-      setFixedResources({});
-      setMessage("AI suggested a template. Review the mapped inputs and required bindings before saving a draft.");
+      setAiProposal({ suggestion, draftRevisionId });
     } catch (err) {
       setError(assistantErrorMessage(err));
     } finally {
       setBusy(false);
     }
+  }
+
+  function applyAiProposal() {
+    const suggestion = aiProposal?.suggestion;
+    if (!isAdmin || !suggestion || contractDraft || aiProposal.draftRevisionId !== draftRevisionId
+      || !templates.some((template) => template.id === suggestion.template_id)) return;
+    setSuggestions((current) => [suggestion, ...current.filter((value) => value.template_id !== suggestion.template_id)]);
+    setTemplateId(suggestion.template_id);
+    setMappings(suggestion.argument_mappings || {});
+    setFixedResources({});
+    setScopeDrafts({});
+    setSchemaBoundsText("[]");
+    setAiProposal(null);
+    setMessage("Proposal applied to the editor. Review its fields and save the draft explicitly.");
   }
 
   async function submit(event) {
@@ -423,7 +433,7 @@ function ToolContractWorkspace({ isAdmin, onComplete, tool }) {
           {isAdmin && suggestions.length > 0 && !contractDraft && (
             <button className="secondary-action" disabled={busy} onClick={askAi}
               aria-describedby="template-ai-advisory-notice" type="button">
-              {busy ? "Checking..." : "Suggest with AI"}
+              {busy ? "Checking..." : "Preview AI template suggestion"}
             </button>
           )}
         </div>
@@ -434,6 +444,15 @@ function ToolContractWorkspace({ isAdmin, onComplete, tool }) {
           </p>
         )}
 
+        {aiProposal && !contractDraft && <section className="detail-panel" aria-label="Template suggestion preview">
+          <strong>{aiProposal.suggestion.template_id}</strong>
+          <p>{Object.keys(aiProposal.suggestion.argument_mappings || {}).length} proposed input mappings</p>
+          <ul>{Object.entries(aiProposal.suggestion.argument_mappings || {}).map(([binding, path]) => (
+            <li key={binding}><code>{binding}</code> → <code>{Array.isArray(path) ? path.join(".") : String(path)}</code></li>
+          ))}</ul>
+          {aiProposal.draftRevisionId !== draftRevisionId ? <p role="status">The draft changed. Preview the suggestion again.</p> :
+            <button type="button" disabled={busy} onClick={applyAiProposal}>Apply suggestion to editor</button>}
+        </section>}
         {selectedTemplate && (
           <>
             <p className="hint-text">

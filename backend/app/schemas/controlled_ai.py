@@ -67,6 +67,7 @@ class ControlledAIAssistancePublic(BaseModel):
     fingerprint: str = Field(min_length=64, max_length=64)
     analysis_id: int
     analysis_context_hash: str | None = Field(default=None, max_length=64)
+    evidence_digest: str | None = Field(default=None, min_length=64, max_length=64)
     summary: str = Field(min_length=1, max_length=2500)
     # Compatibility field. Unverified provider prose is not returned by the service.
     ai_explanation: str | None = Field(default=None, max_length=1800)

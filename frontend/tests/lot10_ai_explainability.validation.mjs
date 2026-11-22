@@ -23,7 +23,7 @@ test("AI-01/AI-02: advisory content is never described as a framework fact and u
     };
     const view = (result) => renderToStaticMarkup(React.createElement(ControlledAIResult, { result }));
     const safe = view(base);
-    assert.match(safe, /AI interpretation of recorded evidence/);
+    assert.match(safe, /AI-selected evidence/);
     assert.match(safe, /The model suggests that the finding deserves review/);
     assert.doesNotMatch(safe, /What the framework recorded/);
     assert.match(safe, /advisory/i);

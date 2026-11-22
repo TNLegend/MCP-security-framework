@@ -20,6 +20,8 @@ function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool })
   );
   const [summary, setSummary] = useState(`Create Security Pack for ${tool.name}`);
   const [uncertainties, setUncertainties] = useState([]);
+  const [aiProposal, setAiProposal] = useState(null);
+  const [aiApplied, setAiApplied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const capabilityValid = /^[a-z0-9][a-z0-9._:-]*\.[a-z0-9_-]+$/.test(
@@ -35,6 +37,8 @@ function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool })
     setMode(nextMode);
     setError("");
     setUncertainties([]);
+    setAiProposal(null);
+    setAiApplied(false);
     if (nextMode === "blank") {
       setForm(initialForm);
       return;
@@ -50,7 +54,7 @@ function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool })
     setBusy(true);
     try {
       const proposal = await fetchAIToolSecurityPackDraft(tool.id, draftRevisionId);
-      setForm(packFormFromManifest(proposal.manifest));
+      setAiProposal({ form: packFormFromManifest(proposal.manifest), draftRevisionId });
       setUncertainties(proposal.uncertainties || []);
     } catch (err) {
       setError(assistantErrorMessage(err));
@@ -61,8 +65,16 @@ function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool })
     }
   }
 
+  function applyAiProposal() {
+    if (!aiProposal || aiProposal.draftRevisionId !== draftRevisionId) return;
+    setForm(aiProposal.form);
+    setAiApplied(true);
+    setAiProposal(null);
+  }
+
   async function submit(event) {
     event.preventDefault();
+    if (mode === "ai" && !aiApplied) return;
     setBusy(true);
     setError("");
     try {
@@ -112,7 +124,7 @@ function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool })
           onClick={() => selectMode("ai")}
           type="button"
         >
-          AI-assisted
+          Preview with AI
         </button>
         <button
           aria-pressed={mode === "advanced"}
@@ -133,6 +145,14 @@ function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool })
           <ul>{uncertainties.map((uncertainty, index) => <li key={index}>{uncertainty}</li>)}</ul>
         </div>
       )}
+      {aiProposal && <section className="detail-panel" aria-label="Security pack proposal preview">
+        <strong>{aiProposal.form.title}</strong>
+        <p><code>{aiProposal.form.packId}</code> · <code>{aiProposal.form.capabilityId}</code></p>
+        <p>Template <code>{aiProposal.form.templateId}</code> · Resource type <code>{aiProposal.form.resourceTypeId}</code></p>
+        {aiProposal.draftRevisionId === draftRevisionId ?
+          <button type="button" disabled={busy} onClick={applyAiProposal}>Apply proposal to editor</button> :
+          <p role="status">The draft changed. Preview the proposal again.</p>}
+      </section>}
       <form className="tool-pack-form" onSubmit={submit}>
         {mode === "advanced" ? (
           <>
@@ -166,8 +186,8 @@ function ToolSecurityPackBuilder({ draftRevisionId, onCancel, onCreated, tool })
         <label className="wide-field">Change summary<input disabled={busy} maxLength="2000" minLength="3" onChange={(event) => setSummary(event.target.value)} required value={summary} /></label>
         <div className="button-row tool-pack-actions">
           <button disabled={busy} onClick={onCancel} type="button">Cancel</button>
-          <button className="secondary-action" disabled={busy || (mode !== "advanced" && !capabilityValid)} type="submit">
-            {busy ? "Adding..." : "Add to Draft"}
+          <button className="secondary-action" disabled={busy || (mode === "ai" && !aiApplied) || (mode !== "advanced" && !capabilityValid)} type="submit">
+            {busy ? "Saving..." : "Save pack to draft"}
           </button>
         </div>
       </form>

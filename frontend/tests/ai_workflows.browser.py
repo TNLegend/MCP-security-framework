@@ -36,6 +36,9 @@ def exercise_assistant(page, width):
         }
         route.fulfill(status=status, json={**recorded_response, **patch} if status == 200 else patch)
 
+    page.route("**/api/v1/tool-analysis/tools/1/findings", lambda route: route.fulfill(json=[
+        {"id": 17, "analysis_id": 1, "code": "FIXTURE_RULE", "severity": "HIGH", "summary": "Exact fixture finding"}
+    ]))
     page.route("**/api/v1/control-plane/ai-assistance/tools/1", request_assistance)
     navigate(page, "Security review", width)
     page.get_by_role("tab", name="Explain with AI").click()
@@ -49,6 +52,11 @@ def exercise_assistant(page, width):
     expect(assistant.get_by_text("finding:17", exact=True).last).to_be_visible()
     expect(assistant.get_by_text("HIGH · Fixture scope")).to_be_visible()
     expect(assistant.get_by_text("Unsupported provider permission claim")).to_have_count(0)
+    assistant.get_by_role("button", name="finding:17", exact=True).first.click()
+    expect(page.locator('[data-finding-id="17"]')).to_contain_text("Exact fixture finding")
+    page.get_by_role("tab", name="Explain with AI").click()
+    expect(assistant.get_by_text("HIGH · Fixture scope")).to_be_visible()
+    assert len(submitted) == 1
     # UX-14: uncalibrated model confidence is no longer displayed.
     expect(assistant.get_by_text("Advisory confidence:", exact=False)).to_have_count(0)
     ask.click()

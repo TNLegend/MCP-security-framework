@@ -10,7 +10,6 @@ const MODES = [
   ["RISK_SUMMARY", "Risk summary"],
   ["SUGGEST_NEXT_STEP", "Suggest next step"],
   ["COMPARE_OPTIONS", "Compare options"],
-  ["DRAFT_ONBOARDING", "Draft onboarding"],
 ];
 
 const ACTIONS = {
@@ -23,12 +22,15 @@ const ACTIONS = {
   REANALYZE: "Run the tool analysis again",
 };
 
-function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
+function ControlledAIAssistant({ bundle, isAdmin = false, tool, onOpenEvidence, evidenceReferences }) {
   const [mode, setMode] = useState("EXPLAIN");
   const [question, setQuestion] = useState("");
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [staleBinding, setStaleBinding] = useState(false);
+  const lastBinding = useRef(null);
+  const hadResponse = useRef(false);
 
   const currentAnalysis = bundle?.analyses?.[0] || null;
   const expectedAnalysis = currentAssistantAnalysis(tool, currentAnalysis);
@@ -45,6 +47,12 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
   ]);
 
   useLayoutEffect(() => {
+    const changed = lastBinding.current !== null && lastBinding.current !== contextKey;
+    if (changed) {
+      setStaleBinding(hadResponse.current);
+      hadResponse.current = false;
+    }
+    lastBinding.current = contextKey;
     guardRef.current.activate(contextKey);
     setBusy(false);
     setResult(null);
@@ -61,6 +69,7 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
     if (!request) return;
     setBusy(true);
     setError("");
+    setStaleBinding(false);
     setResult(null);
     try {
       const payload = {
@@ -71,6 +80,7 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
       const response = await requestControlledAIAssistance(tool.id, payload);
       if (guardRef.current.accepts(request, contextKey)) {
         if (matchesAssistantResponse(response, tool.id, mode, expectedAnalysis)) {
+          hadResponse.current = true;
           setResult(response);
         } else {
           setError(assistantErrorMessage({ code: "controlled_ai_analysis_changed" }));
@@ -96,6 +106,7 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
         <div><dt>Analysis</dt><dd>{expectedAnalysis ? humanize(currentAnalysis.analysis_status) : "Current analysis unavailable"}</dd></div>
         <div><dt>Review</dt><dd>{expectedAnalysis ? humanize(currentAnalysis.review_status) : "Unavailable"}</dd></div>
       </dl>
+      {staleBinding && <p role="status">The evidence binding changed. Request an explanation for the current analysis.</p>}
       {bundle?.errors?.findings && (
         <p role="status">The findings could not be loaded in this view. Check the Findings tab before acting on advice.</p>
       )}
@@ -116,7 +127,7 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
       {isAdmin && (
         <form aria-busy={busy} className="controlled-ai-form" onSubmit={submit}>
           <p className="hint-text" role="note">
-            Sends analysis metadata and your question to the configured AI provider and, if needed, its fallback. Onboarding help also sends tool metadata.
+            Sends selected analysis metadata and your question to the configured AI provider and, if needed, its fallback.
           </p>
           <div className="controlled-ai-question">
             <label>
@@ -152,13 +163,19 @@ function ControlledAIAssistant({ bundle, isAdmin = false, tool }) {
 
       <p className="visually-hidden" role="status">{busy ? "Requesting AI assistance." : result ? "AI assistance is ready." : ""}</p>
       {error && <div className="error-banner" role="alert">{error}</div>}
-      {result && <ControlledAIResult result={result} />}
+      {result && <ControlledAIResult result={result} evidenceReferences={evidenceReferences} onOpenEvidence={onOpenEvidence} />}
     </section>
   );
 }
 
 
-export function ControlledAIResult({ result }) {
+function EvidenceCitation({ reference, evidenceReferences, onOpenEvidence }) {
+  return evidenceReferences?.has(reference) && onOpenEvidence
+    ? <button type="button" className="record-link" onClick={() => onOpenEvidence(reference)}>{reference}</button>
+    : <code>{reference}</code>;
+}
+
+export function ControlledAIResult({ result, evidenceReferences, onOpenEvidence }) {
   const safeResult = result.non_authoritative === true
     && result.requires_human_review === true
     && result.can_mutate_runtime === false;
@@ -190,7 +207,7 @@ export function ControlledAIResult({ result }) {
           {result.grounded_claims.map((claim) => (
             <li key={claim.type + ":" + claim.evidence_ref}>
               <strong>{claim.label}</strong>{" · "}{claim.value}{" "}
-              <code>{claim.evidence_ref}</code>
+              <EvidenceCitation reference={claim.evidence_ref} evidenceReferences={evidenceReferences} onOpenEvidence={onOpenEvidence} />
             </li>
           ))}
         </ul> : <p className="hint-text">No supported AI claims were returned. Use the recorded evidence above.</p>}
@@ -212,12 +229,18 @@ export function ControlledAIResult({ result }) {
         {/* UX-14: model confidence is uncalibrated, so it is not displayed. */}
         <p>AI output is advisory only: it cannot approve tools, change signed contracts, grant permissions or invoke MCP tools.</p>
         <p>Displayed findings are recorded by the framework, not invented by the AI.</p>
-        <StringList title={isDraft ? "Related analysis references" : "Framework evidence references selected by AI"} values={result.evidence_refs} />
+        {result.evidence_digest && <p>Evidence digest: <code>{result.evidence_digest}</code></p>}
+        {result.evidence_refs?.length > 0 && <ul aria-label="Framework evidence references selected by AI">
+          {result.evidence_refs.map((reference) => <li key={reference}>
+            <EvidenceCitation reference={reference} evidenceReferences={evidenceReferences} onOpenEvidence={onOpenEvidence} />
+          </li>)}
+        </ul>}
         <OptionList title="Template options" values={result.template_options} />
         <OptionList title="Adapter options" values={result.adapter_options} />
         {isDraft && (
           <section className="controlled-ai-section">
-            <h5>{humanize(result.draft_kind)} preview</h5>
+            <h5>What the AI proposed</h5>
+            <p>{humanize(result.draft_kind)} preview</p>
             <p>Review the proposed draft before using the approval workflow.</p>
             <DraftPreview draft={result.draft_preview} />
           </section>

@@ -31,3 +31,16 @@ def test_fake_provider_cannot_invent_permissions_using_any_valid_reference(monke
         ("REVIEW_STATUS", "REVIEW_REQUIRED", "analysis:7"),
     ]
     assert _grounded_claims(advice, analysis, ())[-1].evidence_ref == "analysis:7"
+
+
+def test_evidence_binding_is_stable_and_changes_with_scope_or_configuration():
+    from app.services.controlled_ai_assistance import _assistance_digest
+
+    recorded = SimpleNamespace(id=7, fingerprint="a" * 64, analysis_context_hash="b" * 64,
+                               analysis_status="COMPLETE", review_status="PENDING")
+    refs = ("analysis:7", "finding:4")
+    bound = _assistance_digest(1, recorded, refs, None, {"x": 1, "y": 2})
+    assert len(bound) == 64
+    assert bound == _assistance_digest(1, recorded, refs, None, {"y": 2, "x": 1})
+    assert bound != _assistance_digest(2, recorded, refs, None, {"x": 1, "y": 2})
+    assert bound != _assistance_digest(1, recorded, refs, "other-revision", {"x": 1, "y": 2})

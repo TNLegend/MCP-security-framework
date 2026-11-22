@@ -3821,3 +3821,11 @@ label.deny-global-warning.checkbox-field .field-error {
 @media (max-width: 480px) {
   .nested-changes dl { grid-template-columns: minmax(0, 1fr); }
 }
+
+.analysis-ai-drawer {
+  max-inline-size: min(100%, 54rem);
+  margin-inline-start: auto;
+  padding-inline-start: 12px;
+  border-inline-start: 2px solid var(--console-line, #d4dce6);
+}
+.controlled-ai-panel code, .controlled-ai-panel .record-link { overflow-wrap: anywhere; }

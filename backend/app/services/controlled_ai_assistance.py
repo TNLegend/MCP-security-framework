@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -172,6 +173,10 @@ def generate_controlled_ai_assistance(
     guidance = adapter_guidance_for_tool(tool, content=content)
 
     evidence_refs = _evidence_refs(tool, analysis, findings, baseline)
+    evidence_digest = _assistance_digest(
+        tool.id, analysis, evidence_refs, draft_revision_id,
+        content.model_dump(mode="json") if content is not None else None,
+    )
     template_by_id = {item["template_id"]: item for item in suggestions}
     adapter_by_id = {
         item["adapter_id"]: item
@@ -186,7 +191,7 @@ def generate_controlled_ai_assistance(
             suggestions=suggestions,
             guidance=guidance,
             evidence_refs=evidence_refs,
-        )
+        ).model_copy(update={"evidence_digest": evidence_digest})
 
     context = _build_context(
         analysis=analysis,
@@ -221,6 +226,7 @@ def generate_controlled_ai_assistance(
         fingerprint=analysis.fingerprint,
         analysis_id=analysis.id,
         analysis_context_hash=analysis.analysis_context_hash,
+        evidence_digest=evidence_digest,
         summary=_authoritative_summary(
             analysis=analysis,
             findings=findings,
@@ -259,6 +265,17 @@ def generate_controlled_ai_assistance(
         uncertainties=_deterministic_uncertainties(analysis=analysis),
         confidence=advice.confidence,
     )
+
+
+def _assistance_digest(tool_id, analysis, references, revision_id, content) -> str:
+    scope = {
+        "type": "tool_analysis", "tool_id": tool_id, "analysis_id": analysis.id,
+        "fingerprint": analysis.fingerprint, "context_hash": analysis.analysis_context_hash,
+        "analysis_status": analysis.analysis_status, "review_status": analysis.review_status,
+        "references": references, "requested_draft_id": revision_id, "configuration": content,
+    }
+    canonical = json.dumps(scope, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _latest_current_analysis(db: Session, tool: MCPTool) -> ToolAnalysis:
