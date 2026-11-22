@@ -464,14 +464,19 @@ class LocalRuntimeManager:
                 except subprocess.TimeoutExpired:
                     child.process.kill()
                     child.process.wait(timeout=5)
+            # The drain thread owns the subprocess stdout pipe. Closing a
+            # buffered pipe on the main thread while the reader is blocked in
+            # read1() can deadlock on Windows, even after terminate() if an
+            # inherited writer handle remains open. Join first, and only
+            # close from this thread when no drain reader is still alive.
+            if child.log_thread is not None and child.log_thread.is_alive():
+                child.log_thread.join(timeout=2)
             stdout = getattr(child.process, "stdout", None)
-            if stdout is not None:
+            if stdout is not None and (child.log_thread is None or not child.log_thread.is_alive()):
                 try:
                     stdout.close()
                 except Exception:
                     pass
-            if child.log_thread is not None and child.log_thread.is_alive():
-                child.log_thread.join(timeout=2)
             if child.log_handle is not None:
                 child.log_handle.close()
         self.started_children.clear()
