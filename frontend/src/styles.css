@@ -3084,6 +3084,11 @@ code {
   color: #5c3600;
   font-weight: 700;
 }
+/* UX-03: freshness of the visible runtime query; stale rows stay readable. */
+.runtime-freshness { margin: 4px 0 8px; }
+.runtime-freshness.is-stale { color: #7a4100; font-weight: 600; }
+.stale-results { border-left: 4px solid #d99f38; padding-left: 8px; }
+.stale-results table { opacity: 0.78; }
 /* UX-02: explicit global acknowledgement sits inside the warning block. */
 label.deny-global-warning.checkbox-field {
   display: grid;

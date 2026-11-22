@@ -142,6 +142,9 @@ function App() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [dashboardRefreshedAt, setDashboardRefreshedAt] = useState(null);
+  // UX-03: header Refresh is an intent for the *visible* view as well as the
+  // shared status reads; views that own their query re-read it on change.
+  const [viewRefreshToken, setViewRefreshToken] = useState(0);
   const loadDataGeneration = useRef(0);
   const isAdmin = user?.role === "ADMIN";
   const activePage = requestedPage === "users" && !isAdmin ? "dashboard" : requestedPage;
@@ -485,7 +488,7 @@ function App() {
     }
 
     if (activePage === "runtime") {
-      return <RuntimeLogs initialPage={runtimeLogPage} loading={loading} servers={activeServers} tools={activeTools} onNavigate={navigateToPage} />;
+      return <RuntimeLogs initialPage={runtimeLogPage} loading={loading} servers={activeServers} tools={activeTools} onNavigate={navigateToPage} refreshToken={viewRefreshToken} />;
     }
 
     if (activePage === "operations") {
@@ -627,7 +630,8 @@ function App() {
             <strong>{user.username}</strong>
             <span>{user.role === "ADMIN" ? "Administrator" : "Viewer"}</span>
           </div>
-          <button className="secondary-action" disabled={loading || signingOut} onClick={loadData} type="button">
+          <button className="secondary-action" disabled={loading || signingOut}
+            onClick={() => { setViewRefreshToken((token) => token + 1); loadData(); }} type="button">
             {loading ? "Refreshing…" : "Refresh"}
           </button>
           <button className="secondary-action" type="button" aria-haspopup="dialog"

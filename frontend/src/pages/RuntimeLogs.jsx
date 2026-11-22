@@ -55,9 +55,19 @@ export function matchingReviewedToolId(log, tools = []) {
   return matches.length === 1 ? matches[0].id : null;
 }
 
+// UX-03: one refresh contract for the header and page controls. A refresh
+// re-reads the *applied* query from page 1; a failed refresh keeps the prior
+// rows but labels them stale with the time they were actually read.
+export function refreshStatusText({ loadedAt, refreshFailed, cursorReset, formatTime = formatServerTime }) {
+  if (!loadedAt) return refreshFailed ? "Runtime events could not be read. No results are shown." : "";
+  const stamp = formatTime(loadedAt instanceof Date ? loadedAt.toISOString() : loadedAt);
+  if (refreshFailed) return "Latest refresh failed. Showing stale results read at " + stamp + ".";
+  return "Results read at " + stamp + (cursorReset ? " · refresh returned to page 1 of the applied filters." : ".");
+}
+
 function RuntimeLogs({
   initialPage = EMPTY_PAGE, loading = false, servers = [], tools = [],
-  onNavigate = null,
+  onNavigate = null, refreshToken = 0,
 }) {
   const [page, setPage] = useState(normalizePage(initialPage));
   const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
@@ -66,6 +76,9 @@ function RuntimeLogs({
   const [pageLoading, setPageLoading] = useState(false);
   const [error, setError] = useState("");
   const [selectedLogId, setSelectedLogId] = useState(null);
+  const [loadedAt, setLoadedAt] = useState(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const [cursorReset, setCursorReset] = useState(false);
 
   const requestGeneration = useRef(0);
   const detailHeading = useRef(null);
@@ -89,13 +102,23 @@ function RuntimeLogs({
     return () => { requestGeneration.current += 1; };
   }, []);
 
+  // Header Refresh increments refreshToken; refresh the visible applied query.
+  useEffect(() => {
+    if (!refreshToken) return;
+    void refreshApplied();
+  }, [refreshToken]);
+
+  function refreshApplied() {
+    return loadPage(activeFilters, [null], { resetFromPage: cursorStack.length });
+  }
+
   useEffect(() => {
     if (selectedLogId !== null && !entries.some((log) => log.id === selectedLogId)) {
       setSelectedLogId(null);
     }
   }, [entries, selectedLogId]);
 
-  async function loadPage(filters, cursors) {
+  async function loadPage(filters, cursors, { resetFromPage = 0 } = {}) {
     const cursor = cursors[cursors.length - 1];
     const generation = ++requestGeneration.current;
     setPageLoading(true);
@@ -107,9 +130,13 @@ function RuntimeLogs({
       setPage(normalizePage(result));
       setActiveFilters(filters);
       setCursorStack(cursors);
+      setLoadedAt(new Date());
+      setRefreshFailed(false);
+      setCursorReset(resetFromPage > 1);
     } catch (err) {
       if (generation === requestGeneration.current) {
         setError(err.message || "Runtime logs could not be loaded.");
+        setRefreshFailed(true);
       }
     } finally {
       if (generation === requestGeneration.current) setPageLoading(false);
@@ -171,9 +198,20 @@ function RuntimeLogs({
           <p>{page.summary.total} outcome event(s) matching filters. The table also includes recorded authorization intents.</p>
         </div>
         <button type="button" className="secondary-action"
-          disabled={pageLoading} onClick={() => loadPage(activeFilters, [null])}>Refresh events</button>
+          disabled={pageLoading} onClick={refreshApplied}>Refresh events</button>
       </div>
-      {error && <div className="error-banner" role="alert">{error} Previous results are retained when available.</div>}
+      {error && (
+        <div className="error-banner" role="alert">
+          {error}{" "}
+          {loadedAt ? "The rows below are from the previous successful read and may be stale." : ""}
+        </div>
+      )}
+      {(loadedAt || refreshFailed) && (
+        <p className={"hint-text runtime-freshness" + (refreshFailed ? " is-stale" : "")}
+          data-testid="runtime-freshness" id="runtime-freshness" role="status">
+          {refreshStatusText({ loadedAt, refreshFailed, cursorReset })}
+        </p>
+      )}
       <p className="hint-text" role="note">
         The summary counts exclude pending audit intents. The table includes them for traceability.
         A policy ALLOW does not establish successful dispatch. Never replay an uncertain result without reconciliation.
@@ -246,7 +284,8 @@ function RuntimeLogs({
             <h3>Runtime Events</h3>
             <p>Page {cursorStack.length} · {entries.length} row(s)</p>
           </div>
-          <div aria-busy={pageLoading}>
+          <div aria-busy={pageLoading} aria-describedby="runtime-freshness"
+            className={refreshFailed && entries.length > 0 ? "stale-results" : undefined}>
             {pageLoading && <p role="status" className="hint-text">Loading runtime calls...</p>}
             {(!pageLoading || entries.length > 0) && (
               <RuntimeLogsTable logs={entries} selectedLogId={selectedLogId} onSelectLog={openEvent} servers={servers} />
