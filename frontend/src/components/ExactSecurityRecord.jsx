@@ -4,6 +4,7 @@ import { auditTargetLink } from "../utils/operationNavigation.js";
 
 const labels = {
   mcp_server: ["MCP server", "MCP servers"],
+  tool_protocol_observation: ["Tool protocol observation", "Security review"],
   control_plane_config_revision: ["Configuration revision", "Security rules"],
   emergency_deny: ["Emergency restriction", "Emergency block"],
   control_plane_user: ["User", "Users"],
@@ -33,7 +34,8 @@ export default function ExactSecurityRecord({ view, type, id, isAdmin, refreshTo
         <h3>{state.record.label}</h3>
         <dl className="inline-metadata">
           <div><dt>Exact record ID</dt><dd><code>{state.record.id}</code></dd></div>
-          <div><dt>Current record status</dt><dd>{state.record.status}</dd></div>
+          <div><dt>{type === "tool_protocol_observation" ? "Stored analysis status" : "Current record status"}</dt>
+            <dd>{state.record.status}</dd></div>
         </dl>
         <p className="hint-text">An audit receipt records what was observed at its timestamp.</p>
       </div> :

@@ -20,6 +20,7 @@ export function auditOperationLink(targetType, targetId) {
 
 const exactTargetViews = {
   mcp_server: "inventory",
+  tool_protocol_observation: "analysis",
   control_plane_config_revision: "config",
   emergency_deny: "emergency",
   control_plane_user: "users",
@@ -41,10 +42,12 @@ export function auditTargetLink(targetType, targetId) {
     }
   }
   const view = exactTargetViews[targetType];
-  if (targetType === "mcp_server" && /^[1-9][0-9]{0,9}$/.test(String(targetId)) && Number(targetId) <= 2147483647) {
-    return "?view=inventory&record=" + targetId;
+  if (targetType === "mcp_server" || targetType === "tool_protocol_observation") {
+    const id = String(targetId || "");
+    return /^[1-9][0-9]{0,9}$/.test(id) && Number(id) <= 2147483647
+      ? "?view=" + view + "&record=" + id : null;
   }
   const uuid = normalizeOperationId(targetId);
   if (uuid && targetType === "cloud_scan") return "?view=cloud&scan=" + uuid;
-  return uuid && view && targetType !== "mcp_server" ? "?view=" + view + "&record=" + uuid : null;
+  return uuid && view ? "?view=" + view + "&record=" + uuid : null;
 }

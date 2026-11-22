@@ -15,6 +15,7 @@ from app.models.control_plane import (
 )
 from app.models.mcp_server import MCPServer
 from app.models.runtime_call import RuntimeCall
+from app.models.tool_analysis import ToolProtocolObservation
 from app.models.cloud_security import (
     CloudScanEvent, CloudDeployGovernanceDecision, CloudDeployExceptionEvent,
 )
@@ -47,7 +48,10 @@ def _event_public(event: ControlPlaneAuditEvent) -> dict:
 
 @router.get("/resolve/{target_type}/{target_id}")
 def resolve_audit_target(
-    target_type: Literal["mcp_server", "control_plane_config_revision", "emergency_deny", "control_plane_user"],
+    target_type: Literal[
+        "mcp_server", "control_plane_config_revision", "emergency_deny",
+        "control_plane_user", "tool_protocol_observation",
+    ],
     target_id: str = Path(min_length=1, max_length=36),
     current: AuthenticatedControlPlaneUser = Depends(require_authenticated_user),
     db: Session = Depends(get_db),
@@ -58,10 +62,11 @@ def resolve_audit_target(
         "control_plane_config_revision": ControlPlaneConfigRevision,
         "emergency_deny": EmergencyDeny,
         "control_plane_user": ControlPlaneUser,
+        "tool_protocol_observation": ToolProtocolObservation,
     }[target_type]
     if target_type == "control_plane_user" and current.user.role != ROLE_ADMIN:
         raise HTTPException(status_code=404, detail="audit_target_not_available")
-    if target_type == "mcp_server":
+    if target_type in {"mcp_server", "tool_protocol_observation"}:
         key = int(target_id) if re.fullmatch(r"[1-9][0-9]{0,9}", target_id) else 0
         if not 0 < key <= 2147483647:
             raise HTTPException(status_code=404, detail="audit_target_not_available")
@@ -74,7 +79,17 @@ def resolve_audit_target(
     if record is None:
         raise HTTPException(status_code=404, detail="audit_target_not_available")
 
-    if isinstance(record, MCPServer):
+    if isinstance(record, ToolProtocolObservation):
+        # Only expose observations referenced by the authenticated audit view.
+        # Do not turn audit navigation into a second inventory endpoint.
+        receipt = db.scalar(select(ControlPlaneAuditEvent.id).where(
+            ControlPlaneAuditEvent.target_type == target_type,
+            ControlPlaneAuditEvent.target_id == str(key),
+        ).limit(1))
+        if receipt is None:
+            raise HTTPException(status_code=404, detail="audit_target_not_available")
+        label, status = f"Observation #{record.id}", record.analysis_state
+    elif isinstance(record, MCPServer):
         label, status = record.name, record.status
     elif isinstance(record, ControlPlaneConfigRevision):
         label, status = f"Revision #{record.revision_number}", record.status
