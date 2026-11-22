@@ -3803,3 +3803,8 @@ label.deny-global-warning.checkbox-field .field-error {
   .cloud-detail-heading .secondary-action { width: 100%; }
   .cloud-exception-review > button { width: 100%; }
 }
+
+/* UX-20: exact IAM finding target */
+.finding-target { margin: 0.25rem 0 0.5rem; font-size: 0.875rem; color: var(--muted, #4a5568); overflow-wrap: anywhere; }
+.finding-target.legacy { font-style: italic; }
+

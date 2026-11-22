@@ -108,6 +108,10 @@ class CloudFinding(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     remediation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # UX-20: durable, nullable link from an IAM finding to the exact comparison
+    # row that produced it. Legacy rows stay NULL and are reported as unlinked;
+    # they are never re-joined by title or action text.
+    comparison_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
 
 
 class CloudEvidence(Base):

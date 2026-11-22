@@ -332,6 +332,12 @@ def ensure_cloud_security_schema() -> None:
         connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS signed_revision INTEGER"))
         connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS identity_permission_status VARCHAR(48)"))
         connection.execute(text("ALTER TABLE cloud_iam_comparisons ADD COLUMN IF NOT EXISTS effective_permission_status VARCHAR(48)"))
+        # UX-20: additive, nullable finding -> comparison link. Old rows stay NULL
+        # (shown as legacy/unlinked); nothing is backfilled by text matching.
+        connection.execute(text("ALTER TABLE cloud_findings ADD COLUMN IF NOT EXISTS comparison_id VARCHAR(36)"))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_cloud_findings_comparison_id ON cloud_findings (comparison_id)"
+        ))
         if connection.dialect.name == "postgresql":
             for table in ("cloud_deploy_governance_decisions", "cloud_deploy_exception_events"):
                 connection.execute(text("""

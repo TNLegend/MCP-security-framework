@@ -444,10 +444,14 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                         entry["action"],entry["resource"],iam_statements)
                 if status=="UNKNOWN":
                     unknown+=1
+                # UX-20: allocate the comparison id first so the finding carries a
+                # durable link to the exact comparison row that produced it.
+                comparison_id=new_id()
                 if status in ("EXPLICIT_DENY","POTENTIAL_EXCESS","POTENTIAL_MISSING"):
                     issues+=1
                     db.add(CloudFinding(
                         scan_id=scan.id,resource_id=res.id,
+                        comparison_id=comparison_id,
                         rule_id="IAM_MCP_"+status,
                         result=status,
                         fingerprint=digest([scan.id,entry["tool"],
@@ -467,7 +471,6 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                 effective_permission_status=(
                     "DENIED_BY_EXPLICIT_IDENTITY_POLICY" if status=="EXPLICIT_DENY"
                     else "UNKNOWN")
-                comparison_id=new_id()
                 summary={
                     "comparison_id":comparison_id,
                     "identity_permission_status":identity_permission_status,
@@ -524,6 +527,7 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                 ))
             for delta in deltas:
                 is_extra=delta.status=="OUTSIDE_MCP_MAPPING"
+                comparison_id=new_id()
                 if is_extra:
                     issues+=1
                     if mapping.configuration.get("role_usage")=="DEDICATED":
@@ -534,6 +538,7 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                         interpretation="The role's other consumers are not established."
                     db.add(CloudFinding(
                         scan_id=scan.id,resource_id=res.id,
+                        comparison_id=comparison_id,
                         rule_id="IAM_MCP_OUTSIDE_APPROVED_MAPPING",
                         severity="MEDIUM",result="OUTSIDE_MCP_MAPPING",
                         fingerprint=digest([scan.id,"REVERSE",delta.action,
@@ -546,7 +551,6 @@ def _collect(scan_id: str, environment_id: str, mapping_id: str) -> None:
                     ))
                 else:
                     unknown+=1
-                comparison_id=new_id()
                 reverse_summary={
                     "comparison_id":comparison_id,
                     "direction":"IAM_POLICY_TO_APPROVED_MCP_NEEDS",

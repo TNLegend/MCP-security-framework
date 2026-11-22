@@ -151,6 +151,9 @@ class FindingPublic(BaseModel):
     title: str
     description: str
     remediation: str | None
+    # UX-20: exact IAM comparison that produced this finding. None means the
+    # finding is not an IAM comparison finding, or predates the durable link.
+    comparison_id: str | None = None
     model_config=ConfigDict(from_attributes=True, extra="forbid")
 
 
@@ -323,6 +326,9 @@ class IAMComparisonPublic(BaseModel):
     # Projection of an evidence row correlated by an immutable comparison_id.
     # Historical comparisons do not have this association; report None.
     evidence_summary: dict | None = None
+    # UX-20: findings persisted with this exact comparison_id. Empty for
+    # comparisons that produced no finding and for legacy (pre-link) scans.
+    linked_finding_ids: list[str] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
 

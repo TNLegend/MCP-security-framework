@@ -627,9 +627,23 @@ def _iam_public_comparisons(
                     "checked_at": evidence.checked_at.isoformat(),
                     "summary": summary,
                 }
+    # UX-20: exact finding links through the durable CloudFinding.comparison_id.
+    # Legacy findings (comparison_id NULL) are never matched by title/action.
+    linked: dict[str, list[str]] = {}
+    if ids:
+        for finding_id, comparison_id in db.execute(
+            select(CloudFinding.id, CloudFinding.comparison_id).where(
+                CloudFinding.scan_id == scan_id,
+                CloudFinding.comparison_id.in_(ids),
+            ).order_by(CloudFinding.id)
+        ):
+            linked.setdefault(comparison_id, []).append(finding_id)
     return [
         IAMComparisonPublic.model_validate(item).model_copy(
-            update={"evidence_summary": by_id.get(item.id)},
+            update={
+                "evidence_summary": by_id.get(item.id),
+                "linked_finding_ids": linked.get(item.id, []),
+            },
         )
         for item in comparisons
     ]

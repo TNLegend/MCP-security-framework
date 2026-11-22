@@ -687,6 +687,28 @@ export function iacFindingSourceEvidence(finding, evidence) {
   }));
 }
 
+// UX-20: identify a finding by its exact IAM comparison (action + resource),
+// never by its title. Findings that predate the durable link say so.
+export function findingTarget(finding, evidence) {
+  if (!finding) return { linked: false, legacy: false, text: "" };
+  const reference = "ref " + String(finding.id || "").slice(0, 8);
+  const isIam = String(finding.rule_id || "").startsWith("IAM_MCP_");
+  if (finding.comparison_id) {
+    const row = (Array.isArray(evidence) ? evidence : []).find(
+      (item) => item?.safe_summary?.comparison_id === finding.comparison_id,
+    );
+    const summary = row?.safe_summary || {};
+    const scope = summary.action
+      ? `${summary.action} on ${summary.resource || "unspecified resource"}`
+      : "comparison " + finding.comparison_id.slice(0, 8);
+    return { linked: true, legacy: false, comparisonId: finding.comparison_id, text: `${scope} (${reference})` };
+  }
+  if (isIam) {
+    return { linked: false, legacy: true, text: `Legacy finding, not linked to an exact comparison (${reference})` };
+  }
+  return { linked: false, legacy: false, text: reference };
+}
+
 function CloudFindingResource({ finding, resources }) {
   if (!finding.resource_id) return <p>Resource: not linked to a specific resource.</p>;
   const resource = (resources || []).find((item) => item.id === finding.resource_id);
@@ -2091,9 +2113,13 @@ export default function CloudSecurity({ isAdmin = false }) {
           {visibleFindings(details, findingSeverity).length ? visibleFindings(details, findingSeverity).map((f) => (
             <article key={f.id} id={"cloud-finding-" + f.id} className="cloud-finding">
               <strong>{f.severity}: {f.title}</strong>
+              <p className={"finding-target" + (findingTarget(f, details.evidence).legacy ? " legacy" : "")}
+                data-testid="finding-target">
+                {findingTarget(f, details.evidence).text}
+              </p>
               {isAdmin && ["COMPLETED", "PARTIAL"].includes(details.scan.status) && (
                 <button type="button" className="tiny-action"
-                  aria-label={"Prepare exception request for " + f.title}
+                  aria-label={"Prepare exception request for " + f.title + ": " + findingTarget(f, details.evidence).text}
                   disabled={governanceLoading}
                   onClick={() => {
                     // Only select the exact stored finding; never create or
@@ -2271,7 +2297,7 @@ export default function CloudSecurity({ isAdmin = false }) {
                       onChange={(e) => setExceptionFinding(e.target.value)}>
                       <option value="">Choose an existing finding</option>
                       {details.findings.map((finding) => <option key={finding.id}
-                        value={finding.id}>{finding.rule_id}: {finding.title}</option>)}
+                        value={finding.id}>{finding.title}: {findingTarget(finding, details.evidence).text}</option>)}
                     </select>
                   </label>
                   <label>Exception request justification (at least 20 characters)
