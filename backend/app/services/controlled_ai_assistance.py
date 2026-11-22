@@ -204,8 +204,10 @@ def generate_controlled_ai_assistance(
     advice, provider, fallback_used = _generate_advice(
         prompt,
         allowed_evidence=set(evidence_refs),
-        allowed_templates=set(template_by_id),
-        allowed_adapters=set(adapter_by_id),
+        # Mode-specific selection is enforced before accepting a model reply.
+        # A non-COMPARE response carrying option IDs must fall back or fail safe.
+        allowed_templates=set(template_by_id) if mode == "COMPARE_OPTIONS" else set(),
+        allowed_adapters=set(adapter_by_id) if mode == "COMPARE_OPTIONS" else set(),
     )
 
     unknown_evidence = set(advice.evidence_refs) - set(evidence_refs)
