@@ -3,7 +3,7 @@
 import argparse
 from io import BytesIO
 from zipfile import ZipFile
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -171,7 +171,15 @@ def api_fixture(route, role, state):
         },
     }
     responses.update({f"{PREFIX}/scans/{scan['id']}": audit_payload(scan) for scan in SCANS})
-    if path == f"{PREFIX}/scans/advanced/deploy-governance/history":
+    if path == f"{PREFIX}/scans/page":
+        query = parse_qs(url.query)
+        kind = query.get("kind", [""])[0]
+        environment = query.get("environment_id", [""])[0]
+        rows = [scan for scan in SCANS if (not kind or scan["kind"] == kind)
+                and (not environment or scan["environment_id"] == environment or scan["kind"] == "IAC_CONFIG")]
+        respond({"items": rows, "total": len(rows), "offset": 0, "limit": 25,
+                 "returned": len(rows), "has_more": False})
+    elif path == f"{PREFIX}/scans/advanced/deploy-governance/history":
         respond({"detail": "DEPLOY_DECISION_CHAIN_INVALID"}, 409)
     elif path in responses:
         respond(responses[path])
@@ -211,7 +219,7 @@ def check_exceptions(page):
         expect(action).to_be_disabled()
         page.get_by_label("Review justification", exact=False).fill("This is the fixture administrator review justification.")
         action.click()
-        expect(page.get_by_text(f"Finding finding-a: {expected}", exact=True)).to_be_visible()
+        expect(page.get_by_text(f"{FINDING['title']} - exception {expected.lower()}", exact=True)).to_be_visible()
 
     submit()
     decide("Approve temporary exception", "APPROVED")
@@ -280,10 +288,11 @@ def check(browser, url, role, width):
         expect(page.get_by_role("heading", name=heading, exact=True)).to_be_visible()
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
-    expect(page.get_by_role("table").get_by_role("row")).to_have_count(5)
+    history = page.get_by_role("region", name="Cloud audit history")
+    expect(history.get_by_role("row")).to_have_count(5)
     page.get_by_label("Audit type").select_option("AWS_ADVANCED")
-    expect(page.get_by_role("table").get_by_role("row")).to_have_count(2)
-    page.get_by_role("button", name="View Advanced AWS from", exact=False).click()
+    expect(history.get_by_role("row")).to_have_count(2)
+    history.get_by_role("button", name="View Advanced AWS", exact=False).click()
     expect(page.get_by_role("heading", name="Audit review", exact=True)).to_be_focused()
     expect(page.get_by_text("Assessment history could not be verified", exact=False)).to_be_visible()
     expect(page.get_by_text("No recorded assessments yet.", exact=True)).to_have_count(0)

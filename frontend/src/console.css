@@ -191,7 +191,7 @@ body { background: var(--console-canvas); }
 .security-console :is(input, select, textarea)[aria-invalid="true"],
 .login-panel input[aria-invalid="true"] { border-color: #a82b32; }
 .security-console :is(.secondary-action, .button-row button, .quick-actions button):not(.danger-action) {
-  min-height: 38px;
+  min-block-size: var(--console-control-height);
 }
 .security-console button.secondary-action:not([class*="danger"]):hover:not(:disabled) {
   border-color: #9bb8b6;
@@ -199,8 +199,8 @@ body { background: var(--console-canvas); }
   color: #173f3b;
 }
 :is(.security-console, .login-shell) :is(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
-  outline: 2px solid var(--console-focus);
-  outline-offset: 3px;
+  outline: var(--console-focus-size) solid var(--console-focus-color);
+  outline-offset: var(--console-focus-offset);
 }
 .security-console .console-sidebar :is(a, button):focus-visible { outline-color: #91e9d1; }
 

@@ -39,8 +39,8 @@ def check_evidence(browser, server, role, width):
         elif path == CLOUD + "/scans/iam/iam-comparisons/page":
             offset = int(parse_qs(url.query)["offset"][0])
             counts["iam"] += int(offset > 0)
-            row_id = 1 if offset == 0 or counts["iam"] == 1 else 2
-            item = {"id": row_id, "tool_name": "test_tool", "expected_actions": [],
+            comparison_id = original_id if offset == 0 or counts["iam"] == 1 else current_id
+            item = {"id": comparison_id, "tool_name": "test_tool", "expected_actions": [],
                     "observed_actions": [], "status": "POTENTIAL_EXCESS",
                     "effective_permission_status": "UNKNOWN"}
             route.fulfill(json={"items": [item], "offset": offset,

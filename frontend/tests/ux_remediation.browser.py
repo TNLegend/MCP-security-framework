@@ -896,6 +896,8 @@ def check_ux12(browser, server, shots):
 def check_ux18(browser, server, shots):
     context, page, api, errors = smoke.open_page(browser, server, "ADMIN", 1440)
     root = page.url.split("?")[0]
+    # Let the Home bootstrap finish before counting requests from a new document.
+    expect(page.locator(".console-header").get_by_role("button", name="Refresh", exact=True)).to_be_enabled()
     api.requests.clear()
     page.goto(root + "?view=runtime")
     expect(page.get_by_role("heading", name="Tool activity", exact=True)).to_be_visible()
@@ -920,7 +922,37 @@ def check_ux18(browser, server, shots):
     return "runtime loads its own result once; Cloud scanner and mapping requests wait for their task"
 
 
-CHECKS = {"UX-18": check_ux18, "UX-12": check_ux12, "UX-22": check_ux22, "UX-08": check_ux08, "UX-17": check_ux17, "UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
+
+def check_ux23(browser, server, shots):
+    for width in (320, 768, 1440):
+        context, page, api, errors = smoke.open_page(browser, server, "ADMIN", width)
+        refresh = page.locator(".console-header").get_by_role("button", name="Refresh", exact=True)
+        expect(refresh).to_be_enabled()
+        refresh_height = refresh.evaluate("(node) => node.getBoundingClientRect().height")
+        assert refresh_height >= 40, f"header Refresh is {refresh_height}px at {width}px"
+        smoke.navigate(page, "Security review", width)
+        page.get_by_role("tab", name="Explain with AI").click()
+        assistant = page.get_by_role("region", name="AI assistance")
+        form = assistant.locator("form")
+        field = form.get_by_label("Type of help")
+        expect(field).to_be_visible()
+        field_height = field.evaluate("(node) => node.getBoundingClientRect().height")
+        assert field_height >= 40, f"assistant select is {field_height}px at {width}px"
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
+        field.focus()
+        page.keyboard.press("Tab")
+        question = form.get_by_label("Your question (optional)")
+        expect(question).to_be_focused()
+        focus_style = question.evaluate("(node) => getComputedStyle(node).outlineStyle")
+        assert focus_style == "solid", f"assistant focus is {focus_style} at {width}px"
+        if shots:
+            form.screenshot(path=str(shots / f"ux23-assistant-controls-{width}.png"))
+        assert not errors, errors
+        context.close()
+    return "shared 40px controls and visible focus at 320, 768 and 1440px"
+
+
+CHECKS = {"UX-23": check_ux23, "UX-18": check_ux18, "UX-12": check_ux12, "UX-22": check_ux22, "UX-08": check_ux08, "UX-17": check_ux17, "UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
           "UX-09": check_ux09, "UX-11": check_ux11, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 

@@ -16,7 +16,7 @@ SCAN_B = {"id": "retry", "display_name": "B recent scan", "status": "FAILED",
           "source_fingerprint": DIGEST}
 SCAN_C = {"id": "created", "display_name": "Fixture repository", "status": "COMPLETED",
           "target_type": "GIT_REPOSITORY", "created_at": "2026-11-21T11:30:00Z",
-          "source_fingerprint":"b" * 64}
+          "source_fingerprint": "b" * 64, "source_revision": "c" * 64}
 
 
 def exercise_inventory(page, api, width):
@@ -67,7 +67,9 @@ def exercise_review(page, api, width):
     dialog = page.get_by_role("dialog", name="Block tool")
     dialog.get_by_role("textbox").fill("Browser test of denied evidence review.")
     dialog.get_by_role("button", name="Confirm block", exact=True).click()
-    expect(dialog.get_by_text("This mutation is outside the browser fixture.")).to_be_visible()
+    expect(dialog.get_by_role("alert")).to_contain_text(
+        "The record changed or conflicts with the current operation. Refresh its status before proceeding."
+    )
     assert api.mutations[-1][1] == "/control-plane/tool-analysis/tools/1/block"
     assert DIGEST in api.mutations[-1][2]
     dialog.get_by_role("button", name="Cancel").click()
@@ -111,7 +113,7 @@ def exercise_build(page, width):
     expect(page.get_by_text("Loading Build scan evidence…")).to_be_visible()
     page.get_by_role("button", name="B recent scan").click()
     evidence = page.locator("#build-evidence")
-    expect(evidence.get_by_text("Scan evidence is temporarily unavailable.")).to_be_visible()
+    expect(evidence.get_by_role("alert")).to_contain_text("A server or upstream service failed.")
     evidence.get_by_role("button", name="Retry loading scan evidence").click()
     expect(evidence.get_by_text("B recent scan", exact=False)).to_be_visible()
     assert len(slow_routes) == 1
@@ -128,7 +130,9 @@ def exercise_build(page, width):
     assert len(submitted_scans) == 1
     assert submitted_scans[0]["repository_url"] == "https://github.com/example/mcp.git"
     assert submitted_scans[0]["source_ref"] == "HEAD"
-    check_width(page, "Build history and scan evidence")
+    for viewport in (width, 320) if width < 768 else (width,):
+        page.set_viewport_size({"width": viewport, "height": 940})
+        check_width(page, "Build history and scan evidence")
 
 
 def main():

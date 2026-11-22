@@ -1,4 +1,10 @@
 :root {
+  --console-control-height: 40px;
+  --console-control-compact: 32px;
+  --console-control-gap: 8px;
+  --console-focus-color: #2461b8;
+  --console-focus-size: 2px;
+  --console-focus-offset: 2px;
   color: #1a1f2b;
   background: #f6f7fb;
   font-family:
@@ -27,8 +33,8 @@ select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible,
 tr[role="button"]:focus-visible {
-  outline: 3px solid rgb(31 111 235 / 30%);
-  outline-offset: 2px;
+  outline: var(--console-focus-size) solid var(--console-focus-color);
+  outline-offset: var(--console-focus-offset);
 }
 
 .app-shell {
@@ -2673,6 +2679,7 @@ code {
 
 .build-scan-detail {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -2772,7 +2779,7 @@ code {
   .build-history-filters,
   .build-source-context,
   .build-source-evidence {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .build-scanner-grid,
@@ -3829,3 +3836,24 @@ label.deny-global-warning.checkbox-field .field-error {
   border-inline-start: 2px solid var(--console-line, #d4dce6);
 }
 .controlled-ai-panel code, .controlled-ai-panel .record-link { overflow-wrap: anywhere; }
+
+.security-console :is(.secondary-action, .button-row button, .quick-actions button) {
+  min-block-size: var(--console-control-height);
+}
+.security-console .tiny-action { min-block-size: var(--console-control-compact); }
+.security-console :is(.button-row, .quick-actions) { gap: var(--console-control-gap); }
+.security-console :where(form) :is(select, input:not([type="checkbox"], [type="radio"], [type="hidden"], [type="file"], [type="range"])) {
+  min-block-size: var(--console-control-height);
+  min-inline-size: 0;
+  font: inherit;
+}
+.security-console .controlled-ai-form :is(select, textarea, button) {
+  border: 1px solid var(--console-line, #cbd3df);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+}
+.security-console .controlled-ai-form button {
+  min-block-size: var(--console-control-height);
+  justify-self: start;
+}
