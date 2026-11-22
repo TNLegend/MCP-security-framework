@@ -181,6 +181,8 @@ class ScanDetailPublic(BaseModel):
     events: list[ScanEventPublic]
     # Snapshot coverage of the bounded API payload, not scanner coverage.
     collection_coverage: dict[str, dict[str, int | bool]] = Field(default_factory=dict)
+    # UX-19: execution / findings / coverage from their own sources (additive).
+    assessment_summary: dict | None = None
 
 class CloudCollectionPagePublic(BaseModel):
     """Stored items for one scan; never a completeness claim about AWS."""

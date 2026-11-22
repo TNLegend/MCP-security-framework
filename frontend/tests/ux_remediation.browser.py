@@ -272,7 +272,120 @@ def check_ux01(browser, server, shots):
     return "; ".join(results)
 
 
-CHECKS = {"UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06}
+def prowler_fixture():
+    severities = ["CRITICAL"] * 4 + ["HIGH"] * 14 + ["MEDIUM"] * 25 + ["LOW"] * 15
+    scans, details = [], {}
+    for label, minute in (("aaaa1111", "10:30"), ("bbbb2222", "10:30")):  # duplicate timestamps on purpose
+        scan_id = label + "-0000-4000-8000-000000000000"
+        scan = {"id": scan_id, "environment_id": "env-qa", "kind": "AWS_ADVANCED", "status": "COMPLETED",
+                "created_at": f"2026-11-21T{minute}:00Z", "started_at": "2026-11-21T10:31:00Z",
+                "completed_at": "2026-11-21T10:40:00Z", "resource_count": 31, "finding_count": 58,
+                "unknown_checks": 0, "scanner_version": "5.x", "error_code": None}
+        scans.append(scan)
+        findings = [{"id": f"{label}-f{i}", "resource_id": None, "rule_id": f"rule_{i % 9}", "fingerprint": "f" * 64,
+                     "severity": sev, "result": "FAIL", "title": f"Synthetic finding {i}",
+                     "description": "Synthetic Prowler failure.", "remediation": None}
+                    for i, sev in enumerate(severities)]
+        details[scan_id] = {"scan": scan, "resources": [], "events": [], "evidence": [], "findings": findings,
+                            "collection_coverage": {"findings": {"returned": 58, "display_limit": 300, "truncated": False}},
+                            "assessment_summary": {
+                                "execution": {"state": "COMPLETED", "source": "SCANNER_EXECUTION_EVIDENCE",
+                                              "scanner": "prowler", "scanner_version": "5.x", "records_returned": 120, "error_code": None},
+                                "findings": {"total": 58, "by_severity": {"CRITICAL": 4, "HIGH": 14, "MEDIUM": 25, "LOW": 15},
+                                             "population": "ALL_PERSISTED_FINDINGS_FOR_SCAN", "matches_scan_counter": True},
+                                "coverage": {"available": True, "reason": None, "resources_observed": 31,
+                                             "unresolved_observations": 0, "unknown_service_reads": 0, "unassessed_services": 0}}}
+    failed_id = "cccc3333-0000-4000-8000-000000000000"
+    failed = {**scans[0], "id": failed_id, "status": "FAILED", "resource_count": 0, "finding_count": 0,
+              "unknown_checks": 0, "started_at": None, "error_code": "PROWLER_EXECUTION_FAILED"}
+    scans.append(failed)
+    details[failed_id] = {"scan": failed, "resources": [], "events": [], "evidence": [], "findings": [],
+                          "collection_coverage": {}, "assessment_summary": {
+                              "execution": {"state": "FAILED", "source": "SCAN_STATUS", "error_code": "PROWLER_EXECUTION_FAILED"},
+                              "findings": {"total": 0, "by_severity": {}, "population": "ALL_PERSISTED_FINDINGS_FOR_SCAN", "matches_scan_counter": True},
+                              "coverage": {"available": False, "reason": "SCAN_FAILED_BEFORE_COLLECTION", "resources_observed": 0,
+                                           "unresolved_observations": 0, "unknown_service_reads": 0, "unassessed_services": 0}}}
+    return scans, details
+
+
+def check_ux19(browser, server, shots):
+    """UX-19 (+UX-22/23 history text): execution, findings and coverage are separate;
+    findings lead the detail; a failed run reads Coverage unavailable."""
+    scans, details = prowler_fixture()
+    original = RemediationAPI.read
+
+    def read(self, path, query):
+        if path == smoke.CLOUD + "/scans":
+            return scans
+        if path.startswith(smoke.CLOUD + "/scans/"):
+            scan_id, _, suffix = path.removeprefix(smoke.CLOUD + "/scans/").partition("/")
+            if suffix == "" and scan_id in details:
+                return details[scan_id]
+            return []
+        return original(self, path, query)
+
+    RemediationAPI.read = read
+    try:
+        context, page, api, errors = smoke.open_page(browser, server, "VIEWER", 1440)
+        smoke.navigate(page, "Cloud security", 1440)
+        page.get_by_role("navigation", name="Cloud security tasks").get_by_role("button", name="Audit history").click()
+        history = page.get_by_role("region", name="Cloud audit history")
+        expect(history.get_by_role("columnheader", name="Queued")).to_be_visible()
+        expect(history.get_by_role("columnheader", name="Started")).to_be_visible()
+        # Duplicate queue times stay distinguishable by a stable scan reference.
+        expect(history.get_by_role("button", name="View Advanced AWS aaaa1111", exact=False)).to_be_visible()
+        expect(history.get_by_role("button", name="View Advanced AWS bbbb2222", exact=False)).to_be_visible()
+        expect(history.get_by_role("row").filter(has_text="cccc3333")).to_contain_text("Not collected")
+        expect(history.get_by_role("row").filter(has_text="cccc3333")).to_contain_text("Not started")
+        if shots:
+            history.screenshot(path=str(shots / "ux19-prowler-history-1440.png"))
+
+        history.get_by_role("button", name="View Advanced AWS aaaa1111", exact=False).click()
+        summary = page.get_by_role("group", name="Scan result summary")
+        expect(page.get_by_test_id("scan-findings-headline")).to_have_text("58 failed rule/resource findings")
+        expect(page.get_by_test_id("scan-execution-headline")).to_have_text("Scanner execution complete")
+        expect(page.get_by_test_id("scan-coverage-headline")).to_have_text("31 resources observed · 0 unresolved observations recorded")
+        # Findings precede governance and come right after the summary.
+        heading_y = page.locator("#cloud-findings-heading").bounding_box()["y"]
+        governance = page.get_by_role("heading", name="Security assessment and administrator review")
+        assert heading_y < governance.bounding_box()["y"], "findings must precede governance"
+        summary.get_by_role("button", name="Critical 4").click()
+        expect(page.locator(".cloud-finding")).to_have_count(4)
+        expect(page.get_by_test_id("cloud-findings-scope")).to_contain_text("4 shown · 58 of 58 stored findings loaded")
+        detail_text = page.locator("#cloud-detail").inner_text()
+        for defect in ("31resources", "and0", "unresolved.This"):
+            assert defect not in detail_text, defect
+        if shots:
+            page.locator("#cloud-detail").screenshot(path=str(shots / "ux19-prowler-detail-1440.png"))
+
+        page.get_by_role("button", name="Browse audit history").click()
+        history.get_by_role("button", name="View Advanced AWS cccc3333", exact=False).click()
+        expect(page.get_by_test_id("scan-coverage-headline")).to_have_text("Coverage unavailable")
+        expect(page.get_by_test_id("scan-findings-headline")).to_have_text("Findings not collected")
+        expect(page.get_by_test_id("cloud-findings-empty")).to_contain_text("Scan failed · Coverage unavailable")
+        expect(page.get_by_text("No confirmed findings in the collected results")).to_have_count(0)
+        if shots:
+            page.locator("#cloud-detail").screenshot(path=str(shots / "ux19-prowler-failed-1440.png"))
+        assert not errors, errors
+        context.close()
+
+        context, page, api, errors = smoke.open_page(browser, server, "VIEWER", 390)
+        smoke.navigate(page, "Cloud security", 390)
+        page.get_by_role("navigation", name="Cloud security tasks").get_by_role("button", name="Audit history").click()
+        page.get_by_role("region", name="Cloud audit history").get_by_role("button", name="View Advanced AWS aaaa1111", exact=False).click()
+        expect(page.get_by_test_id("scan-findings-headline")).to_be_visible()
+        box = page.locator("#cloud-findings-heading").bounding_box()
+        assert box["y"] < 2600, f"findings start at {box['y']}px on mobile"
+        if shots:
+            page.screenshot(path=str(shots / "ux19-prowler-detail-390.png"), full_page=False)
+        context.close()
+        mobile_y = int(box["y"])
+    finally:
+        RemediationAPI.read = original
+    return f"31/58/0 x2: execution/findings/coverage separate, severity 4/14/25/15, findings before governance (mobile heading at {mobile_y}px), failed run = Coverage unavailable"
+
+
+CHECKS = {"UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 
 
@@ -297,7 +410,7 @@ def main():
                     print("PASS " + issue + ": " + CHECKS[issue](browser, server, args.screenshots))
                 except Exception as exc:  # report every issue, then fail
                     failures += 1
-                    print("FAIL " + issue + ": " + str(exc).splitlines()[0][:400])
+                    print("FAIL " + issue + ": " + " | ".join(str(exc).splitlines()[:6])[:900])
             browser.close()
     finally:
         server.shutdown()

@@ -3092,6 +3092,21 @@ code {
   color: #5c3600;
   font-weight: 700;
 }
+/* UX-19: execution / findings / coverage as three comparable facts. */
+.scan-assessment-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 10px 0 14px; }
+.scan-assessment-summary .scan-fact { border: 1px solid #d7deea; border-radius: 10px; padding: 12px 14px; background: #fff; display: grid; gap: 6px; align-content: start; }
+.scan-assessment-summary h5 { margin: 0; font-size: 0.78rem; letter-spacing: 0.02em; color: #4a5568; font-weight: 600; }
+.scan-assessment-summary strong { font-size: 1.02rem; line-height: 1.35; }
+.scan-assessment-summary small { color: #4a5568; line-height: 1.4; }
+.severity-filter { display: flex; flex-wrap: wrap; gap: 6px; }
+.severity-chip { min-height: 32px; padding: 3px 10px; border-radius: 999px; border: 1px solid #c8d1df; background: #f4f6fa; font-weight: 600; font-size: 0.85rem; cursor: pointer; }
+.severity-chip span { margin-left: 4px; font-variant-numeric: tabular-nums; }
+.severity-chip[aria-pressed="true"] { outline: 2px solid #1d4ed8; outline-offset: 1px; background: #e8efff; }
+.severity-chip.severity-critical { border-color: #b91c1c; color: #7f1d1d; }
+.severity-chip.severity-high { border-color: #c2410c; color: #7c2d12; }
+.cloud-status-note { display: block; margin-top: 4px; color: #5c3600; line-height: 1.35; }
+.cloud-not-collected { color: #5c3600; font-weight: 600; }
+@media (max-width: 760px) { .scan-assessment-summary { grid-template-columns: 1fr; } }
 /* UX-01: build provenance; mismatch and unknown are distinct from "down". */
 .provenance-overall { font-weight: 600; margin: 4px 0 10px; padding: 8px 12px; border-radius: 8px; border: 1px solid #d7deea; background: #f7f9fc; }
 .provenance-overall.provenance-mismatch { border-color: #c2410c; background: #fff1e8; color: #7c2d12; }

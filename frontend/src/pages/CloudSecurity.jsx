@@ -90,6 +90,122 @@ function CloudStatus({ status }) {
   </span>;
 }
 
+// UX-19: three facts, three sources. Never combine execution, findings and
+// coverage into one sentence or infer one from another.
+const SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL", "UNSPECIFIED"];
+const FAILED_RUN_STATES = new Set(["FAILED", "TIMED_OUT", "INTERRUPTED", "CANCELLED"]);
+
+export function executionLabel(execution) {
+  const state = execution?.state;
+  if (!state || state === "NOT_RECORDED") return "Execution not recorded";
+  if (state === "COMPLETED" || state === "PASS") return "Scanner execution complete";
+  if (FAILED_RUN_STATES.has(state)) return "Scanner execution " + state.toLowerCase().replaceAll("_", " ");
+  if (state === "QUEUED" || state === "RUNNING") return "Scanner " + state.toLowerCase();
+  return "Scanner execution: " + state.toLowerCase().replaceAll("_", " ");
+}
+
+export function findingsHeadline(summary) {
+  const total = summary?.findings?.total;
+  if (summary && summary.coverage && summary.coverage.available === false) return "Findings not collected";
+  if (typeof total !== "number") return "Findings unavailable";
+  return total + (total === 1 ? " failed rule/resource finding" : " failed rule/resource findings");
+}
+
+export function coverageHeadline(summary) {
+  const coverage = summary?.coverage;
+  if (!coverage) return "Coverage unavailable";
+  if (!coverage.available) return "Coverage unavailable";
+  return coverage.resources_observed + " resources observed · " + coverage.unresolved_observations
+    + " unresolved " + (coverage.unresolved_observations === 1 ? "observation" : "observations") + " recorded";
+}
+
+export function ScanAssessmentSummary({ scan, summary, onFilterSeverity, activeSeverity = "" }) {
+  if (!summary) {
+    // Older backend: say so instead of rebuilding the facts from one status.
+    return <p className="hint-text" role="note" data-testid="scan-summary-legacy">
+      {scan.resource_count} resources recorded · {scan.finding_count} findings · {scan.unknown_checks} unresolved checks.
+      This backend does not report execution and coverage separately.
+    </p>;
+  }
+  const severities = Object.entries(summary.findings?.by_severity || {})
+    .sort(([a], [b]) => SEVERITY_ORDER.indexOf(a) - SEVERITY_ORDER.indexOf(b));
+  const coverage = summary.coverage || {};
+  return (
+    <div className="scan-assessment-summary" aria-label="Scan result summary" role="group">
+      <section className="scan-fact" data-fact="findings">
+        <h5>Observed findings</h5>
+        <strong data-testid="scan-findings-headline">{findingsHeadline(summary)}</strong>
+        {severities.length > 0 && (
+          <div className="severity-filter" role="group" aria-label="Filter findings by severity">
+            {severities.map(([severity, count]) => (
+              <button aria-pressed={activeSeverity === severity} className={"severity-chip severity-" + severity.toLowerCase()}
+                key={severity} onClick={() => onFilterSeverity?.(activeSeverity === severity ? "" : severity)} type="button">
+                {severity.charAt(0) + severity.slice(1).toLowerCase()} <span>{count}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        <small>Counted over every stored finding of this scan.</small>
+      </section>
+      <section className="scan-fact" data-fact="execution">
+        <h5>Execution</h5>
+        <strong data-testid="scan-execution-headline">{executionLabel(summary.execution)}</strong>
+        <small>
+          {summary.execution?.source === "SCANNER_EXECUTION_EVIDENCE"
+            ? "From the scanner's execution record" + (summary.execution.scanner_version ? " · version " + summary.execution.scanner_version : "") + "."
+            : summary.execution?.source === "SCAN_STATUS" ? "From the scan status; no scanner execution record." : "No execution record."}
+          {summary.execution?.error_code ? " Error code " + summary.execution.error_code + "." : ""}
+        </small>
+      </section>
+      <section className="scan-fact" data-fact="coverage">
+        <h5>Coverage</h5>
+        <strong data-testid="scan-coverage-headline">{coverageHeadline(summary)}</strong>
+        <small>
+          {!coverage.available
+            ? (coverage.reason === "SCAN_NOT_FINISHED" ? "The scan has not finished; coverage is not known yet."
+              : "The run failed before collecting evidence. Zero findings here is not a clean result.")
+            : (coverage.unknown_service_reads || coverage.unassessed_services)
+              ? coverage.unknown_service_reads + " service read(s) unknown · " + coverage.unassessed_services + " service(s) not assessed."
+              : "Collected scope only; not proof that every service or resource was tested."}
+        </small>
+      </section>
+    </div>
+  );
+}
+
+export function scanReference(id) {
+  return id ? String(id).replaceAll("-", "").slice(0, 8) : "unknown";
+}
+
+export function visibleFindings(details, severity) {
+  const findings = details?.findings || [];
+  return severity ? findings.filter((f) => String(f.severity || "").toUpperCase() === severity) : findings;
+}
+
+export function findingsScopeText(details, severity) {
+  const loaded = (details?.findings || []).length;
+  const total = details?.assessment_summary?.findings?.total;
+  const shown = visibleFindings(details, severity).length;
+  const truncated = Boolean(details?.collection_coverage?.findings?.truncated);
+  const scope = typeof total === "number" ? loaded + " of " + total + " stored findings loaded" : loaded + " findings loaded";
+  return (severity ? shown + " shown · " : "") + scope
+    + (truncated ? " · load more to filter the rest" : "") + ".";
+}
+
+export function emptyFindingsText(details, severity) {
+  const summary = details?.assessment_summary;
+  if (severity) return "No loaded findings with this severity.";
+  if (summary?.coverage?.available === false) {
+    return summary.coverage.reason === "SCAN_NOT_FINISHED"
+      ? "The scan is still running; findings are not available yet."
+      : "Scan failed · Coverage unavailable. No findings were collected, so this is not a clean result.";
+  }
+  if (!summary && FAILED_RUN_STATES.has(details?.scan?.status)) {
+    return "Scan did not finish · Coverage unavailable. No findings were collected.";
+  }
+  return "No failed rule/resource findings were recorded in this scan's collected results.";
+}
+
 export function CloudScanTable({ scans, onOpen, empty, loading, metric, label, mixed = false }) {
   if (loading && !scans.length) return <p role="status">Loading audit history…</p>;
   if (!scans.length) return <p className="cloud-empty">{empty}</p>;
@@ -97,31 +213,36 @@ export function CloudScanTable({ scans, onOpen, empty, loading, metric, label, m
   return <div className="table-scroll cloud-table-scroll" tabIndex={0} role="region" aria-label={label}>
     <table className="cloud-history-table">
       <thead><tr>
+        <th scope="col">Queued</th>
         <th scope="col">Started</th>
         {mixed && <th scope="col">Audit type</th>}
-        <th scope="col">Status</th>
+        <th scope="col">Run status</th>
         {mixed && <th scope="col">Resources / files</th>}
         {metric && <th scope="col">{metric === "source_file_count" ? "Files" : "Resources"}</th>}
-        <th scope="col">Findings</th>
-        <th scope="col">Unknown</th>
-        <th scope="col">Details</th>
+        <th scope="col">Failed findings</th>
+        <th scope="col">Unresolved</th>
+        <th scope="col">Scan</th>
       </tr></thead>
       <tbody>{scans.map((scan) => {
-        const started = formatServerTime(scan.created_at);
+        // UX-22: created_at is the queue time; started_at is the first execution time.
+        const queued = formatServerTime(scan.created_at);
+        const reference = scanReference(scan.id);
+        const notCollected = FAILED_RUN_STATES.has(scan.status) && !scan.resource_count && !scan.finding_count;
         return <tr key={scan.id}>
-          <td><time dateTime={scan.created_at}>{started}</time></td>
+          <td><time dateTime={scan.created_at}>{queued}</time></td>
+          <td>{scan.started_at ? <time dateTime={scan.started_at}>{formatServerTime(scan.started_at)}</time> : "Not started"}</td>
           {mixed && <td>{scanKinds[scan.kind] || scan.kind}</td>}
           <td><CloudStatus status={scan.status} />
-            {scan.status === "PARTIAL" && <small title="Some scan coverage was incomplete or unavailable">
-              Incomplete coverage; not a clean security verdict
+            {scan.status === "PARTIAL" && <small className="cloud-status-note">
+              Incomplete coverage; not a clean security verdict.
             </small>}</td>
           {mixed && <td>{scan.kind === "IAC_CONFIG" ? scan.source_file_count : scan.resource_count}</td>}
           {metric && <td>{scan[metric]}</td>}
-          <td>{scan.finding_count}</td>
-          <td>{scan.unknown_checks}</td>
+          <td>{notCollected ? <span className="cloud-not-collected">Not collected</span> : scan.finding_count}</td>
+          <td>{notCollected ? "—" : scan.unknown_checks}</td>
           <td><button type="button" className="tiny-action"
-            aria-label={`View ${scanKinds[scan.kind] || "audit"} from ${started}`}
-            onClick={() => onOpen(scan.id)}>View</button></td>
+            aria-label={`View ${scanKinds[scan.kind] || "audit"} ${reference} queued ${queued}`}
+            onClick={() => onOpen(scan.id)}>View <code>{reference}</code></button></td>
         </tr>;
       })}</tbody>
     </table>
@@ -568,6 +689,8 @@ export default function CloudSecurity({ isAdmin = false }) {
   const [deployExceptionsError, setDeployExceptionsError] = useState("");
   const [exceptionReason, setExceptionReason] = useState("");
   const [exceptionFinding, setExceptionFinding] = useState("");
+  // UX-19: severity filter over the findings list; reset whenever a scan opens.
+  const [findingSeverity, setFindingSeverity] = useState("");
   const [reviewReason, setReviewReason] = useState("");
   const [reviewingExceptionId, setReviewingExceptionId] = useState("");
   const [expiryDays, setExpiryDays] = useState(7);
@@ -993,6 +1116,7 @@ export default function CloudSecurity({ isAdmin = false }) {
     setReviewReason("");
     setExceptionFinding("");
     setExceptionReason("");
+    setFindingSeverity("");
     try {
       const item = await fetchCloudScanDetail(scanId);
       if (generation !== scanDetailGeneration.current) return;
@@ -1810,11 +1934,15 @@ export default function CloudSecurity({ isAdmin = false }) {
               Refresh details
             </button>
           </div>
-          <p><strong>Observed scan coverage:</strong> {details.scan.resource_count}
-            resources recorded, {details.scan.finding_count} findings, and
-            {details.scan.unknown_checks} checks unresolved.
-            {details.scan.unknown_checks > 0 && " These UNKNOWN checks must be investigated; they are not passed checks."}
-            This is the collected evidence scope, not proof of full cloud coverage.</p>
+          <ScanAssessmentSummary
+            activeSeverity={findingSeverity}
+            onFilterSeverity={(severity) => {
+              setFindingSeverity(severity);
+              document.getElementById("cloud-findings-heading")?.focus();
+            }}
+            scan={details.scan}
+            summary={details.assessment_summary}
+          />
           <p>{details.scan.kind === "IAM_MCP"
             ? "This scan compares signed MCP contracts with AWS identity-policy observations. Potential gaps are not proof of effective AWS access; unverified checks remain UNKNOWN."
             : details.scan.kind === "IAC_CONFIG"
@@ -1828,18 +1956,74 @@ export default function CloudSecurity({ isAdmin = false }) {
           {Object.entries(details.collection_coverage || {}).some(([, c]) => c.truncated) && (
             <p role="alert">This detail response is incomplete: at least one
               collection exceeded its display limit. Do not interpret the
-              visible rows as a complete scan. Use a filtered investigation
-              or a fresh export for exhaustive evidence.</p>
+              visible rows as a complete scan. Use “Load more” under each
+              section to page through every stored record.</p>
           )}
           {Object.entries(details.collection_coverage || {}).length > 0 && (
             <details><summary>Evidence coverage and API display limits</summary>
               <ul>{Object.entries(details.collection_coverage).map(([name, c]) => (
                 <li key={name}>{name}: {c.returned} displayed (reference count {c.display_limit})
-                  {c.truncated ? " ? more records exist and are not displayed" : " ? all records returned by this query"}.</li>
+                  {c.truncated ? "; more records exist and are not displayed" : "; all records returned by this query"}.</li>
               ))}</ul>
               <p>These counts describe the API response, not the coverage of
                 AWS resources or the completeness of scanner execution.</p>
             </details>
+          )}
+          <h4 id="cloud-findings-heading" tabIndex={-1}>
+            Findings{findingSeverity ? " · " + findingSeverity.toLowerCase() : ""}
+          </h4>
+          <p className="hint-text" role="status" data-testid="cloud-findings-scope">
+            {findingsScopeText(details, findingSeverity)}
+          </p>
+          {findingSeverity && (
+            <button className="tiny-action" onClick={() => setFindingSeverity("")} type="button">Show all severities</button>
+          )}
+          {visibleFindings(details, findingSeverity).length ? visibleFindings(details, findingSeverity).map((f) => (
+            <article key={f.id} id={"cloud-finding-" + f.id} className="cloud-finding">
+              <strong>{f.severity}: {f.title}</strong>
+              {isAdmin && ["COMPLETED", "PARTIAL"].includes(details.scan.status) && (
+                <button type="button" className="tiny-action"
+                  aria-label={"Prepare exception request for " + f.title}
+                  disabled={governanceLoading}
+                  onClick={() => {
+                    // Only select the exact stored finding; never create or
+                    // approve an exception without a typed justification.
+                    setExceptionFinding(f.id);
+                    setExceptionReason("");
+                    document.getElementById("cloud-exception-request-reason")?.focus();
+                  }}>
+                  Request exception for this finding
+                </button>
+              )}
+              <CloudFindingResource finding={f} resources={details.resources} />
+              {details.scan.kind === "IAC_CONFIG" && (() => {
+                const sources = iacFindingSourceEvidence(f, details.evidence);
+                return sources.length > 0
+                  ? <div aria-label="Terraform finding provenance">
+                      <strong>Recorded scanner source evidence</strong>
+                      <ul>{sources.map((source, index) => (
+                        <li key={source.id || index}>
+                          {source.scanner}{source.version ? " " + source.version : ""}
+                          {source.rule ? " (rule " + source.rule + ")" : ""}:
+                          {" "}<code>{source.file}</code>
+                          {source.line !== null ? " at line " + source.line
+                            : " (scanner did not provide a verified line)"}
+                          {source.sourceFingerprint && <span>. Source SHA-256: <code>{source.sourceFingerprint}</code></span>}
+                        </li>
+                      ))}</ul>
+                    </div>
+                  : <p role="note">Source location is not in the currently loaded evidence.
+                      This does not prove the finding has no source; check the paginated evidence records.</p>;
+              })()}
+              <p>{f.description}</p>
+              {f.remediation && <p>Suggested action: {f.remediation}</p>}
+            </article>
+          )) : <p className="cloud-empty" data-testid="cloud-findings-empty">{emptyFindingsText(details, findingSeverity)}</p>}
+          {details.collection_coverage?.["findings"]?.truncated && (
+            <button type="button" className="secondary-action"
+              disabled={Boolean(collectionBusy)} onClick={() => loadNextCloudCollection("findings")}>
+              {collectionBusy === "findings" ? "Loading..." : "Load more findings records"}
+            </button>
           )}
           {["IAM_MCP", "IAC_CONFIG", "AWS_ADVANCED"].includes(details.scan.kind) && (
             <div className="cloud-review-section">
@@ -2062,54 +2246,6 @@ export default function CloudSecurity({ isAdmin = false }) {
                   " The scan is not terminal; new results may alter pagination. Refresh when it finishes."}
               </p>}
             </div>
-          )}
-          <h4>Findings ({details.findings.length})</h4>
-          {details.findings.length ? details.findings.map((f) => (
-            <article key={f.id} id={"cloud-finding-" + f.id} className="cloud-finding">
-              <strong>{f.severity}: {f.title}</strong>
-              {isAdmin && ["COMPLETED", "PARTIAL"].includes(details.scan.status) && (
-                <button type="button" className="tiny-action"
-                  aria-label={"Prepare exception request for " + f.title}
-                  disabled={governanceLoading}
-                  onClick={() => {
-                    // Only select the exact stored finding; never create or
-                    // approve an exception without a typed justification.
-                    setExceptionFinding(f.id);
-                    setExceptionReason("");
-                    document.getElementById("cloud-exception-request-reason")?.focus();
-                  }}>
-                  Request exception for this finding
-                </button>
-              )}
-              <CloudFindingResource finding={f} resources={details.resources} />
-              {details.scan.kind === "IAC_CONFIG" && (() => {
-                const sources = iacFindingSourceEvidence(f, details.evidence);
-                return sources.length > 0
-                  ? <div aria-label="Terraform finding provenance">
-                      <strong>Recorded scanner source evidence</strong>
-                      <ul>{sources.map((source, index) => (
-                        <li key={source.id || index}>
-                          {source.scanner}{source.version ? " " + source.version : ""}
-                          {source.rule ? " (rule " + source.rule + ")" : ""}:
-                          {" "}<code>{source.file}</code>
-                          {source.line !== null ? " at line " + source.line
-                            : " (scanner did not provide a verified line)"}
-                          {source.sourceFingerprint && <span>. Source SHA-256: <code>{source.sourceFingerprint}</code></span>}
-                        </li>
-                      ))}</ul>
-                    </div>
-                  : <p role="note">Source location is not in the currently loaded evidence.
-                      This does not prove the finding has no source; check the paginated evidence records.</p>;
-              })()}
-              <p>{f.description}</p>
-              {f.remediation && <p>Suggested action: {f.remediation}</p>}
-            </article>
-          )) : <p>No confirmed findings in the collected results.</p>}
-          {details.collection_coverage?.["findings"]?.truncated && (
-            <button type="button" className="secondary-action"
-              disabled={Boolean(collectionBusy)} onClick={() => loadNextCloudCollection("findings")}>
-              {collectionBusy === "findings" ? "Loading..." : "Load more findings records"}
-            </button>
           )}
           <h4>Resources ({details.resources.length})</h4>
           {details.resources.map((r) => <p key={r.id}><CloudResourceLabel resource={r} /></p>)}

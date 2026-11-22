@@ -21,6 +21,7 @@ from app.schemas.cloud_security import (
     ScanEventPublic, ScanPublic, IAMComparisonRequest, IAMComparisonPublic, IAMComparisonPagePublic, CloudCollectionPagePublic,
     IAMMappingCreate, IAMMappingApprove, IAMMappingPublic,
 )
+from app.services.cloud_scan_summary import scan_assessment_summary
 from app.services.cloud_security import (
     CloudAuditError, _safe_error, check_connection, enqueue_scan,
 )
@@ -875,6 +876,7 @@ def scan_detail(
         evidence=[EvidencePublic.model_validate(x) for x in collections["evidence"]],
         events=[ScanEventPublic.model_validate(x) for x in collections["events"]],
         collection_coverage=coverage,
+        assessment_summary=scan_assessment_summary(db, scan),
     )
 
 
