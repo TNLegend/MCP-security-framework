@@ -283,7 +283,8 @@ function SecurityConfiguration({
           <section aria-modal="true" aria-labelledby="publish-review-title" className="modal-panel"
             ref={publishDialogRef} role="dialog" tabIndex={-1}>
             <h3 id="publish-review-title">Review publication of revision #{publishReview.revisionNumber}</h3>
-            <PublicationPreview draftId={publishReview.revisionId} onChange={setPublicationPreview} />
+            <PublicationPreview draftId={publishReview.revisionId} draftRevision={selectedRevision}
+              activeRevision={activeRevision} onChange={setPublicationPreview} />
             <p>Change summary: {summary}</p>
             <div className="button-row">
               <button className="danger-action"

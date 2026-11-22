@@ -764,7 +764,37 @@ def check_ux17(browser, server, shots):
     return "; ".join(check_ux21(browser, server, shots, width=width, keyboard=True) for width in (320, 768, 1440))
 
 
-CHECKS = {"UX-17": check_ux17, "UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
+
+def check_ux08(browser, server, shots):
+    event = {**smoke.AUDIT, "before_json": {"contract": {"resource": ["public/*"]}, "same": True},
+             "after_json": {"contract": {"resource": ["team/*"]}, "same": True}}
+    original = RemediationAPI.read
+
+    def read(self, path, query):
+        if path == "/control-plane/audit/events/page":
+            return {"items": [event], "total": 1}
+        return original(self, path, query)
+
+    RemediationAPI.read = read
+    try:
+        context, page, api, errors = smoke.open_page(browser, server, "VIEWER", 1440)
+        smoke.navigate(page, "Audit history", 1440)
+        page.locator("tbody tr button").first.click()
+        diff = page.get_by_role("region", name="Recorded field changes")
+        expect(diff.get_by_text("/contract/resource/0")).to_be_visible()
+        expect(diff.get_by_text('"public/*"', exact=True)).to_be_visible()
+        expect(diff.get_by_text('"team/*"', exact=True)).to_be_visible()
+        expect(diff.get_by_text("1 unchanged keys", exact=False)).to_be_visible()
+        if shots:
+            diff.screenshot(path=str(shots / "ux08-audit-nested-diff-1440.png"))
+        assert not errors, errors
+        context.close()
+    finally:
+        RemediationAPI.read = original
+    return "audit shows exact nested resource path, typed before/after and omitted unchanged count"
+
+
+CHECKS = {"UX-08": check_ux08, "UX-17": check_ux17, "UX-21": check_ux21, "UX-05": check_ux05, "UX-10": check_ux10, "UX-01": check_ux01, "UX-03": check_ux03, "UX-04": check_ux04, "UX-06": check_ux06, "UX-16": check_ux16,
           "UX-09": check_ux09, "UX-11": check_ux11, "UX-19": check_ux19}
 CHECKS = {key: value for key, value in CHECKS.items() if value}
 

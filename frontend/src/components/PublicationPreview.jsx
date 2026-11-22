@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchPublicationPreview, safeErrorMessage } from "../api/client";
+import NestedChanges from "./NestedChanges";
+import { publicationDiffInputs } from "../utils/nestedPathDiff.js";
 
 // CF-01: renders the backend-computed diff and impact of a PUBLISH. It never
 // computes an impact itself; it only displays what the API returned.
@@ -86,7 +88,7 @@ function ImpactList({ impact }) {
   );
 }
 
-export default function PublicationPreview({ draftId, onChange }) {
+export default function PublicationPreview({ draftId, draftRevision, activeRevision, onChange }) {
   const [state, setState] = useState({ loading: true, preview: null, error: "" });
 
   useEffect(() => {
@@ -114,6 +116,7 @@ export default function PublicationPreview({ draftId, onChange }) {
   }
   const { preview } = state;
   const changed = preview.diff?.changed_sections || [];
+  const inputs = publicationDiffInputs(preview, draftRevision, activeRevision);
   return (
     <section className="publication-preview" aria-label="Publication preview">
       <h4>What this publication changes</h4>
@@ -136,6 +139,8 @@ export default function PublicationPreview({ draftId, onChange }) {
           ))}
         </ul>
       )}
+      {inputs ? <NestedChanges {...inputs} label="Exact revision field changes" /> :
+        <p className="hint-text">Exact field changes require the revisions and hashes from this preview. Refresh the revision records.</p>}
       <h4>Impact when published</h4>
       <ImpactList impact={preview.impact} />
       <p className="muted-text">Computed by the server with the same rules publication applies.</p>

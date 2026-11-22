@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { fetchAuditEventPage, fetchRelatedSecurityTimeline, safeErrorMessage } from "../api/client";
 import { Pagination } from "../components/Pagination";
+import NestedChanges from "../components/NestedChanges";
 import { auditTargetLink } from "../utils/operationNavigation.js";
 
 const PAGE_SIZE = 20;
@@ -360,32 +361,10 @@ function humanizeAction(action) {
 }
 
 function AuditChangedFields({ before, after }) {
-  const oldFields = before && typeof before === "object" && !Array.isArray(before) ? before : null;
-  const newFields = after && typeof after === "object" && !Array.isArray(after) ? after : null;
-  if (!oldFields || !newFields) {
+  if (!before || !after || typeof before !== "object" || typeof after !== "object") {
     return <p className="hint-text">A complete before/after comparison was not recorded for this event.</p>;
   }
-  const changed = [...new Set([...Object.keys(oldFields), ...Object.keys(newFields)])]
-    .filter((key) => JSON.stringify(oldFields[key]) !== JSON.stringify(newFields[key]));
-  return (
-    <section className="audit-changed-fields" aria-label="Changed top-level fields">
-      <h4>Recorded changes (top-level fields)</h4>
-      {changed.length === 0 ? (
-        <p>No top-level field differences in the recorded before/after objects.</p>
-      ) : (
-        <ul>
-          {changed.map((key) => (
-            <li key={key}>
-              <strong>{key}</strong><span aria-hidden="true"> · </span>
-              {!(key in oldFields) ? " field added"
-                : !(key in newFields) ? " field removed" : " field updated"}
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="hint-text">Nested changes and original values remain in the raw JSON; this summary does not prove runtime effects.</p>
-    </section>
-  );
+  return <NestedChanges before={before} after={after} label="Recorded field changes" />;
 }
 
 function AuditJson({ title, value }) {

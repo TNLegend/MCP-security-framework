@@ -3808,3 +3808,16 @@ label.deny-global-warning.checkbox-field .field-error {
 .finding-target { margin: 0.25rem 0 0.5rem; font-size: 0.875rem; color: var(--muted, #4a5568); overflow-wrap: anywhere; }
 .finding-target.legacy { font-style: italic; }
 
+.nested-changes ul { list-style: none; padding: 0; }
+.nested-changes li { border-block-start: 1px solid var(--console-line, #d4dce6); padding-block: 8px; }
+.nested-changes dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin-block: 6px 0;
+}
+.nested-changes dd { margin: 0; }
+.nested-changes code { white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .nested-changes dl { grid-template-columns: minmax(0, 1fr); }
+}
