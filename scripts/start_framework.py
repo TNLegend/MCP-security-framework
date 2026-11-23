@@ -171,6 +171,30 @@ def startup_failure(code: str, *, details: dict | None = None) -> dict:
     return payload
 
 
+# TDA/M4 initialization verifies installed model and dependency bytes before
+# the backend serves /health. This can exceed the normal 20-second timeout.
+# Apply a longer window ONLY to the backend: other components retain the fast
+# startup timeout and all security/integrity gates remain active.
+BACKEND_STARTUP_TIMEOUT_SECONDS = 180.0
+
+
+def start_backend_with_grace(manager: LocalRuntimeManager):
+    """Wait for verified backend startup without slowing other services.
+
+    The manager owns process lifecycle and readiness checks. Temporarily
+    extend only its backend wait, restoring the original timeout even when
+    backend startup fails or raises.
+    """
+    original_timeout = settings.local_runtime_start_timeout_seconds
+    settings.local_runtime_start_timeout_seconds = max(
+        original_timeout, BACKEND_STARTUP_TIMEOUT_SECONDS
+    )
+    try:
+        return manager.start_backend()
+    finally:
+        settings.local_runtime_start_timeout_seconds = original_timeout
+
+
 def main() -> int:
     configure_runtime_environment()
     python = VENV_PYTHON if VENV_PYTHON.exists() else Path(sys.executable)
@@ -233,7 +257,7 @@ def main() -> int:
                                            details={"mcp_lab": mcp_lab.as_dict()}), indent=2))
             return 1
 
-        backend = manager.start_backend()
+        backend = start_backend_with_grace(manager)
         if backend.status != "healthy":
             print(json.dumps(startup_failure("backend_not_ready",
                                            details={"backend": backend.as_dict()}), indent=2))

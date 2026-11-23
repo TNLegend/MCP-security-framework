@@ -77,3 +77,65 @@ def test_child_failure_cannot_override_fail_closed_launcher_result(monkeypatch, 
     assert failure["error"] == "framework_owned_child_exited"
     assert "Review" in failure["operator_guidance"]
     assert events == ["shutdown"]
+
+
+def test_backend_gets_longer_startup_grace_without_changing_other_service_timeout(monkeypatch):
+    initial = 20.0
+    observed = []
+
+    class Backend:
+        def start_backend(self):
+            observed.append(start.settings.local_runtime_start_timeout_seconds)
+            return SimpleNamespace(status="healthy")
+
+    monkeypatch.setattr(start.settings, "local_runtime_start_timeout_seconds", initial)
+    result = start.start_backend_with_grace(Backend())
+    assert result.status == "healthy"
+    assert observed == [start.BACKEND_STARTUP_TIMEOUT_SECONDS]
+    assert start.settings.local_runtime_start_timeout_seconds == initial
+
+
+def test_existing_longer_custom_timeout_is_preserved(monkeypatch):
+    observed = []
+
+    class Backend:
+        def start_backend(self):
+            observed.append(start.settings.local_runtime_start_timeout_seconds)
+            return SimpleNamespace(status="healthy")
+
+    monkeypatch.setattr(start.settings, "local_runtime_start_timeout_seconds", 240.0)
+    start.start_backend_with_grace(Backend())
+    assert observed == [240.0]
+    assert start.settings.local_runtime_start_timeout_seconds == 240.0
+
+
+def test_backend_startup_failure_does_not_leave_long_timeout(monkeypatch):
+    original = 20.0
+    observed = []
+
+    class Backend:
+        def start_backend(self):
+            observed.append(start.settings.local_runtime_start_timeout_seconds)
+            return SimpleNamespace(status="unavailable", detail="backend_startup_timeout")
+
+    monkeypatch.setattr(start.settings, "local_runtime_start_timeout_seconds", original)
+    result = start.start_backend_with_grace(Backend())
+    assert result.status == "unavailable"
+    assert observed == [start.BACKEND_STARTUP_TIMEOUT_SECONDS]
+    assert start.settings.local_runtime_start_timeout_seconds == original
+
+
+def test_backend_exception_restores_original_timeout(monkeypatch):
+    import pytest
+
+    original = 20.0
+
+    class Backend:
+        def start_backend(self):
+            assert start.settings.local_runtime_start_timeout_seconds == 180.0
+            raise RuntimeError("simulated backend boot failure")
+
+    monkeypatch.setattr(start.settings, "local_runtime_start_timeout_seconds", original)
+    with pytest.raises(RuntimeError, match="simulated backend boot failure"):
+        start.start_backend_with_grace(Backend())
+    assert start.settings.local_runtime_start_timeout_seconds == original

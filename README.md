@@ -36,6 +36,17 @@ frontend lockfile dependencies, OPA, security scanners, service identities,
 database schema, and model caches are prepared. The launcher starts the
 local backend, MCP lab, OPA, gateway, identity provider and the React frontend.
 
+**Backend startup timeout:** M4/TDA verifies model and dependency integrity
+before the backend opens its health endpoint. The launcher allows up to
+**180 seconds for the backend alone** on a cold start, while retaining the
+normal **20-second timeout** for PostgreSQL, OPA, Gateway, MCP Lab, identity
+provider, and frontend. A backend that becomes ready sooner continues
+immediately. The launcher restores the original timeout setting after the
+backend attempt, including on failure. This does not bypass integrity,
+authorization, or readiness checks. The normal `LOCAL_RUNTIME_START_TIMEOUT_SECONDS`
+setting still applies to other services, and a configured value above
+180 seconds is honored for the backend.
+
 **Portable PostgreSQL prerequisite (Windows/Linux):** PostgreSQL 15+ server
 binaries must be available on PATH, in the official system installation, or
 in the project's own local runtime tools directory. An existing trusted
